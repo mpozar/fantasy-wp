@@ -201,7 +201,9 @@ function render(data) {
   const ts = new Date(data.generated_at);
   document.getElementById("meta").innerHTML =
     `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
-    ` · Model <code>${data.matchups[0]?.model_version ?? "—"}</code>`;
+    ` · Model <code>${data.matchups[0]?.model_version ?? "—"}</code>` +
+    ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
+      `<span class="caret">▸</span> How this works</button>`;
 
   const root = document.getElementById("matchups");
   const cats = data.league.categories_by_group;
@@ -220,13 +222,16 @@ function render(data) {
   });
 }
 
-// About / "How this works" toggle (static panel, defined in HTML)
-document.getElementById("about-toggle")?.addEventListener("click", () => {
-  const btn = document.getElementById("about-toggle");
+// About / "How this works" toggle — delegated so it works regardless of
+// whether the button is in the static HTML or injected by render().
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("#about-toggle");
+  if (!btn) return;
   const panel = document.getElementById("about-panel");
   const open = btn.getAttribute("aria-expanded") === "true";
   btn.setAttribute("aria-expanded", open ? "false" : "true");
   panel.hidden = open;
+  if (!open) panel.scrollIntoView({behavior: "smooth", block: "nearest"});
 });
 
 load().then(render).catch((e) => {

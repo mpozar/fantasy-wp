@@ -51,13 +51,14 @@ header h1 {
   font-size: .95rem;
 }
 
-#meta {
+#meta, .meta-line {
   margin: 0;
   color: var(--muted);
   font-size: .8rem;
+  line-height: 1.5;
 }
 
-#meta code {
+#meta code, .meta-line code {
   background: var(--line);
   padding: 0 .35em;
   border-radius: 4px;
@@ -69,23 +70,23 @@ main {
   gap: 1rem;
 }
 
-/* ── About panel (header expandable) ── */
+/* ── About panel (header expandable, inline with meta) ── */
 .about-toggle {
   appearance: none;
   border: 0;
   background: transparent;
   color: var(--accent);
   font: inherit;
-  font-size: .82rem;
-  padding: .35rem 0 0;
+  padding: 0;
   margin: 0;
   cursor: pointer;
+  vertical-align: baseline;
 }
 .about-toggle:hover { text-decoration: underline; }
 .about-toggle .caret {
   display: inline-block;
   transition: transform .15s ease;
-  margin-right: .15em;
+  margin-right: .1em;
 }
 .about-toggle[aria-expanded="true"] .caret { transform: rotate(90deg); }
 
