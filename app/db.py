@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS player_projections (
     fetched_at  TEXT NOT NULL,
     PRIMARY KEY (player_id, stat_id, split_id, season_id)
 );
+
+-- ── MLB schedule (one row per game per team) ──
+CREATE TABLE IF NOT EXISTS team_schedule (
+    matchup_period_id          INTEGER NOT NULL,
+    game_pk                    INTEGER NOT NULL,        -- MLB gamePk
+    game_date                  TEXT NOT NULL,           -- YYYY-MM-DD
+    pro_team_id                INTEGER NOT NULL,        -- ESPN proTeamId
+    opponent_pro_team_id       INTEGER NOT NULL,
+    is_home                    INTEGER NOT NULL,
+    probable_pitcher_mlbam_id  INTEGER,
+    probable_pitcher_name      TEXT,
+    game_status                TEXT,
+    fetched_at                 TEXT NOT NULL,
+    PRIMARY KEY (matchup_period_id, game_pk, pro_team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_team
+    ON team_schedule (matchup_period_id, pro_team_id);
 """
 
 
