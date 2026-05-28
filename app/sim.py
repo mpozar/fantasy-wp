@@ -154,6 +154,13 @@ MAX_SP_RATE = 0.21
 # sample. Realistic elite high-leverage RPs top out near 0.75-0.80.
 MAX_SVHD_RATE = 0.80
 
+# Per-(stat_id, role) variance-to-mean ratios, measured from this season's
+# MLB game logs via scripts/analyze_variance.py. Most counter stats are
+# essentially Poisson (VMR ≈ 1), so we only override here for the one stat
+# that shows meaningful overdispersion: earned runs. Blowup innings push the
+# ER distribution above Poisson, by 60% for SPs and 83% for RPs.
+ER_VMR_BY_ROLE = {"SP": 1.60, "RP": 1.83}
+
 
 # ── name matching for probable pitchers ──
 
@@ -163,7 +170,22 @@ def _norm_name(s: str | None) -> str:
     return "".join(c for c in s.lower() if c.isalnum())
 
 
-# ── Poisson sampler ──
+# ── Samplers ──
+
+def _neg_binom(mean: float, vmr: float) -> int:
+    """Negative-Binomial draw with the given mean and variance-to-mean ratio.
+
+    Implemented as a Gamma-Poisson mixture: λ ~ Gamma(k, mean/k), then
+    Poisson(λ). Variance = mean × vmr. Falls back to Poisson for vmr ≤ 1.
+    """
+    if mean <= 0:
+        return 0
+    if vmr <= 1.0:
+        return _poisson(mean)
+    k = mean / (vmr - 1.0)
+    rate = random.gammavariate(k, mean / k)
+    return _poisson(rate)
+
 
 def _poisson(lam: float) -> int:
     if lam <= 0:
@@ -695,7 +717,14 @@ def _simulate_team(current_state: dict[int, float],
     counters = dict(current_state)
     for b in budgets:
         for stat_id, exp in b.expected.items():
-            counters[stat_id] = counters.get(stat_id, 0) + _poisson(exp)
+            if stat_id == STAT_ER:
+                # ER is the one counter with measured VMR > 1 (blowup innings).
+                # Use a Negative Binomial draw to reflect that overdispersion.
+                vmr = ER_VMR_BY_ROLE.get(b.role, 1.0)
+                draw = _neg_binom(exp, vmr)
+            else:
+                draw = _poisson(exp)
+            counters[stat_id] = counters.get(stat_id, 0) + draw
     return counters
 
 
