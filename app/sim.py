@@ -117,6 +117,13 @@ RP_APPEARANCE_RATE = 0.40
 # above that to allow for occasional spot starts when other arms are unavailable.
 MAX_SP_RATE = 0.21
 
+# Cap on per-appearance SV+HLD rate. ESPN's projection encoding for stat_id 83
+# is inconsistent across players — some have it ≈ GF (~half of GP), others
+# have it equal to GP itself, giving an unphysical 1.0 rate. Real elite
+# closers/setup men top out around 60-65% (one of SV or HLD is earned per
+# appearance, never both, and many appearances are non-save/non-hold spots).
+MAX_SVHD_RATE = 0.65
+
 
 # ── name matching for probable pitchers ──
 
@@ -554,7 +561,12 @@ def _make_budget(p: dict, ros: dict, units: float, denom: float,
         ros_v = ros.get(stat_id)
         if ros_v is None or ros_v <= 0:
             continue
-        expected[stat_id] = (ros_v / denom) * units
+        rate = ros_v / denom
+        # Bound the per-appearance SVHD rate at a realistic ceiling — see
+        # MAX_SVHD_RATE for context on ESPN's projection quirks.
+        if stat_id == STAT_SVHD and rate > MAX_SVHD_RATE:
+            rate = MAX_SVHD_RATE
+        expected[stat_id] = rate * units
     if not expected:
         return None
     return Budget(
