@@ -197,6 +197,19 @@ def publish() -> None:
         categories_raw = json.loads(ss["categories_json"])
         for c in categories_raw:
             c["name"] = stats.name(c["stat_id"])
+            c["group"] = stats.group(c["stat_id"])
+
+        # Categories grouped + ordered for the scoreboard view
+        cats_by_group = {
+            "batting": [{
+                "stat_id": sid, "name": stats.name(sid),
+                "reversed": stats.is_reversed(sid),
+            } for sid in stats.BATTING_STAT_IDS],
+            "pitching": [{
+                "stat_id": sid, "name": stats.name(sid),
+                "reversed": stats.is_reversed(sid),
+            } for sid in stats.PITCHING_STAT_IDS],
+        }
 
         period_row = conn.execute(
             "SELECT MAX(matchup_period_id) AS p FROM matchups"
@@ -213,8 +226,10 @@ def publish() -> None:
             (period_id,),
         ).fetchall()
         for m in ms:
-            home_scores = _latest_scores_named(conn, m["id"], m["home_team_id"])
-            away_scores = _latest_scores_named(conn, m["id"], m["away_team_id"])
+            home_team_id = m["home_team_id"]
+            away_team_id = m["away_team_id"]
+            home_state = _latest_score_rows(conn, m["id"], home_team_id)
+            away_state = _latest_score_rows(conn, m["id"], away_team_id)
             wp_row = conn.execute(
                 """
                 SELECT * FROM wp_snapshots
@@ -225,20 +240,10 @@ def publish() -> None:
             ).fetchone()
             matchups_out.append({
                 "matchup_id": m["id"],
-                "home": {
-                    "team_id": m["home_team_id"],
-                    "name": teams.get(m["home_team_id"], {}).get("name"),
-                    "owner": teams.get(m["home_team_id"], {}).get("owner"),
-                    "scores": home_scores,
-                    "wp": wp_row["home_wp"] if wp_row else None,
-                },
-                "away": {
-                    "team_id": m["away_team_id"],
-                    "name": teams.get(m["away_team_id"], {}).get("name"),
-                    "owner": teams.get(m["away_team_id"], {}).get("owner"),
-                    "scores": away_scores,
-                    "wp": wp_row["away_wp"] if wp_row else None,
-                },
+                "home": _team_block(teams, home_team_id, home_state,
+                                    wp_row["home_wp"] if wp_row else None),
+                "away": _team_block(teams, away_team_id, away_state,
+                                    wp_row["away_wp"] if wp_row else None),
                 "winner": m["winner"],
                 "computed_at": wp_row["computed_at"] if wp_row else None,
                 "model_version": wp_row["model_version"] if wp_row else None,
@@ -254,6 +259,7 @@ def publish() -> None:
                 "tiebreaker_stat_id": ss["tiebreaker_stat_id"],
                 "tiebreaker_name": stats.name(ss["tiebreaker_stat_id"]) if ss["tiebreaker_stat_id"] else None,
                 "categories": categories_raw,
+                "categories_by_group": cats_by_group,
             },
             "matchup_period_id": period_id,
             "generated_at": _now_iso(),
@@ -266,9 +272,55 @@ def publish() -> None:
         conn.close()
 
 
-def _latest_scores_named(conn, matchup_id: int, team_id: int) -> list[dict]:
-    raw = _latest_scores(conn, matchup_id, team_id)
-    return [
-        {"stat_id": sid, "name": stats.name(sid), "score": score}
-        for sid, score in sorted(raw.items())
-    ]
+def _latest_score_rows(conn, matchup_id: int, team_id: int) -> dict[int, dict]:
+    """Latest score+result keyed by stat_id."""
+    rows = conn.execute(
+        """
+        SELECT stat_id, score, result
+        FROM category_state
+        WHERE matchup_id=? AND team_id=?
+          AND fetched_at = (
+              SELECT MAX(fetched_at) FROM category_state
+              WHERE matchup_id=? AND team_id=?
+          )
+        """,
+        (matchup_id, team_id, matchup_id, team_id),
+    ).fetchall()
+    return {r["stat_id"]: {"score": r["score"], "result": r["result"]} for r in rows}
+
+
+def _team_block(teams: dict, team_id: int, state: dict[int, dict], wp: float | None) -> dict:
+    t = teams.get(team_id, {})
+    record = {"W": 0, "L": 0, "T": 0}
+    for s in state.values():
+        r = s.get("result")
+        if r == "WIN":
+            record["W"] += 1
+        elif r == "LOSS":
+            record["L"] += 1
+        elif r == "TIE":
+            record["T"] += 1
+
+    def block(stat_ids: list[int]) -> list[dict]:
+        out = []
+        for sid in stat_ids:
+            s = state.get(sid, {})
+            out.append({
+                "stat_id": sid,
+                "name": stats.name(sid),
+                "reversed": stats.is_reversed(sid),
+                "score": s.get("score"),
+                "result": s.get("result"),
+            })
+        return out
+
+    return {
+        "team_id": team_id,
+        "name": t.get("name"),
+        "owner": t.get("owner"),
+        "abbrev": t.get("abbrev"),
+        "wp": wp,
+        "record": record,
+        "batting": block(stats.BATTING_STAT_IDS),
+        "pitching": block(stats.PITCHING_STAT_IDS),
+    }

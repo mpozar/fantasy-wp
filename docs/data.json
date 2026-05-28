@@ -11,57 +11,123 @@
       {
         "stat_id": 20,
         "reversed": false,
-        "name": "R"
+        "name": "R",
+        "group": "batting"
       },
       {
         "stat_id": 5,
         "reversed": false,
-        "name": "HR"
+        "name": "HR",
+        "group": "batting"
       },
       {
         "stat_id": 47,
         "reversed": true,
-        "name": "ERA"
+        "name": "ERA",
+        "group": "pitching"
       },
       {
         "stat_id": 23,
         "reversed": false,
-        "name": "SB"
+        "name": "SB",
+        "group": "batting"
       },
       {
         "stat_id": 41,
         "reversed": true,
-        "name": "WHIP"
+        "name": "WHIP",
+        "group": "pitching"
       },
       {
         "stat_id": 63,
         "reversed": false,
-        "name": "QS"
+        "name": "QS",
+        "group": "pitching"
       },
       {
         "stat_id": 48,
         "reversed": false,
-        "name": "K"
+        "name": "K",
+        "group": "pitching"
       },
       {
         "stat_id": 1,
         "reversed": false,
-        "name": "H"
+        "name": "H",
+        "group": "batting"
       },
       {
         "stat_id": 18,
         "reversed": false,
-        "name": "OPS"
+        "name": "OPS",
+        "group": "batting"
       },
       {
         "stat_id": 83,
         "reversed": false,
-        "name": "SVHD"
+        "name": "SVHD",
+        "group": "pitching"
       }
-    ]
+    ],
+    "categories_by_group": {
+      "batting": [
+        {
+          "stat_id": 1,
+          "name": "H",
+          "reversed": false
+        },
+        {
+          "stat_id": 20,
+          "name": "R",
+          "reversed": false
+        },
+        {
+          "stat_id": 5,
+          "name": "HR",
+          "reversed": false
+        },
+        {
+          "stat_id": 23,
+          "name": "SB",
+          "reversed": false
+        },
+        {
+          "stat_id": 18,
+          "name": "OPS",
+          "reversed": false
+        }
+      ],
+      "pitching": [
+        {
+          "stat_id": 48,
+          "name": "K",
+          "reversed": false
+        },
+        {
+          "stat_id": 63,
+          "name": "QS",
+          "reversed": false
+        },
+        {
+          "stat_id": 47,
+          "name": "ERA",
+          "reversed": true
+        },
+        {
+          "stat_id": 41,
+          "name": "WHIP",
+          "reversed": true
+        },
+        {
+          "stat_id": 83,
+          "name": "SVHD",
+          "reversed": false
+        }
+      ]
+    }
   },
   "matchup_period_id": 9,
-  "generated_at": "2026-05-28T14:20:37+00:00",
+  "generated_at": "2026-05-28T14:35:54+00:00",
   "matchups": [
     {
       "matchup_id": 49,
@@ -69,237 +135,173 @@
         "team_id": 3,
         "name": "Scarlet Knights",
         "owner": "Luke Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 107.0
-          },
+        "abbrev": "LQ",
+        "wp": 0.10992823252623705,
+        "record": {
+          "W": 2,
+          "L": 8,
+          "T": 0
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 27.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 6.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 2.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 10.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 1.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 1.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.68381371
+            "reversed": false,
+            "score": 27.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 11.0
+            "reversed": false,
+            "score": 11.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 2.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 45.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 21.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 3.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.6
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 10.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 6.0
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.68381371,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 17.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 0.0
+            "reversed": false,
+            "score": 17.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 6.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.6,
+            "result": "LOSS"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "LOSS"
           }
-        ],
-        "wp": 0.10992823252623705
+        ]
       },
       "away": {
         "team_id": 17,
         "name": "Desert Dawgs",
         "owner": "Jennifer Nyerick",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 106.0
-          },
+        "abbrev": "JDWG",
+        "wp": 0.8900717674737629,
+        "record": {
+          "W": 8,
+          "L": 2,
+          "T": 0
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 25.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 1.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 4.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 12.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 0.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 1.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.66941494
+            "reversed": false,
+            "score": 25.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 16.0
+            "reversed": false,
+            "score": 16.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 4.0,
+            "result": "WIN"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "WIN"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 70.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 21.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 8.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.24285714
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 6.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 2.31428571
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.66941494,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 28.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 1.0
+            "reversed": false,
+            "score": 28.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 2.31428571,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.24285714,
+            "result": "WIN"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "WIN"
           }
-        ],
-        "wp": 0.8900717674737629
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
@@ -311,237 +313,173 @@
         "team_id": 21,
         "name": "WAR (What is it good for?)",
         "owner": "Chris Prinz",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 105.0
-          },
+        "abbrev": "CCT",
+        "wp": 0.4580825759339404,
+        "record": {
+          "W": 2,
+          "L": 7,
+          "T": 1
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 23.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 1.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 3.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 8.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 1.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 0.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.59498747
+            "reversed": false,
+            "score": 23.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 12.0
+            "reversed": false,
+            "score": 12.0,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 3.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 5.0
+            "reversed": false,
+            "score": 5.0,
+            "result": "WIN"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 87.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 32.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 6.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.31034483
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 12.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 3.72413793
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.59498747,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 18.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 2.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 2.0
+            "reversed": false,
+            "score": 18.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 3.72413793,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.31034483,
+            "result": "LOSS"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 4.0
+            "reversed": false,
+            "score": 4.0,
+            "result": "WIN"
           }
-        ],
-        "wp": 0.4580825759339404
+        ]
       },
       "away": {
         "team_id": 14,
         "name": "Bear Nation",
         "owner": "Molly Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 99.0
-          },
+        "abbrev": "BEAR",
+        "wp": 0.5419174240660596,
+        "record": {
+          "W": 7,
+          "L": 2,
+          "T": 1
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 25.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 8.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 5.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 10.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 0.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 1.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.8030303
+            "reversed": false,
+            "score": 25.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 12.0
+            "reversed": false,
+            "score": 12.0,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 5.0,
+            "result": "WIN"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "LOSS"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 78.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 21.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 4.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 0.96153846
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 5.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 1.73076923
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.8030303,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 27.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 0.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 0.0
+            "reversed": false,
+            "score": 27.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 1.73076923,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 0.96153846,
+            "result": "WIN"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
           }
-        ],
-        "wp": 0.5419174240660596
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
@@ -553,237 +491,173 @@
         "team_id": 1,
         "name": "Sox Teacher",
         "owner": "Colin Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 104.0
-          },
+        "abbrev": "SOX",
+        "wp": 0.4863409084814818,
+        "record": {
+          "W": 3,
+          "L": 5,
+          "T": 2
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 27.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 2.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 5.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 9.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 0.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 1.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.7388664
+            "reversed": false,
+            "score": 27.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 17.0
+            "reversed": false,
+            "score": 17.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 5.0,
+            "result": "TIE"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "WIN"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 117.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 33.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 13.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.17948718
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 18.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 4.15384615
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.7388664,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 37.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 1.0
+            "reversed": false,
+            "score": 37.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 4.0
+            "reversed": false,
+            "score": 4.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 4.15384615,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.17948718,
+            "result": "LOSS"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "TIE"
           }
-        ],
-        "wp": 0.4863409084814818
+        ]
       },
       "away": {
         "team_id": 5,
         "name": "Seattle Norsemen",
         "owner": "Mike Pozar",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 95.0
-          },
+        "abbrev": "Po9",
+        "wp": 0.5136590915185182,
+        "record": {
+          "W": 5,
+          "L": 3,
+          "T": 2
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 31.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 9.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 2.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 5.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 14.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 0.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 1.04447606
+            "reversed": false,
+            "score": 31.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 19.0
+            "reversed": false,
+            "score": 19.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 5.0,
+            "result": "TIE"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "LOSS"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 72.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 14.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 7.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 0.875
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 4.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 1.5
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 1.04447606,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 23.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 0.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 2.0
+            "reversed": false,
+            "score": 23.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 1.5,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 0.875,
+            "result": "WIN"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "TIE"
           }
-        ],
-        "wp": 0.5136590915185182
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
@@ -795,237 +669,173 @@
         "team_id": 19,
         "name": "Bikini Bottom Beach Bums",
         "owner": "Alec Bumgarner",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 95.0
-          },
+        "abbrev": "BUMS",
+        "wp": 0.1214117050963926,
+        "record": {
+          "W": 1,
+          "L": 8,
+          "T": 1
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 22.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 3.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 5.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 8.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 1.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.72293942
+            "reversed": false,
+            "score": 22.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 9.0
+            "reversed": false,
+            "score": 9.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 5.0,
+            "result": "TIE"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 4.0
+            "reversed": false,
+            "score": 4.0,
+            "result": "WIN"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 18.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 4.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 3.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.16666667
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 3.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 4.5
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.72293942,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 6.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 0.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 0.0
+            "reversed": false,
+            "score": 6.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 4.5,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.16666667,
+            "result": "LOSS"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
           }
-        ],
-        "wp": 0.1214117050963926
+        ]
       },
       "away": {
         "team_id": 20,
         "name": "Seattle Melonheads",
         "owner": "Timothy Prinz",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 102.0
-          },
+        "abbrev": "TOM",
+        "wp": 0.8785882949036075,
+        "record": {
+          "W": 8,
+          "L": 1,
+          "T": 1
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 36.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 4.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 1.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 5.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 10.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 0.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.97987616
+            "reversed": false,
+            "score": 36.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 19.0
+            "reversed": false,
+            "score": 19.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 5.0,
+            "result": "TIE"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "LOSS"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 70.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 19.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 5.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.02857143
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 12.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 4.62857143
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.97987616,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 27.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 2.0
+            "reversed": false,
+            "score": 27.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 4.62857143,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.02857143,
+            "result": "WIN"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "WIN"
           }
-        ],
-        "wp": 0.8785882949036075
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
@@ -1037,237 +847,173 @@
         "team_id": 11,
         "name": "Jo Mamas",
         "owner": "Jody Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 98.0
-          },
+        "abbrev": "JAQ",
+        "wp": 0.7154105801558499,
+        "record": {
+          "W": 6,
+          "L": 2,
+          "T": 2
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 34.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 6.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 7.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 13.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 2.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 1.04853594
+            "reversed": false,
+            "score": 34.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 18.0
+            "reversed": false,
+            "score": 18.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 7.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 5.0
+            "reversed": false,
+            "score": 5.0,
+            "result": "WIN"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 58.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 19.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 9.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.44827586
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 7.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 3.25862069
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 1.04853594,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 16.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 1.0
+            "reversed": false,
+            "score": 16.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 3.25862069,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.44827586,
+            "result": "TIE"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "LOSS"
           }
-        ],
-        "wp": 0.7154105801558499
+        ]
       },
       "away": {
         "team_id": 7,
         "name": "Surly Shih Tzus",
         "owner": "Tate Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 97.0
-          },
+        "abbrev": "JTQ",
+        "wp": 0.2845894198441501,
+        "record": {
+          "W": 2,
+          "L": 6,
+          "T": 2
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 22.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 4.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 8.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 11.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 2.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.82796392
+            "reversed": false,
+            "score": 22.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 17.0
+            "reversed": false,
+            "score": 17.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 8.0,
+            "result": "WIN"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "LOSS"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 50.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 15.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 8.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.38
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 14.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 7.56
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.82796392,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 13.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 2.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 1.0
+            "reversed": false,
+            "score": 13.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 7.56,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.38,
+            "result": "TIE"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 3.0
+            "reversed": false,
+            "score": 3.0,
+            "result": "WIN"
           }
-        ],
-        "wp": 0.2845894198441501
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
@@ -1279,237 +1025,173 @@
         "team_id": 13,
         "name": "That Bus... From Speed",
         "owner": "Erick Pauley",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 93.0
-          },
+        "abbrev": "EGP",
+        "wp": 0.40373186074108297,
+        "record": {
+          "W": 1,
+          "L": 5,
+          "T": 4
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 17.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 6.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 0.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 2.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 5.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 4.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 4.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.55711098
+            "reversed": false,
+            "score": 17.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 7.0
+            "reversed": false,
+            "score": 7.0,
+            "result": "LOSS"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 2.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "TIE"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 42.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 10.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 1.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 0.78571429
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 4.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 2.57142857
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.55711098,
+            "result": "LOSS"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 14.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 1.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 0.0
+            "reversed": false,
+            "score": 14.0,
+            "result": "LOSS"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 2.57142857,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 0.78571429,
+            "result": "TIE"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 1.0
+            "reversed": false,
+            "score": 1.0,
+            "result": "WIN"
           }
-        ],
-        "wp": 0.40373186074108297
+        ]
       },
       "away": {
         "team_id": 2,
         "name": "Big Giraffes",
         "owner": "Sean Quinton",
-        "scores": [
-          {
-            "stat_id": 0,
-            "name": "stat_0",
-            "score": 113.0
-          },
+        "abbrev": "SEEN",
+        "wp": 0.5962681392589171,
+        "record": {
+          "W": 5,
+          "L": 1,
+          "T": 4
+        },
+        "batting": [
           {
             "stat_id": 1,
             "name": "H",
-            "score": 33.0
-          },
-          {
-            "stat_id": 3,
-            "name": "stat_3",
-            "score": 9.0
-          },
-          {
-            "stat_id": 4,
-            "name": "stat_4",
-            "score": 1.0
-          },
-          {
-            "stat_id": 5,
-            "name": "HR",
-            "score": 6.0
-          },
-          {
-            "stat_id": 10,
-            "name": "stat_10",
-            "score": 10.0
-          },
-          {
-            "stat_id": 12,
-            "name": "stat_12",
-            "score": 2.0
-          },
-          {
-            "stat_id": 13,
-            "name": "stat_13",
-            "score": 2.0
-          },
-          {
-            "stat_id": 18,
-            "name": "OPS",
-            "score": 0.90300328
+            "reversed": false,
+            "score": 33.0,
+            "result": "WIN"
           },
           {
             "stat_id": 20,
             "name": "R",
-            "score": 18.0
+            "reversed": false,
+            "score": 18.0,
+            "result": "WIN"
+          },
+          {
+            "stat_id": 5,
+            "name": "HR",
+            "reversed": false,
+            "score": 6.0,
+            "result": "WIN"
           },
           {
             "stat_id": 23,
             "name": "SB",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "TIE"
           },
           {
-            "stat_id": 34,
-            "name": "OUTS",
-            "score": 56.0
-          },
-          {
-            "stat_id": 37,
-            "name": "stat_37",
-            "score": 18.0
-          },
-          {
-            "stat_id": 39,
-            "name": "stat_39",
-            "score": 5.0
-          },
-          {
-            "stat_id": 41,
-            "name": "WHIP",
-            "score": 1.23214286
-          },
-          {
-            "stat_id": 45,
-            "name": "stat_45",
-            "score": 5.0
-          },
-          {
-            "stat_id": 47,
-            "name": "ERA",
-            "score": 2.41071429
-          },
+            "stat_id": 18,
+            "name": "OPS",
+            "reversed": false,
+            "score": 0.90300328,
+            "result": "WIN"
+          }
+        ],
+        "pitching": [
           {
             "stat_id": 48,
             "name": "K",
-            "score": 16.0
-          },
-          {
-            "stat_id": 57,
-            "name": "stat_57",
-            "score": 0.0
-          },
-          {
-            "stat_id": 60,
-            "name": "stat_60",
-            "score": 0.0
+            "reversed": false,
+            "score": 16.0,
+            "result": "WIN"
           },
           {
             "stat_id": 63,
             "name": "QS",
-            "score": 2.0
+            "reversed": false,
+            "score": 2.0,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 47,
+            "name": "ERA",
+            "reversed": true,
+            "score": 2.41071429,
+            "result": "TIE"
+          },
+          {
+            "stat_id": 41,
+            "name": "WHIP",
+            "reversed": true,
+            "score": 1.23214286,
+            "result": "TIE"
           },
           {
             "stat_id": 83,
             "name": "SVHD",
-            "score": 0.0
+            "reversed": false,
+            "score": 0.0,
+            "result": "LOSS"
           }
-        ],
-        "wp": 0.5962681392589171
+        ]
       },
       "winner": "UNDECIDED",
       "computed_at": "2026-05-28T14:20:37+00:00",
