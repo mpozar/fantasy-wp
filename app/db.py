@@ -57,6 +57,40 @@ CREATE TABLE IF NOT EXISTS wp_snapshots (
     details_json   TEXT,
     PRIMARY KEY (matchup_id, computed_at)
 );
+
+-- ── Player / roster / projection tables (used by the Monte Carlo model) ──
+
+CREATE TABLE IF NOT EXISTS players (
+    id                   INTEGER PRIMARY KEY,
+    full_name            TEXT NOT NULL,
+    pro_team_id          INTEGER,
+    default_position_id  INTEGER,
+    eligible_slots_json  TEXT,
+    injury_status        TEXT,
+    fetched_at           TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS team_rosters (
+    matchup_period_id  INTEGER NOT NULL,
+    fantasy_team_id    INTEGER NOT NULL,
+    player_id          INTEGER NOT NULL,
+    lineup_slot_id     INTEGER NOT NULL,
+    status             TEXT,
+    fetched_at         TEXT NOT NULL,
+    PRIMARY KEY (matchup_period_id, fantasy_team_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rosters_period
+    ON team_rosters (matchup_period_id, fantasy_team_id);
+
+CREATE TABLE IF NOT EXISTS player_projections (
+    player_id   INTEGER NOT NULL,
+    stat_id     INTEGER NOT NULL,
+    value       REAL,
+    split_id    INTEGER NOT NULL,
+    season_id   INTEGER NOT NULL,
+    fetched_at  TEXT NOT NULL,
+    PRIMARY KEY (player_id, stat_id, split_id, season_id)
+);
 """
 
 
