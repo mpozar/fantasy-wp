@@ -130,7 +130,7 @@ function contributorsList(budgets, side) {
          <span class="m">${b.exp_h.toFixed(1)} H</span>
          <span class="m">${b.exp_hr.toFixed(2)} HR</span>
          <span class="m">${b.exp_r.toFixed(1)} R</span>
-         ${b.exp_sb > 0.05 ? `<span class="m">${b.exp_sb.toFixed(2)} SB</span>` : ""}
+         <span class="m">${b.exp_sb.toFixed(2)} SB</span>
          ${b.exp_ops != null ? `<span class="m">${fmtOps(b.exp_ops)} OPS</span>` : ""}`;
     return `<li><span class="cname">${b.name}</span><span class="role role-${b.role}">${b.role}</span>${cells}</li>`;
   }).join("");

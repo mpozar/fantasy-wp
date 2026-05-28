@@ -453,9 +453,19 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   font-weight: 500;
   white-space: nowrap;
 }
-.catwp-pct { font-weight: 500; }
+/* Fixed-width slots keep the percent and average columns aligned across
+   rows regardless of digit count (e.g. ".7236" vs "5"). */
+.catwp-pct {
+  display: inline-block;
+  min-width: 3.2em;
+  text-align: right;
+  font-weight: 500;
+}
 .catwp-avg {
-  margin-left: .5em;
+  display: inline-block;
+  min-width: 2.8em;
+  margin-left: .55em;
+  text-align: right;
   color: var(--muted);
   font-size: .85em;
   font-weight: 400;
