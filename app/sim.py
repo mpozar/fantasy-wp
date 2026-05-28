@@ -313,6 +313,35 @@ def _probable_starts_for(player_name: str, team_id: int,
     return total
 
 
+def _has_pitcher_ros(ros: dict) -> bool:
+    return (ros.get(STAT_GS, 0) or 0) > 0 or (ros.get(STAT_PITCH_GP, 0) or 0) > 0
+
+
+def _has_hitter_ros(ros: dict) -> bool:
+    return (ros.get(STAT_HIT_G, 0) or 0) > 0
+
+
+def _is_two_way(p: dict) -> bool:
+    ros = p.get("ros_stats") or {}
+    return _has_pitcher_ros(ros) and _has_hitter_ros(ros)
+
+
+def _is_probable_starter_on(p: dict, game_date: str,
+                            schedule_by_team: dict[int, list[dict]]) -> bool:
+    """Is this player the probable pitcher for one of their team's games on
+    the given date? Used by the optimizer to block two-way players from
+    being slotted as hitters on days they're scheduled to start."""
+    target = _norm_name(p.get("full_name"))
+    if not target:
+        return False
+    for g in schedule_by_team.get(p["pro_team_id"], []):
+        if g.get("game_date") != game_date:
+            continue
+        if _norm_name(g.get("probable_pitcher_name")) == target:
+            return True
+    return False
+
+
 def _hitter_per_game_impact(p: dict) -> float:
     """Crude one-number per-game impact for the lineup optimizer. Uses ROS
     rates so the comparison is on the same basis across hitters."""
@@ -328,6 +357,17 @@ def _hitter_per_game_impact(p: dict) -> float:
     return (r + 0.6 * h + 0.3 * sb + 0.5 * hr) / g
 
 
+def _is_hitter_candidate(p: dict) -> bool:
+    """A roster entry is a hitter candidate if they have a hitter default
+    position OR a positive hitter ROS projection (the two-way case — Ohtani
+    has default_position_id=10 plus pitcher stats, but his hitter side still
+    needs to flow through the optimizer)."""
+    pos = p.get("default_position_id")
+    if pos not in (1, 11):
+        return True
+    return _has_hitter_ros(p.get("ros_stats") or {})
+
+
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
                          lineup_slot_counts: dict[int, int]) -> dict[int, float]:
@@ -335,12 +375,15 @@ def _hitter_days_slotted(roster: list[dict],
     lineup slot. Greedy by per-game impact; honors slot eligibility and
     league-configured slot counts.
 
+    Two-way players (e.g. Ohtani) are skipped as hitters on days they're
+    listed as the probable starter for their team — they can't bat that day.
+
     The greedy is good enough at ~10-12 hitters × ~10 slots — exact bipartite
     matching would only differ by a few % and isn't worth the complexity.
     """
     units: dict[int, float] = {
         p["player_id"]: 0.0 for p in roster
-        if _is_playable(p) and (p.get("default_position_id") not in (1, 11))
+        if _is_playable(p) and _is_hitter_candidate(p)
     }
     if not units:
         return units
@@ -353,10 +396,9 @@ def _hitter_days_slotted(roster: list[dict],
     if not hitter_slot_counts:
         return units
 
-    # Index roster by player_id for the per-day inner loop.
     hitters = [
         p for p in roster
-        if _is_playable(p) and p.get("default_position_id") not in (1, 11)
+        if _is_playable(p) and _is_hitter_candidate(p)
     ]
 
     # All dates that appear in the team schedule (sorted for deterministic order).
@@ -368,8 +410,6 @@ def _hitter_days_slotted(roster: list[dict],
     })
 
     for date in dates:
-        # Each hitter's per-day record: which game they'd play in (if any),
-        # their per-game in-progress factor, eligible slots, and impact.
         candidates = []
         for p in hitters:
             team_games_today = [
@@ -377,6 +417,9 @@ def _hitter_days_slotted(roster: list[dict],
                 if g.get("game_date") == date
             ]
             if not team_games_today:
+                continue
+            # Two-way players starting on the mound today can't bat.
+            if _is_probable_starter_on(p, date, schedule_by_team):
                 continue
             factor = max(_hitter_factor(g) for g in team_games_today)
             if factor <= 0:
@@ -392,7 +435,6 @@ def _hitter_days_slotted(roster: list[dict],
                 "impact": _hitter_per_game_impact(p),
             })
 
-        # Greedy: best hitter first, fill their highest-priority eligible slot.
         candidates.sort(key=lambda c: -c["impact"])
         slots_remaining = dict(hitter_slot_counts)
         for c in candidates:
@@ -436,13 +478,11 @@ def build_budgets(roster: list[dict],
         pos = p["default_position_id"]
         team_id = p["pro_team_id"]
 
-        is_pitcher = pos in (1, 11)
-        if is_pitcher:
-            # Classify by projected usage, not by ESPN's defaultPositionId.
-            # RP-eligible swingmen (Wrobleski, etc.) get default_position_id=11
-            # but are projected like starters; without this check they'd be
-            # given `team_games × 0.60` RP appearances using SP-shaped per-
-            # appearance stats, which over-projects outs by 3-4×.
+        # ── Pitcher budget ─────────────────────────────────────────────
+        if _has_pitcher_ros(ros):
+            # Classify SP vs RP by projected usage, not ESPN's
+            # defaultPositionId — handles RP-eligible swingmen and two-way
+            # players (Ohtani has pos=10 but gs/gp=1.0 → SP).
             gs_ros = ros.get(STAT_GS) or 0
             gp_ros = ros.get(STAT_PITCH_GP) or 0
             if gp_ros > 0:
@@ -455,73 +495,75 @@ def build_budgets(roster: list[dict],
                     team_games = _remaining_team_games(team_id, schedule_by_team)
                     total_ros = team_total_ros_games.get(team_id, 0)
                     if total_ros > 0 and gs_ros > 0 and team_games > 0:
-                        # Cap the per-team-game start rate at the realistic
-                        # 5-man-rotation ceiling (see MAX_SP_RATE).
                         rate = min(gs_ros / total_ros, MAX_SP_RATE)
-                        units = rate * team_games
+                        sp_units = rate * team_games
                     else:
-                        units = 0
+                        sp_units = 0
                 else:
-                    # Current-week SP: scale their probable start(s) by how
-                    # much of their typical outing is still ahead in any
-                    # in-progress game. avg_innings_per_start = (ros_outs /
-                    # ros_gs) / 3; the SP's "done" point is ~1 inning past
-                    # their average.
                     if gs_ros > 0:
                         avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
                         sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
                     else:
-                        sp_exit_inning = 6.0  # safe default
-                    units = _probable_starts_for(
+                        sp_exit_inning = 6.0
+                    sp_units = _probable_starts_for(
                         p["full_name"], team_id, schedule_by_team, sp_exit_inning,
                     )
-                denom = gs_ros
-                role = "SP"
+                denom_p = gs_ros
+                role_p = "SP"
+                units_p = sp_units
             else:
-                # RP units scale per-game using the bullpen-window factor —
-                # see _rp_factor. Final games drop to 0, mid-game games to a
-                # partial value; everything else stays at 1.0.
                 rp_remaining = _rp_remaining_units(team_id, schedule_by_team)
                 total_ros = team_total_ros_games.get(team_id, 0)
-                # Per-player appearance rate beats a fixed constant: a long-
-                # reliever might appear in <20% of team games while a closer
-                # is near 50%. Multiplying both by a flat 0.60 inflates the
-                # long-reliever's projection 3×.
                 if total_ros > 0 and gp_ros > 0:
-                    units = (gp_ros / total_ros) * rp_remaining
+                    units_p = (gp_ros / total_ros) * rp_remaining
                 else:
-                    units = rp_remaining * RP_APPEARANCE_RATE
-                denom = gp_ros
-                role = "RP"
-            counters = PITCHER_COUNTERS
-        else:  # Hitter
-            # Units = days the optimizer slotted this hitter into the active
-            # lineup (already weighted by per-game in-progress factor).
-            units = hitter_units.get(p["player_id"], 0.0)
-            denom = ros.get(STAT_HIT_G) or 0
-            counters = HITTER_COUNTERS
-            role = "HIT"
+                    units_p = rp_remaining * RP_APPEARANCE_RATE
+                denom_p = gp_ros
+                role_p = "RP"
 
-        if denom <= 0 or units <= 0:
-            continue
+            budget = _make_budget(p, ros, units_p, denom_p, PITCHER_COUNTERS, role_p)
+            if budget:
+                out.append(budget)
+        else:
+            sp_units = 0  # for the two-way hitter-day adjustment below
 
-        expected: dict[int, float] = {}
-        for stat_id in counters:
-            ros_v = ros.get(stat_id)
-            if ros_v is None or ros_v <= 0:
-                continue
-            expected[stat_id] = (ros_v / denom) * units
-        if not expected:
-            continue
+        # ── Hitter budget ──────────────────────────────────────────────
+        if _has_hitter_ros(ros):
+            units_h = hitter_units.get(p["player_id"], 0.0)
+            # Two-way players in future weeks: the optimizer slotted them
+            # every day (no probable pitchers to block their pitching
+            # days), so subtract expected SP days here to avoid double-
+            # counting. Current-week two-ways already had their start days
+            # filtered out inside the optimizer, so no adjustment needed.
+            if estimate_sp_starts and _has_pitcher_ros(ros):
+                units_h = max(0.0, units_h - sp_units)
+            denom_h = ros.get(STAT_HIT_G) or 0
+            budget = _make_budget(p, ros, units_h, denom_h, HITTER_COUNTERS, "HIT")
+            if budget:
+                out.append(budget)
 
-        out.append(Budget(
-            player_id=p["player_id"],
-            name=p["full_name"],
-            role=role,
-            units=units,
-            expected=expected,
-        ))
     return out
+
+
+def _make_budget(p: dict, ros: dict, units: float, denom: float,
+                 counters: list[int], role: str) -> Budget | None:
+    if denom <= 0 or units <= 0:
+        return None
+    expected: dict[int, float] = {}
+    for stat_id in counters:
+        ros_v = ros.get(stat_id)
+        if ros_v is None or ros_v <= 0:
+            continue
+        expected[stat_id] = (ros_v / denom) * units
+    if not expected:
+        return None
+    return Budget(
+        player_id=p["player_id"],
+        name=p["full_name"],
+        role=role,
+        units=units,
+        expected=expected,
+    )
 
 
 # ── Score a single simulated matchup ──
