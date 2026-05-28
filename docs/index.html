@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>Quintonia Baseball — Win Probability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header>
@@ -39,6 +39,34 @@
       most quick estimates get rate stats wrong.
     </p>
 
+    <h3>Games already in progress</h3>
+    <p>
+      If a game is mid-flight when the page refreshes, the
+      cat-by-cat totals you see already include what's been earned so far.
+      To avoid double-counting that production in the projection, the sim
+      scales each in-progress game's <em>remaining</em> contribution by how
+      much of the game is left — but it scales differently depending on the
+      role:
+    </p>
+    <ul>
+      <li><strong>Hitters</strong> — production spreads across the whole
+        game, so it scales linearly with innings remaining. A team mid-5th
+        has roughly half of its hitter production still ahead.</li>
+      <li><strong>Starters</strong> — a typical SP is done after 5-6
+        innings, not 9. Their remaining contribution drops fast and hits
+        zero once the game passes their average exit. So an ace already
+        through 5 in the 6th has very little left to add; one whose game
+        hasn't started yet still has a full start to project.</li>
+      <li><strong>Relievers</strong> — almost all bullpen work happens in
+        the back of the game. RPs stay at "full appearance ahead" until
+        the 6th, then ramp down through the 9th.</li>
+    </ul>
+    <p>
+      Games not yet started are projected as full games. Games that have
+      ended drop out entirely — their actual stats are already in the
+      live totals.
+    </p>
+
     <h3>What it doesn't account for</h3>
     <p>The model is decent but not perfect. A few things it deliberately
       leaves out, sorted roughly by how much they matter:</p>
@@ -59,10 +87,11 @@
         having a big game is correlated in real life. The simulator treats
         each player's stats as independent, which slightly over-spreads
         the outcome distribution.</li>
-      <li><strong>Reliever usage detail</strong>. Closers, setup men, and
-        middle relievers are all treated with the same rough "appears in
-        ~60% of team games" assumption. A closer pitching in a blowout
-        contributes the same as a closer in a save spot.</li>
+      <li><strong>Reliever leverage</strong>. Each RP's appearance rate
+        comes from their own rest-of-season projection (so closers and
+        long-relievers get very different appearance counts), but a closer
+        pitching in a blowout still contributes the same as a closer in a
+        save spot.</li>
       <li><strong>Off-days, platoon splits, weather</strong>. Hitters are
         assumed to play in every one of their team's remaining games.</li>
       <li><strong>Probable-pitcher matching is by name.</strong> If MLB and
@@ -84,6 +113,6 @@
     </p>
   </section>
   <main id="matchups"></main>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

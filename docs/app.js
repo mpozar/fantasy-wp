@@ -83,14 +83,74 @@ function renderChart(history, currentModel) {
     <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtT(pts[0].computed_at)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtT(pts[pts.length - 1].computed_at)}</text>`;
 
+  // Hover targets — one invisible vertical strip per data point. Each
+  // carries its timestamp + WPs as data-attrs so the binder can pop up
+  // a tooltip without re-doing time→pixel math.
+  const stripHalfW = pts.length > 1
+    ? Math.max(6, (innerW / Math.max(pts.length - 1, 1)) / 2)
+    : 30;
+  const hoverPoints = pts.map((p) => {
+    const px = x(p.computed_at);
+    return `
+      <g class="hover-point"
+         data-time="${p.computed_at}"
+         data-home="${p.home_wp}"
+         data-away="${p.away_wp}"
+         data-x="${px.toFixed(2)}">
+        <line class="hover-cursor" x1="${px}" y1="${padT}" x2="${px}" y2="${padT + innerH}"></line>
+        <circle class="hover-dot home" cx="${px}" cy="${y(p.home_wp)}" r="4"></circle>
+        <circle class="hover-dot away" cx="${px}" cy="${y(p.away_wp)}" r="4"></circle>
+        <rect class="hover-rect" x="${px - stripHalfW}" y="${padT}" width="${stripHalfW * 2}" height="${innerH}"></rect>
+      </g>`;
+  }).join("");
+
   return `
-    <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
-      ${gridY}
-      ${polyline("home_wp", "home")}
-      ${polyline("away_wp", "away")}
-      ${labelsY}
-      ${xLabels}
-    </svg>`;
+    <div class="wp-chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
+        ${gridY}
+        ${polyline("home_wp", "home")}
+        ${polyline("away_wp", "away")}
+        ${labelsY}
+        ${xLabels}
+        <g class="hover-layer">${hoverPoints}</g>
+      </svg>
+      <div class="chart-tooltip" aria-hidden="true"></div>
+    </div>`;
+}
+
+// Bind mouseenter/mouseleave on each .hover-point. Show a tooltip near the
+// hovered data point with timestamp + both teams' WPs; the SVG hover styles
+// reveal the cursor line + dots via :hover.
+function bindChartHovers(root) {
+  const chartW = 600;  // matches the viewBox W in renderChart
+  root.querySelectorAll(".wp-chart-wrap").forEach((wrap) => {
+    const svg = wrap.querySelector(".wp-chart");
+    const tooltip = wrap.querySelector(".chart-tooltip");
+    if (!svg || !tooltip) return;
+    wrap.querySelectorAll(".hover-point").forEach((pt) => {
+      pt.addEventListener("mouseenter", () => {
+        const time = new Date(pt.dataset.time);
+        const timeStr =
+          time.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+          time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        const homePct = (parseFloat(pt.dataset.home) * 100).toFixed(1);
+        const awayPct = (parseFloat(pt.dataset.away) * 100).toFixed(1);
+        tooltip.innerHTML = `
+          <div class="tt-time">${timeStr}</div>
+          <div class="tt-row tt-home"><span class="tt-swatch home"></span>${homePct}%</div>
+          <div class="tt-row tt-away"><span class="tt-swatch away"></span>${awayPct}%</div>`;
+        // Position in pixel space — map the SVG viewBox x to the rendered width.
+        const svgRect = svg.getBoundingClientRect();
+        const xVb = parseFloat(pt.dataset.x);
+        const xPx = (xVb / chartW) * svgRect.width;
+        tooltip.style.left = `${xPx}px`;
+        tooltip.classList.add("visible");
+      });
+      pt.addEventListener("mouseleave", () => {
+        tooltip.classList.remove("visible");
+      });
+    });
+  });
 }
 
 // ── Details / top-contributors panel ─────────────────────────────────
@@ -302,6 +362,7 @@ function renderWeek(data, week) {
       panel.hidden = open;
     });
   });
+  bindChartHovers(root);
 }
 
 function render(data) {

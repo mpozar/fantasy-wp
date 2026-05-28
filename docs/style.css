@@ -477,13 +477,76 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 }
 
 /* ── WP-over-time chart ── */
-.wp-chart {
-  width: 100%;
+.wp-chart-wrap {
+  position: relative;
   max-width: 720px;
-  height: auto;
-  display: block;
   margin: 0 auto;
 }
+.wp-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Hover targets: invisible by default, revealed on hover. */
+.hover-point .hover-cursor,
+.hover-point .hover-dot {
+  opacity: 0;
+  transition: opacity .08s ease;
+  pointer-events: none;
+}
+.hover-point:hover .hover-cursor,
+.hover-point:hover .hover-dot { opacity: 1; }
+.hover-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.hover-dot { stroke-width: 2; fill: #fff; }
+.hover-dot.home { stroke: #234c93; }
+.hover-dot.away { stroke: #a25617; }
+.hover-rect {
+  fill: transparent;
+  cursor: crosshair;
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  border-radius: 6px;
+  padding: .35rem .55rem;
+  font-size: .78rem;
+  line-height: 1.35;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease;
+  white-space: nowrap;
+  z-index: 2;
+}
+.chart-tooltip.visible { opacity: 1; }
+.chart-tooltip .tt-time {
+  color: var(--muted);
+  font-size: .7rem;
+  margin-bottom: .15rem;
+}
+.chart-tooltip .tt-row {
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: .35em;
+}
+.chart-tooltip .tt-swatch {
+  display: inline-block;
+  width: .6em;
+  height: .6em;
+  border-radius: 50%;
+}
+.chart-tooltip .tt-swatch.home { background: #234c93; }
+.chart-tooltip .tt-swatch.away { background: #a25617; }
 .wp-chart .grid {
   stroke: var(--line);
   stroke-width: 1;
