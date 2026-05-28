@@ -220,6 +220,15 @@ function render(data) {
   });
 }
 
+// About / "How this works" toggle (static panel, defined in HTML)
+document.getElementById("about-toggle")?.addEventListener("click", () => {
+  const btn = document.getElementById("about-toggle");
+  const panel = document.getElementById("about-panel");
+  const open = btn.getAttribute("aria-expanded") === "true";
+  btn.setAttribute("aria-expanded", open ? "false" : "true");
+  panel.hidden = open;
+});
+
 load().then(render).catch((e) => {
   document.getElementById("matchups").textContent = "Error: " + e.message;
 });

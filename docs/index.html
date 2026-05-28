@@ -11,7 +11,81 @@
     <h1 id="league-name">Loading…</h1>
     <p id="subtitle"></p>
     <p id="meta"></p>
+    <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">
+      <span class="caret">▸</span> How this works
+    </button>
   </header>
+  <section id="about-panel" class="about-panel" hidden>
+    <h2>How this works</h2>
+    <p>
+      Every time a game finishes (well — every 15 minutes), this page pulls
+      the current cat-by-cat totals from ESPN, looks at each team's roster
+      and the games they have left in the week, and runs <strong>10,000
+      simulations</strong> of how the rest of the matchup might play out.
+      Each team's Win Probability is just the fraction of those simulations
+      they won.
+    </p>
+
+    <h3>What goes into a simulation</h3>
+    <ul>
+      <li>The matchup totals you can see right now (R, HR, K, ERA, etc.)</li>
+      <li>Each rostered player's ESPN <em>rest-of-season</em> projection,
+        which already factors in how they've been performing this year.</li>
+      <li>How many games each MLB team has left in the matchup week.</li>
+      <li>Probable pitchers for each remaining game — so a stud SP with
+        one start this week counts very differently from a stud SP with
+        two starts.</li>
+    </ul>
+    <p>
+      Rate stats (OPS, ERA, WHIP) are always rebuilt from their underlying
+      counters — they're never averaged across players, which is the way
+      most quick estimates get rate stats wrong.
+    </p>
+
+    <h3>What it doesn't account for</h3>
+    <p>The model is decent but not perfect. A few things it deliberately
+      leaves out, sorted roughly by how much they matter:</p>
+    <ul>
+      <li><strong>Roster moves you make later this week.</strong>
+        If you drop someone and stream a hitter Friday, the model only
+        sees that the next time rosters refresh (every ~4 hours). Your
+        Win Probability will lag accordingly.</li>
+      <li><strong>Lineup changes</strong> — same thing. Benching a slumping
+        bat or activating someone off the IL only flows through on the
+        next roster refresh.</li>
+      <li><strong>Pitchers being knocked out early</strong> vs throwing a
+        complete game. The simulator uses each starter's <em>average</em>
+        production per start, so a blow-up start that ruins your ERA is
+        within the distribution but not weighted as heavily as it
+        probably should be.</li>
+      <li><strong>Teammate correlation</strong> — Judge and Stanton both
+        having a big game is correlated in real life. The simulator treats
+        each player's stats as independent, which slightly over-spreads
+        the outcome distribution.</li>
+      <li><strong>Reliever usage detail</strong>. Closers, setup men, and
+        middle relievers are all treated with the same rough "appears in
+        ~60% of team games" assumption. A closer pitching in a blowout
+        contributes the same as a closer in a save spot.</li>
+      <li><strong>Off-days, platoon splits, weather</strong>. Hitters are
+        assumed to play in every one of their team's remaining games.</li>
+      <li><strong>Probable-pitcher matching is by name.</strong> If MLB and
+        ESPN spell a name differently, that SP may not get credited with
+        their probable start. Rare but it happens.</li>
+    </ul>
+
+    <h3>Refresh cadence</h3>
+    <ul>
+      <li>Live matchup totals + simulation rerun: every <strong>15 minutes</strong>.</li>
+      <li>Rosters + projections: every <strong>4 hours</strong>.</li>
+      <li>MLB schedule + probable pitchers: <strong>once a day</strong>.</li>
+    </ul>
+
+    <p class="about-foot">
+      The chart under each matchup's "Details" toggle shows how Win
+      Probability has moved over the course of the week. Source &
+      methodology: <a href="https://github.com/mpozar/fantasy-wp" target="_blank" rel="noopener">github.com/mpozar/fantasy-wp</a>.
+    </p>
+  </section>
   <main id="matchups"></main>
   <script src="app.js"></script>
 </body>
