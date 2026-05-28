@@ -1,8 +1,4 @@
-"""ESPN stat-ID → human name + direction.
-
-Only entries we actually use are listed; full mapping is well-documented in
-the espn-api project if more are needed later.
-"""
+"""ESPN stat-ID → human name + direction + display grouping/order."""
 
 STAT_NAMES = {
     1: "H",
@@ -20,6 +16,10 @@ STAT_NAMES = {
 
 REVERSED_STATS = {41, 47}
 
+# ESPN scoreboard column order
+BATTING_STAT_IDS = [1, 20, 5, 23, 18]      # H, R, HR, SB, OPS
+PITCHING_STAT_IDS = [48, 63, 47, 41, 83]   # K, QS, ERA, WHIP, SVHD
+
 
 def name(stat_id: int) -> str:
     return STAT_NAMES.get(stat_id, f"stat_{stat_id}")
@@ -27,3 +27,11 @@ def name(stat_id: int) -> str:
 
 def is_reversed(stat_id: int) -> bool:
     return stat_id in REVERSED_STATS
+
+
+def group(stat_id: int) -> str:
+    if stat_id in BATTING_STAT_IDS:
+        return "batting"
+    if stat_id in PITCHING_STAT_IDS:
+        return "pitching"
+    return "other"
