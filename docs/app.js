@@ -103,11 +103,19 @@ function impactScore(b) {
 // the scoreboard column.
 const fmtOps = (v) => v.toFixed(3).replace(/^0\./, ".");
 
+// SP first (typically the highest-impact contributors), then RP, then hitters.
+// Impact ranks within each role group.
+const ROLE_RANK = { SP: 0, RP: 1, HIT: 2 };
+
 function contributorsList(budgets, side) {
   if (!budgets || budgets.length === 0) {
     return `<div class="contrib-empty">No remaining production projected.</div>`;
   }
-  const sorted = [...budgets].sort((a, b) => impactScore(b) - impactScore(a));
+  const sorted = [...budgets].sort((a, b) => {
+    const r = (ROLE_RANK[a.role] ?? 99) - (ROLE_RANK[b.role] ?? 99);
+    if (r !== 0) return r;
+    return impactScore(b) - impactScore(a);
+  });
   const rows = sorted.map((b) => {
     const isPit = b.role === "SP" || b.role === "RP";
     const cells = isPit
