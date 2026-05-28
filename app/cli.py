@@ -406,6 +406,30 @@ def publish() -> None:
                 """,
                 (m["id"],),
             ).fetchone()
+            history_rows = conn.execute(
+                """
+                SELECT computed_at, home_wp, away_wp, model_version
+                FROM wp_snapshots
+                WHERE matchup_id=?
+                ORDER BY computed_at ASC
+                """,
+                (m["id"],),
+            ).fetchall()
+            history = [
+                {
+                    "computed_at": r["computed_at"],
+                    "home_wp": r["home_wp"],
+                    "away_wp": r["away_wp"],
+                    "model_version": r["model_version"],
+                }
+                for r in history_rows
+            ]
+            details = None
+            if wp_row and wp_row["details_json"]:
+                try:
+                    details = json.loads(wp_row["details_json"])
+                except json.JSONDecodeError:
+                    details = None
             matchups_out.append({
                 "matchup_id": m["id"],
                 "home": _team_block(teams, home_team_id, home_state,
@@ -415,6 +439,8 @@ def publish() -> None:
                 "winner": m["winner"],
                 "computed_at": wp_row["computed_at"] if wp_row else None,
                 "model_version": wp_row["model_version"] if wp_row else None,
+                "history": history,
+                "details": details,
             })
 
         out = {

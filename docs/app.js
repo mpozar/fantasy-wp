@@ -8,18 +8,12 @@ const fmtPct = (p) => (p == null ? "—" : (p * 100).toFixed(1) + "%");
 
 function fmtStat(statId, val) {
   if (val == null) return "—";
-  if (statId === 18) {
-    // OPS: 4 decimals, drop leading 0 (".739" style)
-    return val.toFixed(4).replace(/^0\./, ".");
-  }
-  if (statId === 47 || statId === 41) return val.toFixed(3); // ERA / WHIP
-  // Counting stats — round to integer
+  if (statId === 18) return val.toFixed(4).replace(/^0\./, ".");
+  if (statId === 47 || statId === 41) return val.toFixed(3);
   return String(Math.round(val));
 }
 
-function recordStr(rec) {
-  return `${rec.W}-${rec.L}-${rec.T}`;
-}
+const recordStr = (rec) => `${rec.W}-${rec.L}-${rec.T}`;
 
 function cellClass(result) {
   if (result === "WIN") return "win";
@@ -28,27 +22,129 @@ function cellClass(result) {
   return "";
 }
 
-function statCells(blocks) {
-  return blocks
+const statCells = (blocks) =>
+  blocks
     .map((s) => `<td class="num ${cellClass(s.result)}">${fmtStat(s.stat_id, s.score)}</td>`)
     .join("");
-}
 
-function headerCells(blocks, tiebreakerStatId) {
-  return blocks
+const headerCells = (blocks, tbId) =>
+  blocks
     .map((c) => {
-      const mark = c.stat_id === tiebreakerStatId ? '<span class="tb" title="Tiebreaker">★</span>' : "";
+      const mark = c.stat_id === tbId ? '<span class="tb" title="Tiebreaker">★</span>' : "";
       return `<th class="cat">${c.name}${mark}</th>`;
     })
     .join("");
+
+// ── WP-over-time SVG line chart ──────────────────────────────────────
+function renderChart(history, currentModel) {
+  const pts = history.filter((h) => h.model_version === currentModel);
+  if (pts.length === 0) return "";
+
+  const W = 600, H = 140, padL = 40, padR = 12, padT = 12, padB = 22;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const t0 = new Date(pts[0].computed_at).getTime();
+  const tN = new Date(pts[pts.length - 1].computed_at).getTime();
+  const span = Math.max(tN - t0, 1);
+  const x = (t) => padL + ((new Date(t).getTime() - t0) / span) * innerW;
+  const y = (p) => padT + (1 - p) * innerH;
+
+  const polyline = (key, cls) => {
+    if (pts.length === 1) {
+      // Single point — render a dot
+      const p = pts[0];
+      return `<circle cx="${x(p.computed_at)}" cy="${y(p[key])}" r="3" class="dot ${cls}"></circle>`;
+    }
+    const path = pts.map((p) => `${x(p.computed_at)},${y(p[key])}`).join(" ");
+    const last = pts[pts.length - 1];
+    return `
+      <polyline class="${cls}" points="${path}"></polyline>
+      <circle cx="${x(last.computed_at)}" cy="${y(last[key])}" r="3" class="dot ${cls}"></circle>`;
+  };
+
+  // Y-axis grid + labels
+  const yTicks = [0, 0.25, 0.5, 0.75, 1.0];
+  const gridY = yTicks
+    .map((p) => `<line x1="${padL}" y1="${y(p)}" x2="${W - padR}" y2="${y(p)}" class="grid ${p === 0.5 ? "mid" : ""}"></line>`)
+    .join("");
+  const labelsY = yTicks
+    .map((p) => `<text x="${padL - 6}" y="${y(p) + 3}" class="axis">${(p * 100) | 0}%</text>`)
+    .join("");
+
+  // X-axis labels: first + last timestamp
+  const fmtT = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+           d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  };
+  const xLabels = `
+    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtT(pts[0].computed_at)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtT(pts[pts.length - 1].computed_at)}</text>`;
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
+      ${gridY}
+      ${polyline("home_wp", "home")}
+      ${polyline("away_wp", "away")}
+      ${labelsY}
+      ${xLabels}
+    </svg>`;
 }
 
-function renderMatchup(m, cats, tiebreakerStatId) {
+// ── Details / top-contributors panel ─────────────────────────────────
+function impactScore(b) {
+  if (b.role === "HIT") return b.exp_r + b.exp_h * 0.6;
+  return b.exp_k + b.exp_qs * 4 + b.exp_outs * 0.2;
+}
+
+function contributorsList(budgets, side) {
+  if (!budgets || budgets.length === 0) {
+    return `<div class="contrib-empty">No remaining production projected.</div>`;
+  }
+  const sorted = [...budgets].sort((a, b) => impactScore(b) - impactScore(a));
+  const rows = sorted.map((b) => {
+    const isPit = b.role === "SP" || b.role === "RP";
+    const cells = isPit
+      ? `<span class="m">${b.units.toFixed(1)} ${b.role === "SP" ? "starts" : "app"}</span>
+         <span class="m">${b.exp_k.toFixed(1)} K</span>
+         <span class="m">${b.exp_outs.toFixed(0)} OUT</span>
+         ${b.exp_qs > 0.05 ? `<span class="m">${b.exp_qs.toFixed(2)} QS</span>` : ""}`
+      : `<span class="m">${b.units.toFixed(0)} G</span>
+         <span class="m">${b.exp_h.toFixed(1)} H</span>
+         <span class="m">${b.exp_hr.toFixed(2)} HR</span>
+         <span class="m">${b.exp_r.toFixed(1)} R</span>`;
+    return `<li><span class="cname">${b.name}</span><span class="role role-${b.role}">${b.role}</span>${cells}</li>`;
+  }).join("");
+  return `<ol class="contrib ${side}">${rows}</ol>`;
+}
+
+function renderDetails(m) {
+  if (!m.details) return "";
+  const d = m.details;
+  return `
+    <div class="details-inner">
+      <h3>Win probability over time</h3>
+      ${renderChart(m.history, m.model_version)}
+      <h3>What's driving the projection</h3>
+      <div class="details-grid">
+        <div>
+          <h4>${m.home.name ?? "Home"} <span class="model-tag">${d.model} · ${d.n_sims.toLocaleString()} sims</span></h4>
+          ${contributorsList(d.home_budgets, "home")}
+        </div>
+        <div>
+          <h4>${m.away.name ?? "Away"}</h4>
+          ${contributorsList(d.away_budgets, "away")}
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Per-matchup render ────────────────────────────────────────────────
+function renderMatchup(m, cats, tbId, idx) {
   const home = m.home, away = m.away;
   const homeFav = (home.wp ?? 0.5) > 0.5;
   const awayFav = (away.wp ?? 0.5) > 0.5;
-  const homeWpPct = (home.wp != null) ? (home.wp * 100).toFixed(1) : "—";
-  const awayWpPct = (away.wp != null) ? (away.wp * 100).toFixed(1) : "—";
 
   const teamRow = (side, fav) => `
     <tr class="team-row ${fav ? "favored" : ""}">
@@ -80,8 +176,8 @@ function renderMatchup(m, cats, tiebreakerStatId) {
             <th class="team-h">Team</th>
             <th class="record-h">Cats</th>
             <th class="wp-h">WP</th>
-            ${headerCells(cats.batting, tiebreakerStatId)}
-            ${headerCells(cats.pitching, tiebreakerStatId)}
+            ${headerCells(cats.batting, tbId)}
+            ${headerCells(cats.pitching, tbId)}
           </tr>
         </thead>
         <tbody>
@@ -89,6 +185,12 @@ function renderMatchup(m, cats, tiebreakerStatId) {
           ${teamRow(away, awayFav)}
         </tbody>
       </table>
+      <button class="expand-toggle" aria-expanded="false" aria-controls="details-${idx}">
+        <span class="caret">▸</span> Details
+      </button>
+      <div class="details" id="details-${idx}" hidden>
+        ${renderDetails(m)}
+      </div>
     </section>`;
 }
 
@@ -104,7 +206,18 @@ function render(data) {
   const root = document.getElementById("matchups");
   const cats = data.league.categories_by_group;
   const tb = data.league.tiebreaker_stat_id;
-  root.innerHTML = data.matchups.map((m) => renderMatchup(m, cats, tb)).join("");
+  root.innerHTML = data.matchups.map((m, i) => renderMatchup(m, cats, tb, i)).join("");
+
+  // Hook up expand toggles
+  root.querySelectorAll(".expand-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("aria-controls");
+      const panel = document.getElementById(id);
+      const open = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", open ? "false" : "true");
+      panel.hidden = open;
+    });
+  });
 }
 
 load().then(render).catch((e) => {
