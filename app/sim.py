@@ -20,6 +20,7 @@ import random
 import sqlite3
 import string
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 MODEL_VERSION = "mc-v1"
 DEFAULT_SIMS = 10_000
@@ -90,22 +91,51 @@ PLAYABLE_INJURY_STATUSES = {
     "", "ACTIVE", "NORMAL", "DAY_TO_DAY", "QUESTIONABLE", "PROBABLE",
 }
 
+# IL statuses that imply a recoverable return. The number is "days from today
+# until estimated return" — we can't know exactly when a player was placed
+# on IL (ESPN doesn't expose it), so this is a floor estimate that gets
+# refined naturally as the cron re-fetches each day.
+IL_RETURN_DAYS = {
+    "TEN_DAY_IL":      7,
+    "TEN_DAY_DL":      7,
+    "FIFTEEN_DAY_IL":  10,
+    "FIFTEEN_DAY_DL":  10,
+    "SIXTY_DAY_IL":    30,
+    "SIXTY_DAY_DL":    30,
+}
+
+
+def _est_return_date(p: dict, today: date) -> date | None:
+    """Estimated date the player can next contribute.
+
+      - today (or earlier) → playable now
+      - future date → returning from an IL stint
+      - None → indefinitely out (e.g. OUT, INJURY_RESERVE, unknown status)
+    """
+    inj = (p.get("injury_status") or "").upper()
+    if inj in PLAYABLE_INJURY_STATUSES:
+        return today
+    days = IL_RETURN_DAYS.get(inj)
+    if days is not None:
+        return today + timedelta(days=days)
+    return None
+
 
 def _is_playable(p: dict) -> bool:
-    """Whether a roster entry can contribute production this week.
+    """Whether this player can contribute at some point in the projection
+    window.
 
-    Rules:
-      - IL slot: never plays this week.
-      - injury_status indicates definitely-out (IL, OUT, SUSPENDED, etc.):
-        also skip.
-      - Everything else (active slot, BE slot, day-to-day / questionable):
-        playable. Pitchers cycle through bench naturally and hitters get
-        slot-by-slot allocation downstream via the lineup optimizer.
+      - Active slot: use injury_status. Healthy and DAY_TO_DAY/QUESTIONABLE/
+        PROBABLE → playable. IL types → playable with an estimated return
+        date (filtered per-game downstream). OUT/INJURY_RESERVE → excluded.
+      - IL slot: only include when the status explicitly maps to an IL
+        return estimate. A manager-stashed player in IL slot with ACTIVE
+        status is treated as the manager intends — out for the period.
     """
-    if p.get("lineup_slot_id") == IL_SLOT:
-        return False
     inj = (p.get("injury_status") or "").upper()
-    return inj in PLAYABLE_INJURY_STATUSES
+    if p.get("lineup_slot_id") == IL_SLOT:
+        return inj in IL_RETURN_DAYS
+    return _est_return_date(p, date.today()) is not None
 
 # Fallback RP appearance rate when ROS projection or team-total games are
 # missing. Real per-player rates range ~0.1 (mop-up) to ~0.5 (workhorse
@@ -287,34 +317,59 @@ def _sp_factor(g: dict, sp_exit_inning: float) -> float:
     return max(0.0, (sp_exit_inning - elapsed) / sp_exit_inning)
 
 
+def _game_after_return(g: dict, return_date: date | None) -> bool:
+    """True if this game falls on or after the player's estimated return.
+    If return_date is None or in the past, no filter is applied."""
+    if return_date is None:
+        return True
+    game_d = g.get("game_date")
+    if not game_d:
+        return True
+    try:
+        return date.fromisoformat(game_d) >= return_date
+    except ValueError:
+        return True
+
+
 def _hitter_remaining_units(team_id: int,
-                            schedule_by_team: dict[int, list[dict]]) -> float:
-    return sum(_hitter_factor(g) for g in schedule_by_team.get(team_id, []))
+                            schedule_by_team: dict[int, list[dict]],
+                            return_date: date | None = None) -> float:
+    return sum(_hitter_factor(g)
+               for g in schedule_by_team.get(team_id, [])
+               if _game_after_return(g, return_date))
 
 
 def _rp_remaining_units(team_id: int,
-                        schedule_by_team: dict[int, list[dict]]) -> float:
-    return sum(_rp_factor(g) for g in schedule_by_team.get(team_id, []))
+                        schedule_by_team: dict[int, list[dict]],
+                        return_date: date | None = None) -> float:
+    return sum(_rp_factor(g)
+               for g in schedule_by_team.get(team_id, [])
+               if _game_after_return(g, return_date))
 
 
-def _remaining_team_games(team_id: int, schedule_by_team: dict[int, list[dict]]) -> int:
-    """Integer count of non-Final games. Used by the future-week SP
-    estimator where there's no inning data anyway."""
+def _remaining_team_games(team_id: int,
+                          schedule_by_team: dict[int, list[dict]],
+                          return_date: date | None = None) -> int:
+    """Integer count of non-Final games on/after the player's return date."""
     games = schedule_by_team.get(team_id, [])
-    return sum(1 for g in games if g.get("game_status") != "Final")
+    return sum(1 for g in games
+               if g.get("game_status") != "Final"
+               and _game_after_return(g, return_date))
 
 
 def _probable_starts_for(player_name: str, team_id: int,
                          schedule_by_team: dict[int, list[dict]],
-                         sp_exit_inning: float) -> float:
+                         sp_exit_inning: float,
+                         return_date: date | None = None) -> float:
     """Sum of SP factors over games where this pitcher is the probable
-    starter. Returns a float in [0, n_probable_games] — partial credit for
-    in-progress games that the SP is currently pitching."""
+    starter and the game is on/after their estimated return date."""
     target = _norm_name(player_name)
     if not target:
         return 0.0
     total = 0.0
     for g in schedule_by_team.get(team_id, []):
+        if not _game_after_return(g, return_date):
+            continue
         if _norm_name(g.get("probable_pitcher_name")) == target:
             total += _sp_factor(g, sp_exit_inning)
     return total
@@ -408,6 +463,11 @@ def _hitter_days_slotted(roster: list[dict],
         if _is_playable(p) and _is_hitter_candidate(p)
     ]
 
+    # Per-player estimated return date — IL players become available again
+    # mid-period and only get slotted from that day onward.
+    today = date.today()
+    return_by_pid = {p["player_id"]: _est_return_date(p, today) for p in hitters}
+
     # All dates that appear in the team schedule (sorted for deterministic order).
     dates = sorted({
         g.get("game_date")
@@ -416,17 +476,25 @@ def _hitter_days_slotted(roster: list[dict],
         if g.get("game_date")
     })
 
-    for date in dates:
+    for date_str in dates:
+        try:
+            day = date.fromisoformat(date_str)
+        except ValueError:
+            day = None
         candidates = []
         for p in hitters:
+            # Skip IL'd players whose estimated return is after this date.
+            ret = return_by_pid.get(p["player_id"])
+            if ret is None or (day is not None and day < ret):
+                continue
             team_games_today = [
                 g for g in schedule_by_team.get(p["pro_team_id"], [])
-                if g.get("game_date") == date
+                if g.get("game_date") == date_str
             ]
             if not team_games_today:
                 continue
             # Two-way players starting on the mound today can't bat.
-            if _is_probable_starter_on(p, date, schedule_by_team):
+            if _is_probable_starter_on(p, date_str, schedule_by_team):
                 continue
             factor = max(_hitter_factor(g) for g in team_games_today)
             if factor <= 0:
@@ -476,6 +544,7 @@ def build_budgets(roster: list[dict],
     team_total_ros_games = team_total_ros_games or {}
     lineup_slot_counts = lineup_slot_counts or {}
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts)
+    today = date.today()
 
     out: list[Budget] = []
     for p in roster:
@@ -484,6 +553,11 @@ def build_budgets(roster: list[dict],
         ros = p["ros_stats"]
         pos = p["default_position_id"]
         team_id = p["pro_team_id"]
+        # Estimated return for IL'd players — filters games before they
+        # can play. None when player is healthy now (no filter).
+        ret = _est_return_date(p, today)
+        if ret is not None and ret <= today:
+            ret = None  # healthy → no game filter needed
 
         # ── Pitcher budget ─────────────────────────────────────────────
         if _has_pitcher_ros(ros):
@@ -499,7 +573,7 @@ def build_budgets(roster: list[dict],
 
             if is_sp:
                 if estimate_sp_starts:
-                    team_games = _remaining_team_games(team_id, schedule_by_team)
+                    team_games = _remaining_team_games(team_id, schedule_by_team, ret)
                     total_ros = team_total_ros_games.get(team_id, 0)
                     if total_ros > 0 and gs_ros > 0 and team_games > 0:
                         rate = min(gs_ros / total_ros, MAX_SP_RATE)
@@ -513,13 +587,13 @@ def build_budgets(roster: list[dict],
                     else:
                         sp_exit_inning = 6.0
                     sp_units = _probable_starts_for(
-                        p["full_name"], team_id, schedule_by_team, sp_exit_inning,
+                        p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
                     )
                 denom_p = gs_ros
                 role_p = "SP"
                 units_p = sp_units
             else:
-                rp_remaining = _rp_remaining_units(team_id, schedule_by_team)
+                rp_remaining = _rp_remaining_units(team_id, schedule_by_team, ret)
                 total_ros = team_total_ros_games.get(team_id, 0)
                 if total_ros > 0 and gp_ros > 0:
                     units_p = (gp_ros / total_ros) * rp_remaining
