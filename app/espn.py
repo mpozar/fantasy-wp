@@ -74,6 +74,9 @@ class LeagueShape:
     last_regular_season_period: int
     tiebreaker_stat_id: int | None
     categories: list[Category]
+    # ESPN slot-id → count (e.g. {0: 1, 1: 1, ..., 13: 5, 15: 3, 16: 6}).
+    # Used by the hitter lineup optimizer.
+    lineup_slot_counts: dict[int, int]
 
 
 def fetch_league_shape() -> LeagueShape:
@@ -82,6 +85,10 @@ def fetch_league_shape() -> LeagueShape:
     s = d["settings"]
     ss = s["scoringSettings"]
     sched = s["scheduleSettings"]
+    roster_settings = s.get("rosterSettings") or {}
+    raw_slots = roster_settings.get("lineupSlotCounts") or {}
+    # ESPN returns this as {"0": 1, "1": 1, ...} — coerce keys to int.
+    lineup_slots = {int(k): int(v) for k, v in raw_slots.items()}
     cats = [
         Category(stat_id=item["statId"], reversed=item.get("isReverseItem", False))
         for item in ss["scoringItems"]
@@ -95,6 +102,7 @@ def fetch_league_shape() -> LeagueShape:
         last_regular_season_period=sched.get("matchupPeriodCount", 0),
         tiebreaker_stat_id=tb if tb else None,
         categories=cats,
+        lineup_slot_counts=lineup_slots,
     )
 
 

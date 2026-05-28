@@ -45,22 +45,24 @@ def fetch() -> None:
         cats_json = json.dumps([
             {"stat_id": c.stat_id, "reversed": c.reversed} for c in shape.categories
         ])
+        slots_json = json.dumps(shape.lineup_slot_counts)
         conn.execute(
             """
             INSERT INTO scoring_settings
                 (league_id, season_id, name, size, scoring_type,
-                 tiebreaker_stat_id, categories_json, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?)
+                 tiebreaker_stat_id, categories_json, lineup_slots_json, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT(league_id, season_id) DO UPDATE SET
                 name=excluded.name,
                 size=excluded.size,
                 scoring_type=excluded.scoring_type,
                 tiebreaker_stat_id=excluded.tiebreaker_stat_id,
                 categories_json=excluded.categories_json,
+                lineup_slots_json=excluded.lineup_slots_json,
                 fetched_at=excluded.fetched_at
             """,
             (LEAGUE_ID, SEASON_ID, shape.name, shape.size, shape.scoring_type,
-             shape.tiebreaker_stat_id, cats_json, now),
+             shape.tiebreaker_stat_id, cats_json, slots_json, now),
         )
 
         # Persist teams
@@ -359,6 +361,15 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             if model_name == "mc-v1" else {}
         )
 
+        # League lineup-slot configuration for the hitter optimizer.
+        lineup_slot_counts: dict[int, int] = {}
+        if ss["lineup_slots_json"]:
+            try:
+                raw = json.loads(ss["lineup_slots_json"])
+                lineup_slot_counts = {int(k): int(v) for k, v in raw.items()}
+            except (json.JSONDecodeError, ValueError, TypeError):
+                lineup_slot_counts = {}
+
         now = _now_iso()
         total_matchups = 0
         for period_id in periods:
@@ -397,6 +408,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         inputs, schedule_by_team, n_sims=sims,
                         estimate_sp_starts=future_only,
                         team_total_ros_games=team_total_ros_games,
+                        lineup_slot_counts=lineup_slot_counts,
                     )
                     version = sim.MODEL_VERSION
                 else:

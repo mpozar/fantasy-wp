@@ -7,14 +7,15 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scoring_settings (
-    league_id           INTEGER NOT NULL,
-    season_id           INTEGER NOT NULL,
-    name                TEXT NOT NULL,
-    size                INTEGER NOT NULL,
-    scoring_type        TEXT NOT NULL,
-    tiebreaker_stat_id  INTEGER,
-    categories_json     TEXT NOT NULL,
-    fetched_at          TEXT NOT NULL,
+    league_id            INTEGER NOT NULL,
+    season_id            INTEGER NOT NULL,
+    name                 TEXT NOT NULL,
+    size                 INTEGER NOT NULL,
+    scoring_type         TEXT NOT NULL,
+    tiebreaker_stat_id   INTEGER,
+    categories_json      TEXT NOT NULL,
+    lineup_slots_json    TEXT,
+    fetched_at           TEXT NOT NULL,
     PRIMARY KEY (league_id, season_id)
 );
 
@@ -128,6 +129,7 @@ def init() -> None:
         for column_def in (
             ("team_schedule", "current_inning", "INTEGER"),
             ("team_schedule", "inning_state", "TEXT"),
+            ("scoring_settings", "lineup_slots_json", "TEXT"),
         ):
             table, col, type_ = column_def
             try:

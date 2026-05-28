@@ -75,8 +75,37 @@ CATEGORIES = [
 ]
 TIEBREAKER_STAT_ID = STAT_H
 
-# Slots we exclude from production
-EXCLUDED_SLOTS = {16, 17}  # BE, IL
+# ESPN lineup slot IDs we care about.
+BENCH_SLOT = 16
+IL_SLOT = 17
+
+# Hitter slot IDs ESPN exposes for MLB leagues. The set is intentionally
+# broad — `lineupSlotCounts` from the league settings tells us which ones
+# are actually configured for this league.
+HITTER_SLOT_IDS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 19}
+
+# Injury statuses for players still expected to play (per user choice — we
+# treat DAY_TO_DAY / QUESTIONABLE / PROBABLE as playing through).
+PLAYABLE_INJURY_STATUSES = {
+    "", "ACTIVE", "NORMAL", "DAY_TO_DAY", "QUESTIONABLE", "PROBABLE",
+}
+
+
+def _is_playable(p: dict) -> bool:
+    """Whether a roster entry can contribute production this week.
+
+    Rules:
+      - IL slot: never plays this week.
+      - injury_status indicates definitely-out (IL, OUT, SUSPENDED, etc.):
+        also skip.
+      - Everything else (active slot, BE slot, day-to-day / questionable):
+        playable. Pitchers cycle through bench naturally and hitters get
+        slot-by-slot allocation downstream via the lineup optimizer.
+    """
+    if p.get("lineup_slot_id") == IL_SLOT:
+        return False
+    inj = (p.get("injury_status") or "").upper()
+    return inj in PLAYABLE_INJURY_STATUSES
 
 # Fallback RP appearance rate when ROS projection or team-total games are
 # missing. Real per-player rates range ~0.1 (mop-up) to ~0.5 (workhorse
@@ -284,24 +313,125 @@ def _probable_starts_for(player_name: str, team_id: int,
     return total
 
 
+def _hitter_per_game_impact(p: dict) -> float:
+    """Crude one-number per-game impact for the lineup optimizer. Uses ROS
+    rates so the comparison is on the same basis across hitters."""
+    ros = p.get("ros_stats") or {}
+    g = ros.get(STAT_HIT_G) or 0
+    if g <= 0:
+        return 0.0
+    r = ros.get(STAT_R) or 0
+    h = ros.get(STAT_H) or 0
+    hr = ros.get(STAT_HR) or 0
+    sb = ros.get(STAT_SB) or 0
+    # Same shape as the front-end impactScore — R-heavy with some H/SB/HR.
+    return (r + 0.6 * h + 0.3 * sb + 0.5 * hr) / g
+
+
+def _hitter_days_slotted(roster: list[dict],
+                         schedule_by_team: dict[int, list[dict]],
+                         lineup_slot_counts: dict[int, int]) -> dict[int, float]:
+    """For each hitter, sum of in-progress factors across days they win a
+    lineup slot. Greedy by per-game impact; honors slot eligibility and
+    league-configured slot counts.
+
+    The greedy is good enough at ~10-12 hitters × ~10 slots — exact bipartite
+    matching would only differ by a few % and isn't worth the complexity.
+    """
+    units: dict[int, float] = {
+        p["player_id"]: 0.0 for p in roster
+        if _is_playable(p) and (p.get("default_position_id") not in (1, 11))
+    }
+    if not units:
+        return units
+
+    # Restrict to slots configured for this league and that hitters can fill.
+    hitter_slot_counts = {
+        slot: cnt for slot, cnt in lineup_slot_counts.items()
+        if slot in HITTER_SLOT_IDS and cnt > 0
+    }
+    if not hitter_slot_counts:
+        return units
+
+    # Index roster by player_id for the per-day inner loop.
+    hitters = [
+        p for p in roster
+        if _is_playable(p) and p.get("default_position_id") not in (1, 11)
+    ]
+
+    # All dates that appear in the team schedule (sorted for deterministic order).
+    dates = sorted({
+        g.get("game_date")
+        for games in schedule_by_team.values()
+        for g in games
+        if g.get("game_date")
+    })
+
+    for date in dates:
+        # Each hitter's per-day record: which game they'd play in (if any),
+        # their per-game in-progress factor, eligible slots, and impact.
+        candidates = []
+        for p in hitters:
+            team_games_today = [
+                g for g in schedule_by_team.get(p["pro_team_id"], [])
+                if g.get("game_date") == date
+            ]
+            if not team_games_today:
+                continue
+            factor = max(_hitter_factor(g) for g in team_games_today)
+            if factor <= 0:
+                continue
+            eligible = [s for s in (p.get("eligible_slots") or [])
+                        if s in hitter_slot_counts]
+            if not eligible:
+                continue
+            candidates.append({
+                "player_id": p["player_id"],
+                "factor": factor,
+                "eligible": eligible,
+                "impact": _hitter_per_game_impact(p),
+            })
+
+        # Greedy: best hitter first, fill their highest-priority eligible slot.
+        candidates.sort(key=lambda c: -c["impact"])
+        slots_remaining = dict(hitter_slot_counts)
+        for c in candidates:
+            for slot in c["eligible"]:
+                if slots_remaining.get(slot, 0) > 0:
+                    slots_remaining[slot] -= 1
+                    units[c["player_id"]] += c["factor"]
+                    break
+
+    return units
+
+
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
                   estimate_sp_starts: bool = False,
                   team_total_ros_games: dict[int, int] | None = None,
+                  lineup_slot_counts: dict[int, int] | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
+    Inclusion rules:
+      - IL slot or definitely-out injury status → skipped.
+      - All other rostered pitchers (BE included) → considered. Their
+        per-week units come from probable pitchers (current week SPs) or
+        the ROS-rate estimator (future-week SPs and all RPs).
+      - Hitters → run through the per-day lineup optimizer; their units
+        are the sum of days they win a slot.
+
     When `estimate_sp_starts` is True (future weeks: no probable pitchers),
     SP starts are estimated as `ros_gs * (week_games / total_ros_games)`.
-    Otherwise the current-week behavior is used: count probable starts by name.
     """
     team_total_ros_games = team_total_ros_games or {}
+    lineup_slot_counts = lineup_slot_counts or {}
+    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts)
+
     out: list[Budget] = []
     for p in roster:
-        if p["lineup_slot_id"] in EXCLUDED_SLOTS:
+        if not _is_playable(p):
             continue
-        # Skip injured (TEN_DAY_DL, FIFTEEN_DAY_DL, etc.) — unless they're in
-        # an active slot anyway, which can happen; the slot decision overrides.
         ros = p["ros_stats"]
         pos = p["default_position_id"]
         team_id = p["pro_team_id"]
@@ -365,9 +495,9 @@ def build_budgets(roster: list[dict],
                 role = "RP"
             counters = PITCHER_COUNTERS
         else:  # Hitter
-            # Hitter units are now a float — each in-progress game contributes
-            # less than 1.0 based on innings remaining (see _hitter_factor).
-            units = _hitter_remaining_units(team_id, schedule_by_team)
+            # Units = days the optimizer slotted this hitter into the active
+            # lineup (already weighted by per-game in-progress factor).
+            units = hitter_units.get(p["player_id"], 0.0)
             denom = ros.get(STAT_HIT_G) or 0
             counters = HITTER_COUNTERS
             role = "HIT"
@@ -457,16 +587,19 @@ def simulate(inputs: MatchupInputs,
              n_sims: int = DEFAULT_SIMS,
              estimate_sp_starts: bool = False,
              team_total_ros_games: dict[int, int] | None = None,
+             lineup_slot_counts: dict[int, int] | None = None,
              ) -> tuple[float, float, dict]:
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
         estimate_sp_starts=estimate_sp_starts,
         team_total_ros_games=team_total_ros_games,
+        lineup_slot_counts=lineup_slot_counts,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
         estimate_sp_starts=estimate_sp_starts,
         team_total_ros_games=team_total_ros_games,
+        lineup_slot_counts=lineup_slot_counts,
     )
 
     home_wins = 0
@@ -575,7 +708,8 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
     rows = conn.execute(
         """
         SELECT tr.player_id, tr.lineup_slot_id, tr.status,
-               p.full_name, p.pro_team_id, p.default_position_id, p.injury_status
+               p.full_name, p.pro_team_id, p.default_position_id,
+               p.eligible_slots_json, p.injury_status
         FROM team_rosters tr
         JOIN players p ON p.id = tr.player_id
         WHERE tr.matchup_period_id = ? AND tr.fantasy_team_id = ?
@@ -593,6 +727,13 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
             """,
             (r["player_id"], ROS_SPLIT_ID),
         ).fetchall()
+        eligible: list[int] = []
+        if r["eligible_slots_json"]:
+            try:
+                parsed = json.loads(r["eligible_slots_json"])
+                eligible = [int(s) for s in parsed]
+            except (json.JSONDecodeError, ValueError, TypeError):
+                eligible = []
         roster.append({
             "player_id": r["player_id"],
             "lineup_slot_id": r["lineup_slot_id"],
@@ -600,6 +741,7 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
             "full_name": r["full_name"],
             "pro_team_id": r["pro_team_id"],
             "default_position_id": r["default_position_id"],
+            "eligible_slots": eligible,
             "injury_status": r["injury_status"],
             "ros_stats": {row["stat_id"]: row["value"] for row in ros},
         })
