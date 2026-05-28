@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from app import LEAGUE_ID, SEASON_ID, db, espn, model, stats
+from app import LEAGUE_ID, SEASON_ID, db, espn, mlb, model, stats
 
 
 def _now_iso() -> str:
@@ -183,6 +183,59 @@ def refresh_rosters() -> None:
         f"players={len(snap['players'])}, "
         f"roster_entries={len(snap['roster_entries'])}, "
         f"projections={len(snap['projections'])}"
+    )
+
+
+@cli.command("refresh-schedule")
+def refresh_schedule() -> None:
+    """Pull MLB schedule + probable pitchers for the current matchup window.
+
+    Replaces all rows for the current matchup_period_id transactionally;
+    if the MLB fetch fails the DB stays on last-good.
+    """
+    # Need to know which matchup period these games belong to
+    shape = espn.fetch_league_shape()
+    period_id = shape.current_matchup_period
+    start, end = mlb.current_matchup_window()
+    games = mlb.fetch_schedule(start, end)
+    now = _now_iso()
+
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM team_schedule WHERE matchup_period_id=?",
+                (period_id,),
+            )
+            for g in games:
+                conn.execute(
+                    """
+                    INSERT INTO team_schedule
+                        (matchup_period_id, game_pk, game_date, pro_team_id,
+                         opponent_pro_team_id, is_home,
+                         probable_pitcher_mlbam_id, probable_pitcher_name,
+                         game_status, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
+                        game_date=excluded.game_date,
+                        opponent_pro_team_id=excluded.opponent_pro_team_id,
+                        is_home=excluded.is_home,
+                        probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
+                        probable_pitcher_name=excluded.probable_pitcher_name,
+                        game_status=excluded.game_status,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    (period_id, g["game_pk"], g["game_date"], g["espn_team_id"],
+                     g["opponent_espn_team_id"], g["is_home"],
+                     g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
+                     g["game_status"], now),
+                )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Refreshed schedule: period={period_id} "
+        f"({start.isoformat()} to {end.isoformat()}), team_game_rows={len(games)}"
     )
 
 
