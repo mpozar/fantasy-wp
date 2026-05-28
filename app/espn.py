@@ -1,0 +1,154 @@
+"""Thin ESPN fantasy baseball API client for one league."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import httpx
+
+from app import LEAGUE_ID, SEASON_ID
+
+BASE_URL = (
+    f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/{SEASON_ID}"
+    f"/segments/0/leagues/{LEAGUE_ID}"
+)
+
+
+class ESPNAuthError(RuntimeError):
+    """Raised when ESPN responds with a redirect (cookies invalid/expired)."""
+
+
+def _read_zshenv_var(name: str) -> str:
+    """Read an `export NAME=...` value directly from ~/.zshenv.
+
+    Per the user's global memory: never use the env var, read the file.
+    """
+    path = Path.home() / ".zshenv"
+    pat = re.compile(rf'^\s*export\s+{re.escape(name)}=(.*?)\s*$', re.M)
+    text = path.read_text()
+    m = pat.search(text)
+    if not m:
+        raise RuntimeError(f"{name} not found in {path}")
+    return m.group(1).strip().strip('"').strip("'")
+
+
+def _cookies() -> dict[str, str]:
+    return {
+        "SWID": _read_zshenv_var("ESPN_SWID"),
+        "espn_s2": _read_zshenv_var("ESPN_S2"),
+    }
+
+
+def _get(views: list[str], extra_params: dict | None = None) -> dict:
+    params: list[tuple[str, str]] = [("view", v) for v in views]
+    if extra_params:
+        params.extend(extra_params.items())
+    # follow_redirects=False so we can detect auth failures clearly
+    with httpx.Client(cookies=_cookies(), follow_redirects=False, timeout=30.0) as client:
+        r = client.get(BASE_URL, params=params)
+    if r.status_code in (301, 302, 303, 307, 308):
+        raise ESPNAuthError(
+            f"ESPN redirected to {r.headers.get('location')} — "
+            "ESPN_SWID/ESPN_S2 cookies are likely missing or expired."
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+# -------- public surface --------
+
+@dataclass(frozen=True)
+class Category:
+    stat_id: int
+    reversed: bool
+
+
+@dataclass(frozen=True)
+class LeagueShape:
+    name: str
+    size: int
+    scoring_type: str
+    current_matchup_period: int
+    tiebreaker_stat_id: int | None
+    categories: list[Category]
+
+
+def fetch_league_shape() -> LeagueShape:
+    """League settings + which matchup period is current."""
+    d = _get(["mSettings"])
+    s = d["settings"]
+    ss = s["scoringSettings"]
+    cats = [
+        Category(stat_id=item["statId"], reversed=item.get("isReverseItem", False))
+        for item in ss["scoringItems"]
+    ]
+    tb = ss.get("matchupTieRuleBy")
+    return LeagueShape(
+        name=s["name"],
+        size=s["size"],
+        scoring_type=ss["scoringType"],
+        current_matchup_period=d["status"]["currentMatchupPeriod"],
+        tiebreaker_stat_id=tb if tb else None,
+        categories=cats,
+    )
+
+
+def fetch_teams() -> list[dict]:
+    d = _get(["mTeam"])
+    out = []
+    members_by_id = {m["id"]: m for m in d.get("members", [])}
+    for t in d.get("teams", []):
+        owner_id = (t.get("owners") or [None])[0]
+        owner = members_by_id.get(owner_id, {})
+        owner_name = (
+            f"{owner.get('firstName', '')} {owner.get('lastName', '')}".strip()
+            or owner.get("displayName")
+        )
+        out.append({
+            "id": t["id"],
+            "name": t.get("name") or f"Team {t['id']}",
+            "abbrev": t.get("abbrev"),
+            "owner": owner_name,
+        })
+    return out
+
+
+def fetch_matchup_period(period_id: int) -> list[dict]:
+    """All matchups for a given matchup period, each with cat-by-cat scores.
+
+    Returns rows of:
+      {matchup_id, matchup_period_id, home_team_id, away_team_id, winner,
+       scores: [{team_id, stat_id, score, result}, ...]}
+    """
+    d = _get(
+        ["mMatchup", "mMatchupScore"],
+        extra_params={"matchupPeriodId": str(period_id)},
+    )
+    out = []
+    for m in d.get("schedule", []):
+        if m.get("matchupPeriodId") != period_id:
+            continue
+        home = m.get("home") or {}
+        away = m.get("away") or {}
+        scores: list[dict] = []
+        for side in (home, away):
+            cs = side.get("cumulativeScore") or {}
+            by_stat = cs.get("scoreByStat") or {}
+            for stat_id_str, entry in by_stat.items():
+                scores.append({
+                    "team_id": side.get("teamId"),
+                    "stat_id": int(stat_id_str),
+                    "score": float(entry.get("score") or 0.0),
+                    "result": entry.get("result"),
+                })
+        out.append({
+            "matchup_id": m["id"],
+            "matchup_period_id": m["matchupPeriodId"],
+            "home_team_id": home.get("teamId"),
+            "away_team_id": away.get("teamId"),
+            "winner": m.get("winner"),
+            "scores": scores,
+        })
+    return out
