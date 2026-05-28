@@ -791,9 +791,9 @@ def simulate(inputs: MatchupInputs,
                     "exp_qs":   round(b.expected.get(STAT_QS, 0), 2),
                     "exp_svhd": round(b.expected.get(STAT_SVHD, 0), 2),
                 })
-                # ERA/WHIP need at least ~1 IP of expected production to be
-                # informative — otherwise it's noise from a 1-out projection.
-                if exp_outs >= 3:
+                # ERA/WHIP need at least 0.5 IP of expected production to be
+                # informative — otherwise it's noise from a tiny projection.
+                if exp_outs >= 1.5:
                     rec["exp_era"]  = round(derive_era(b.expected), 2)
                     rec["exp_whip"] = round(derive_whip(b.expected), 2)
                 else:
