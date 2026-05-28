@@ -71,6 +71,7 @@ class LeagueShape:
     size: int
     scoring_type: str
     current_matchup_period: int
+    last_regular_season_period: int
     tiebreaker_stat_id: int | None
     categories: list[Category]
 
@@ -80,6 +81,7 @@ def fetch_league_shape() -> LeagueShape:
     d = _get(["mSettings"])
     s = d["settings"]
     ss = s["scoringSettings"]
+    sched = s["scheduleSettings"]
     cats = [
         Category(stat_id=item["statId"], reversed=item.get("isReverseItem", False))
         for item in ss["scoringItems"]
@@ -90,6 +92,7 @@ def fetch_league_shape() -> LeagueShape:
         size=s["size"],
         scoring_type=ss["scoringType"],
         current_matchup_period=d["status"]["currentMatchupPeriod"],
+        last_regular_season_period=sched.get("matchupPeriodCount", 0),
         tiebreaker_stat_id=tb if tb else None,
         categories=cats,
     )
@@ -192,20 +195,19 @@ def fetch_rosters_and_projections() -> dict:
     }
 
 
-def fetch_matchup_period(period_id: int) -> list[dict]:
-    """All matchups for a given matchup period, each with cat-by-cat scores.
+def fetch_all_matchups() -> list[dict]:
+    """All matchups across every period in the season, each with cat-by-cat
+    scores (zeros for future periods).
 
     Returns rows of:
       {matchup_id, matchup_period_id, home_team_id, away_team_id, winner,
        scores: [{team_id, stat_id, score, result}, ...]}
     """
-    d = _get(
-        ["mMatchup", "mMatchupScore"],
-        extra_params={"matchupPeriodId": str(period_id)},
-    )
+    d = _get(["mMatchup", "mMatchupScore"])
     out = []
     for m in d.get("schedule", []):
-        if m.get("matchupPeriodId") != period_id:
+        period_id = m.get("matchupPeriodId")
+        if period_id is None:
             continue
         home = m.get("home") or {}
         away = m.get("away") or {}
@@ -222,7 +224,7 @@ def fetch_matchup_period(period_id: int) -> list[dict]:
                 })
         out.append({
             "matchup_id": m["id"],
-            "matchup_period_id": m["matchupPeriodId"],
+            "matchup_period_id": period_id,
             "home_team_id": home.get("teamId"),
             "away_team_id": away.get("teamId"),
             "winner": m.get("winner"),

@@ -187,8 +187,17 @@ def _probable_starts_for(player_name: str, team_id: int,
 
 
 def build_budgets(roster: list[dict],
-                  schedule_by_team: dict[int, list[dict]]) -> list[Budget]:
-    """Convert a roster + schedule into per-player production budgets."""
+                  schedule_by_team: dict[int, list[dict]],
+                  estimate_sp_starts: bool = False,
+                  team_total_ros_games: dict[int, int] | None = None,
+                  ) -> list[Budget]:
+    """Convert a roster + schedule into per-player production budgets.
+
+    When `estimate_sp_starts` is True (future weeks: no probable pitchers),
+    SP starts are estimated as `ros_gs * (week_games / total_ros_games)`.
+    Otherwise the current-week behavior is used: count probable starts by name.
+    """
+    team_total_ros_games = team_total_ros_games or {}
     out: list[Budget] = []
     for p in roster:
         if p["lineup_slot_id"] in EXCLUDED_SLOTS:
@@ -200,7 +209,16 @@ def build_budgets(roster: list[dict],
         team_id = p["pro_team_id"]
 
         if pos == 1:  # SP
-            units = _probable_starts_for(p["full_name"], team_id, schedule_by_team)
+            if estimate_sp_starts:
+                team_games = _remaining_team_games(team_id, schedule_by_team)
+                total_ros = team_total_ros_games.get(team_id, 0)
+                gs_ros = ros.get(STAT_GS) or 0
+                if total_ros > 0 and gs_ros > 0 and team_games > 0:
+                    units = gs_ros * (team_games / total_ros)
+                else:
+                    units = 0
+            else:
+                units = _probable_starts_for(p["full_name"], team_id, schedule_by_team)
             denom = ros.get(STAT_GS) or 0
             counters = PITCHER_COUNTERS
             role = "SP"
@@ -298,9 +316,20 @@ class MatchupInputs:
 
 def simulate(inputs: MatchupInputs,
              schedule_by_team: dict[int, list[dict]],
-             n_sims: int = DEFAULT_SIMS) -> tuple[float, float, dict]:
-    home_budgets = build_budgets(inputs.home_roster, schedule_by_team)
-    away_budgets = build_budgets(inputs.away_roster, schedule_by_team)
+             n_sims: int = DEFAULT_SIMS,
+             estimate_sp_starts: bool = False,
+             team_total_ros_games: dict[int, int] | None = None,
+             ) -> tuple[float, float, dict]:
+    home_budgets = build_budgets(
+        inputs.home_roster, schedule_by_team,
+        estimate_sp_starts=estimate_sp_starts,
+        team_total_ros_games=team_total_ros_games,
+    )
+    away_budgets = build_budgets(
+        inputs.away_roster, schedule_by_team,
+        estimate_sp_starts=estimate_sp_starts,
+        team_total_ros_games=team_total_ros_games,
+    )
 
     home_wins = 0
     away_wins = 0
@@ -325,18 +354,42 @@ def simulate(inputs: MatchupInputs,
     away_wp = away_wins / n_sims
 
     def budget_summary(bs: list[Budget]) -> list[dict]:
-        return [{
-            "player_id": b.player_id,
-            "name": b.name,
-            "role": b.role,
-            "units": round(b.units, 2),
-            "exp_h": round(b.expected.get(STAT_H, 0), 1),
-            "exp_hr": round(b.expected.get(STAT_HR, 0), 2),
-            "exp_r": round(b.expected.get(STAT_R, 0), 1),
-            "exp_k": round(b.expected.get(STAT_K, 0), 1),
-            "exp_outs": round(b.expected.get(STAT_OUTS, 0), 1),
-            "exp_qs": round(b.expected.get(STAT_QS, 0), 2),
-        } for b in bs]
+        out = []
+        for b in bs:
+            rec = {
+                "player_id": b.player_id,
+                "name": b.name,
+                "role": b.role,
+                "units": round(b.units, 2),
+            }
+            if b.role == "HIT":
+                exp_ab = b.expected.get(STAT_AB, 0)
+                rec.update({
+                    "exp_h":   round(b.expected.get(STAT_H, 0), 1),
+                    "exp_hr":  round(b.expected.get(STAT_HR, 0), 2),
+                    "exp_r":   round(b.expected.get(STAT_R, 0), 1),
+                    "exp_sb":  round(b.expected.get(STAT_SB, 0), 2),
+                    # Per-batter OPS only meaningful with a real AB budget;
+                    # null otherwise so the UI can hide it.
+                    "exp_ops": round(derive_ops(b.expected), 3) if exp_ab >= 1 else None,
+                })
+            else:  # SP or RP
+                exp_outs = b.expected.get(STAT_OUTS, 0)
+                rec.update({
+                    "exp_k":    round(b.expected.get(STAT_K, 0), 1),
+                    "exp_outs": round(exp_outs, 1),
+                    "exp_qs":   round(b.expected.get(STAT_QS, 0), 2),
+                })
+                # ERA/WHIP need at least ~1 IP of expected production to be
+                # informative — otherwise it's noise from a 1-out projection.
+                if exp_outs >= 3:
+                    rec["exp_era"]  = round(derive_era(b.expected), 2)
+                    rec["exp_whip"] = round(derive_whip(b.expected), 2)
+                else:
+                    rec["exp_era"]  = None
+                    rec["exp_whip"] = None
+            out.append(rec)
+        return out
 
     category_wp = [
         {
@@ -397,6 +450,24 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
             "ros_stats": {row["stat_id"]: row["value"] for row in ros},
         })
     return roster
+
+
+def load_total_remaining_games(conn: sqlite3.Connection,
+                               from_period_id: int,
+                               to_period_id: int) -> dict[int, int]:
+    """Total scheduled games per pro team across an inclusive range of
+    matchup periods. Used by future-week sims to estimate per-SP weekly
+    starts as a share of season-remaining games."""
+    rows = conn.execute(
+        """
+        SELECT pro_team_id, COUNT(*) AS n
+        FROM team_schedule
+        WHERE matchup_period_id BETWEEN ? AND ?
+        GROUP BY pro_team_id
+        """,
+        (from_period_id, to_period_id),
+    ).fetchall()
+    return {r["pro_team_id"]: r["n"] for r in rows}
 
 
 def load_schedule_by_team(conn: sqlite3.Connection,

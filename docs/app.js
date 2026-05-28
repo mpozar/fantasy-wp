@@ -13,7 +13,7 @@ function fmtStat(statId, val) {
   return String(Math.round(val));
 }
 
-const recordStr = (rec) => `${rec.W}-${rec.L}-${rec.T}`;
+const recordStr = (rec) => rec ? `${rec.W}-${rec.L}-${rec.T}` : "—";
 
 function cellClass(result) {
   if (result === "WIN") return "win";
@@ -37,6 +37,7 @@ const headerCells = (blocks, tbId) =>
 
 // ── WP-over-time SVG line chart ──────────────────────────────────────
 function renderChart(history, currentModel) {
+  if (!history || history.length === 0) return "";
   const pts = history.filter((h) => h.model_version === currentModel);
   if (pts.length === 0) return "";
 
@@ -98,6 +99,10 @@ function impactScore(b) {
   return b.exp_k + b.exp_qs * 4 + b.exp_outs * 0.2;
 }
 
+// OPS-style format: 4 sig figs, drop the leading zero (".683"), matching
+// the scoreboard column.
+const fmtOps = (v) => v.toFixed(3).replace(/^0\./, ".");
+
 function contributorsList(budgets, side) {
   if (!budgets || budgets.length === 0) {
     return `<div class="contrib-empty">No remaining production projected.</div>`;
@@ -109,11 +114,15 @@ function contributorsList(budgets, side) {
       ? `<span class="m">${b.units.toFixed(1)} ${b.role === "SP" ? "starts" : "app"}</span>
          <span class="m">${b.exp_k.toFixed(1)} K</span>
          <span class="m">${b.exp_outs.toFixed(0)} OUT</span>
-         ${b.exp_qs > 0.05 ? `<span class="m">${b.exp_qs.toFixed(2)} QS</span>` : ""}`
+         ${b.exp_qs > 0.05 ? `<span class="m">${b.exp_qs.toFixed(2)} QS</span>` : ""}
+         ${b.exp_era != null ? `<span class="m">${b.exp_era.toFixed(2)} ERA</span>` : ""}
+         ${b.exp_whip != null ? `<span class="m">${b.exp_whip.toFixed(2)} WHIP</span>` : ""}`
       : `<span class="m">${b.units.toFixed(0)} G</span>
          <span class="m">${b.exp_h.toFixed(1)} H</span>
          <span class="m">${b.exp_hr.toFixed(2)} HR</span>
-         <span class="m">${b.exp_r.toFixed(1)} R</span>`;
+         <span class="m">${b.exp_r.toFixed(1)} R</span>
+         ${b.exp_sb > 0.05 ? `<span class="m">${b.exp_sb.toFixed(2)} SB</span>` : ""}
+         ${b.exp_ops != null ? `<span class="m">${fmtOps(b.exp_ops)} OPS</span>` : ""}`;
     return `<li><span class="cname">${b.name}</span><span class="role role-${b.role}">${b.role}</span>${cells}</li>`;
   }).join("");
   return `<ol class="contrib ${side}">${rows}</ol>`;
@@ -168,13 +177,17 @@ function renderCategoryWP(d, cats, m) {
     </table>`;
 }
 
-function renderDetails(m, cats) {
+function renderDetails(m, cats, isCurrent) {
   if (!m.details) return "";
   const d = m.details;
+  // WP-over-time only makes sense for the current week (no history exists
+  // for future weeks before now).
+  const chart = isCurrent && m.history && m.history.length > 1
+    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version)}`
+    : "";
   return `
     <div class="details-inner">
-      <h3>Win probability over time</h3>
-      ${renderChart(m.history, m.model_version)}
+      ${chart}
       ${renderCategoryWP(d, cats, m)}
       <h3>What's driving the projection</h3>
       <div class="details-grid">
@@ -191,7 +204,7 @@ function renderDetails(m, cats) {
 }
 
 // ── Per-matchup render ────────────────────────────────────────────────
-function renderMatchup(m, cats, tbId, idx) {
+function renderMatchup(m, cats, tbId, idx, isCurrent) {
   const home = m.home, away = m.away;
   const homeFav = (home.wp ?? 0.5) > 0.5;
   const awayFav = (away.wp ?? 0.5) > 0.5;
@@ -209,7 +222,7 @@ function renderMatchup(m, cats, tbId, idx) {
     </tr>`;
 
   return `
-    <section class="matchup">
+    <section class="matchup ${isCurrent ? "" : "future"}">
       <table>
         <colgroup>
           <col class="c-team"><col class="c-record"><col class="c-wp">
@@ -224,7 +237,7 @@ function renderMatchup(m, cats, tbId, idx) {
           </tr>
           <tr class="cat-row">
             <th class="team-h">Team</th>
-            <th class="record-h">Cats</th>
+            <th class="record-h">${isCurrent ? "Cats" : ""}</th>
             <th class="wp-h">WP</th>
             ${headerCells(cats.batting, tbId)}
             ${headerCells(cats.pitching, tbId)}
@@ -239,28 +252,35 @@ function renderMatchup(m, cats, tbId, idx) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m, cats)}
+        ${renderDetails(m, cats, isCurrent)}
       </div>
     </section>`;
 }
 
-function render(data) {
-  document.getElementById("league-name").textContent = data.league.name;
-  document.getElementById("subtitle").textContent =
-    `Matchup Period ${data.matchup_period_id} · ${data.league.size}-team H2H · Tiebreaker: ${data.league.tiebreaker_name}`;
-  const ts = new Date(data.generated_at);
-  document.getElementById("meta").innerHTML =
-    `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
-    ` · Model <code>${data.matchups[0]?.model_version ?? "—"}</code>` +
-    ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
-      `<span class="caret">▸</span> How this works</button>`;
+// Friendly Mon-Sun date range, e.g. "May 25 – May 31".
+function fmtDateRange(startIso, endIso) {
+  const opts = { month: "short", day: "numeric" };
+  const s = new Date(startIso + "T00:00:00").toLocaleDateString(undefined, opts);
+  const e = new Date(endIso + "T00:00:00").toLocaleDateString(undefined, opts);
+  return `${s} – ${e}`;
+}
 
-  const root = document.getElementById("matchups");
+function renderWeek(data, week) {
   const cats = data.league.categories_by_group;
   const tb = data.league.tiebreaker_stat_id;
-  root.innerHTML = data.matchups.map((m, i) => renderMatchup(m, cats, tb, i)).join("");
+  const isCurrent = week.is_current;
 
-  // Hook up expand toggles
+  document.getElementById("subtitle").innerHTML =
+    `${week.label} · ${fmtDateRange(week.start, week.end)}` +
+    (isCurrent ? "" : ' · <span class="future-pill">Projection</span>') +
+    ` · ${data.league.size}-team H2H · Tiebreaker: ${data.league.tiebreaker_name}`;
+
+  const root = document.getElementById("matchups");
+  root.innerHTML = week.matchups
+    .map((m, i) => renderMatchup(m, cats, tb, i, isCurrent))
+    .join("");
+
+  // Hook up expand toggles (re-bound on every week switch since DOM is fresh).
   root.querySelectorAll(".expand-toggle").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("aria-controls");
@@ -269,6 +289,37 @@ function render(data) {
       btn.setAttribute("aria-expanded", open ? "false" : "true");
       panel.hidden = open;
     });
+  });
+}
+
+function render(data) {
+  document.getElementById("league-name").textContent = data.league.name;
+  const ts = new Date(data.generated_at);
+  const firstModel = data.weeks[0]?.matchups[0]?.model_version ?? "—";
+  const select = `
+    <label class="week-picker">
+      Week
+      <select id="week-select">
+        ${data.weeks.map((w) => `
+          <option value="${w.matchup_period_id}" ${w.is_current ? "selected" : ""}>
+            ${w.label}${w.is_current ? " (current)" : ""} · ${fmtDateRange(w.start, w.end)}
+          </option>`).join("")}
+      </select>
+    </label>`;
+  document.getElementById("meta").innerHTML =
+    `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
+    ` · Model <code>${firstModel}</code>` +
+    ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
+      `<span class="caret">▸</span> How this works</button>` +
+    ` · ${select}`;
+
+  const current = data.weeks.find((w) => w.is_current) ?? data.weeks[0];
+  renderWeek(data, current);
+
+  document.getElementById("week-select").addEventListener("change", (e) => {
+    const periodId = parseInt(e.target.value, 10);
+    const w = data.weeks.find((w) => w.matchup_period_id === periodId);
+    if (w) renderWeek(data, w);
   });
 }
 

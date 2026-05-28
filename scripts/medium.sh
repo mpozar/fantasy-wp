@@ -8,5 +8,8 @@ source "$(dirname "$0")/_common.sh"
 {
     log medium "start"
     "$APP" refresh-rosters
+    # Recompute future-week WPs with the fresh projections. DB-only; the next
+    # fast-tier publish picks them up.
+    "$APP" compute --future
     log medium "done"
 } >> "$LOGS/medium.log" 2>&1

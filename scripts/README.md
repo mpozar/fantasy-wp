@@ -4,15 +4,20 @@ Three shell scripts that run the pipeline on different cadences. Live site at
 https://mpozar.github.io/fantasy-wp/ only updates when **fast.sh** pushes a new
 `docs/data.json`.
 
-| Script        | What it does                                        | Suggested cadence |
-| ------------- | --------------------------------------------------- | ----------------- |
-| `fast.sh`     | `fetch` + `compute` + `publish` + commit + push     | every 15 min      |
-| `medium.sh`   | `refresh-rosters` (ESPN rosters + ROS projections)  | every 4 hours     |
-| `daily.sh`    | `refresh-schedule` (MLB games + probable pitchers)  | once a day        |
+| Script        | What it does                                                    | Suggested cadence |
+| ------------- | --------------------------------------------------------------- | ----------------- |
+| `fast.sh`     | `fetch` (all periods) + `compute` (current week) + `publish` + push | every 5 min       |
+| `medium.sh`   | `refresh-rosters` + `compute --future` (all remaining weeks)    | every 4 hours     |
+| `daily.sh`    | `refresh-schedule` (MLB games + probable pitchers, full season) | once a day        |
 
 Medium and daily only write to the local SQLite DB — the next fast-tier run
 picks up the new data and pushes the result. So if `medium.sh` fails, the
 public site keeps working with the previous projection snapshot.
+
+Future-week WPs only change when projections or the MLB schedule change, so
+they're computed on the medium tier (4 h). The current week's WP needs faster
+turnaround (matchup state moves with every MLB game), so it stays on the fast
+tier (15 min).
 
 ## Setup with crontab
 
@@ -26,7 +31,7 @@ Paste:
 
 ```
 # fantasy-wp
-*/15 *  * * *  /Users/mpozar/git/fantasy-wp/scripts/fast.sh
+*/5  *   * * *  /Users/mpozar/git/fantasy-wp/scripts/fast.sh
 0    */4 * * *  /Users/mpozar/git/fantasy-wp/scripts/medium.sh
 0    6   * * *  /Users/mpozar/git/fantasy-wp/scripts/daily.sh
 ```
@@ -47,15 +52,22 @@ versions (Sequoia 15+) restrict cron's default access.
 
 ## git auth
 
-`fast.sh` pushes over HTTPS using whatever credential helper git is configured
-with. `gh auth login` (already done) puts a token in the macOS keychain, which
-the credential helper reads. If pushes start failing from cron — usually a
-keychain-unlock issue — the workaround is to switch the remote to SSH:
+Cron runs outside any logged-in shell, so it can't reach the macOS keychain
+where `gh auth login` stashes its token. `fast.sh` works around this by reading
+a GitHub token directly from `~/.zshenv`:
 
 ```sh
-git remote set-url origin git@github.com:mpozar/fantasy-wp.git
-ssh-add ~/.ssh/id_ed25519        # add key to ssh-agent once per login
+echo "export GH_TOKEN=$(gh auth token)" >> ~/.zshenv
+chmod 600 ~/.zshenv
 ```
+
+`fast.sh` reads that line and injects the token into a one-shot git credential
+helper for the push. If `GH_TOKEN` isn't present it falls back to whatever
+credential helper git is configured with (works fine for manual runs from a
+shell that has keychain access).
+
+If you rotate or invalidate the token (e.g. `gh auth refresh`), re-run the
+command above to update `~/.zshenv`.
 
 ## Disabling
 

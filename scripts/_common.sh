@@ -21,3 +21,10 @@ log() {
     printf '[%s] [%s] %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tier" "$msg"
 }
+
+# Read `export NAME=...` value from ~/.zshenv (same pattern as espn.py).
+# Cron can't reach the keychain, so secrets live in this file.
+read_zshenv_var() {
+    grep -m1 "^export $1=" "$HOME/.zshenv" \
+        | sed -E "s/^export $1=//; s/^['\"]//; s/['\"]\$//"
+}

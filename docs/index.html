@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>Quintonia Baseball — Win Probability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <header>
@@ -15,7 +15,7 @@
   <section id="about-panel" class="about-panel" hidden>
     <h2>How this works</h2>
     <p>
-      Every time a game finishes (well — every 15 minutes), this page pulls
+      Every time a game finishes (well — every 5 minutes), this page pulls
       the current cat-by-cat totals from ESPN, looks at each team's roster
       and the games they have left in the week, and runs <strong>10,000
       simulations</strong> of how the rest of the matchup might play out.
@@ -72,9 +72,9 @@
 
     <h3>Refresh cadence</h3>
     <ul>
-      <li>Live matchup totals + simulation rerun: every <strong>15 minutes</strong>.</li>
-      <li>Rosters + projections: every <strong>4 hours</strong>.</li>
-      <li>MLB schedule + probable pitchers: <strong>once a day</strong>.</li>
+      <li>Live matchup totals + current-week simulation rerun: every <strong>5 minutes</strong>.</li>
+      <li>Rosters + projections + future-week sims: every <strong>4 hours</strong>.</li>
+      <li>MLB schedule + probable pitchers (full remaining season): <strong>once a day</strong>.</li>
     </ul>
 
     <p class="about-foot">
@@ -84,6 +84,6 @@
     </p>
   </section>
   <main id="matchups"></main>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

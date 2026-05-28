@@ -317,7 +317,7 @@ ol.contrib {
 
 ol.contrib li {
   display: grid;
-  grid-template-columns: 1fr auto auto auto auto auto;
+  grid-template-columns: 1fr auto auto auto auto auto auto auto;
   gap: .35rem .6rem;
   align-items: baseline;
   padding: .25rem 0;
@@ -361,6 +361,46 @@ ol.contrib .m {
   font-size: .85rem;
   padding: .35rem 0;
 }
+
+/* ── Week picker + future-week styling ── */
+.week-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: .35em;
+  color: var(--muted);
+  vertical-align: baseline;
+}
+
+.week-picker select {
+  appearance: auto;
+  font: inherit;
+  font-size: .85rem;
+  padding: .1rem .25rem;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.week-picker select:hover { border-color: var(--accent); }
+
+.future-pill {
+  display: inline-block;
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: .05em .5em;
+  border-radius: 3px;
+  background: #eaf0fa;
+  color: #234c93;
+  vertical-align: baseline;
+}
+
+.matchup.future .team-row .wp { color: var(--muted); }
+.matchup.future .team-row.favored .wp { color: var(--accent); }
+.matchup.future .team-row.favored .team-name { color: var(--accent); }
 
 /* ── Category win rates table ── */
 .catwp-hint {

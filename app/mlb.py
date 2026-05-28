@@ -22,6 +22,21 @@ def current_matchup_window(today: date | None = None) -> tuple[date, date]:
     return monday, sunday
 
 
+def matchup_period_window(period_id: int, current_period_id: int,
+                          today: date | None = None) -> tuple[date, date]:
+    """Mon→Sun for an arbitrary matchup period.
+
+    Anchors on the current period's Mon→Sun and adds 7 days per period offset.
+    Assumes weekly matchup periods (matchupPeriodLength=1 in ESPN settings),
+    which is what this league uses.
+    """
+    monday_curr, _ = current_matchup_window(today)
+    delta = (period_id - current_period_id) * 7
+    monday = monday_curr + timedelta(days=delta)
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
 def fetch_schedule(start: date, end: date) -> list[dict]:
     """Return a flat list of (game, team) rows for the date range.
 
