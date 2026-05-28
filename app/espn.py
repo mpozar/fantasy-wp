@@ -183,7 +183,36 @@ def fetch_rosters_and_projections() -> dict:
             )
             if ros:
                 proj_season = ros.get("seasonId", season_id)
-                for stat_id_str, value in (ros.get("stats") or {}).items():
+                ros_stats = dict((ros.get("stats") or {}))
+
+                # ESPN's ROS projection encoding for stat_id 83 (SV+HLD) is
+                # unreliable — for some players it returns total GP instead
+                # of remaining SV+HLD. The full-season projection's stat 83
+                # IS reliable (verified against ESPN's web UI). Override the
+                # ROS value with `full_season_proj_svhd - actual_to_date_svhd`
+                # (using ACT stat 56, which is the trustworthy SV+HLD counter
+                # in actual data).
+                full_proj = next(
+                    (s for s in p.get("stats", [])
+                     if s.get("statSourceId") == 1
+                     and s.get("statSplitTypeId") == 0
+                     and s.get("seasonId") == season_id),
+                    None,
+                )
+                act_ytd = next(
+                    (s for s in p.get("stats", [])
+                     if s.get("statSourceId") == 0
+                     and s.get("statSplitTypeId") == 0
+                     and s.get("seasonId") == season_id),
+                    None,
+                )
+                full_svhd = (full_proj.get("stats") or {}).get("83") if full_proj else None
+                actual_svhd = (act_ytd.get("stats") or {}).get("56") if act_ytd else None
+                if full_svhd is not None:
+                    derived_ros_svhd = max(0.0, float(full_svhd) - float(actual_svhd or 0))
+                    ros_stats["83"] = derived_ros_svhd
+
+                for stat_id_str, value in ros_stats.items():
                     if value is None:
                         continue
                     projections.append({
