@@ -220,7 +220,11 @@ def fetch_rosters_and_projections() -> dict:
                 if act_ytd:
                     act_stats = act_ytd.get("stats") or {}
                     act_gp = act_stats.get("32")
-                    act_svhd = act_stats.get("56")
+                    # stat_id 83 IS the league's SVHD scoring counter in both
+                    # actuals and projections — verified against ESPN's web UI.
+                    # stat_id 56 is the raw SV+HLD sum, which doesn't match
+                    # what ESPN scores (blown saves are subtracted, etc.).
+                    act_svhd = act_stats.get("83")
                     if act_gp and float(act_gp) >= MIN_ACT_GP_FOR_SVHD_RATE:
                         svhd_rate = float(act_svhd or 0) / float(act_gp)
                 if svhd_rate is None and full_proj:
