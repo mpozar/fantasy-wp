@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS team_schedule (
     probable_pitcher_mlbam_id  INTEGER,
     probable_pitcher_name      TEXT,
     game_status                TEXT,
+    current_inning             INTEGER,                 -- live inning for in-progress games
+    inning_state               TEXT,                    -- "Top"/"Middle"/"Bottom"/"End" or null
     fetched_at                 TEXT NOT NULL,
     PRIMARY KEY (matchup_period_id, game_pk, pro_team_id)
 );
@@ -122,6 +124,16 @@ def init() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        # Migrations for installed DBs that pre-date columns added later.
+        for column_def in (
+            ("team_schedule", "current_inning", "INTEGER"),
+            ("team_schedule", "inning_state", "TEXT"),
+        ):
+            table, col, type_ = column_def
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {type_}")
+            except sqlite3.OperationalError:
+                pass  # column already present
         conn.commit()
     finally:
         conn.close()

@@ -58,7 +58,9 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
                 "sportId": "1",
                 "startDate": start.isoformat(),
                 "endDate": end.isoformat(),
-                "hydrate": "probablePitcher",
+                # linescore gives currentInning + inningState for in-progress
+                # games, used by the sim to scale remaining production.
+                "hydrate": "probablePitcher,linescore",
             },
         )
     r.raise_for_status()
@@ -70,6 +72,9 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
             game_pk = g.get("gamePk")
             game_date = (g.get("officialDate") or g.get("gameDate") or "")[:10]
             status = (g.get("status") or {}).get("detailedState")
+            linescore = g.get("linescore") or {}
+            current_inning = linescore.get("currentInning")
+            inning_state = linescore.get("inningState")  # "Top"/"Middle"/"Bottom"/"End"
             teams = g.get("teams") or {}
             home = teams.get("home") or {}
             away = teams.get("away") or {}
@@ -93,5 +98,7 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
                     "probable_pitcher_mlbam_id": pp.get("id"),
                     "probable_pitcher_name": pp.get("fullName"),
                     "game_status": status,
+                    "current_inning": current_inning,
+                    "inning_state": inning_state,
                 })
     return out

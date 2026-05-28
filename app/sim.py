@@ -174,23 +174,114 @@ class Budget:
     expected: dict[int, float]             # stat_id → expected counter value
 
 
+# ── In-progress game scaling ──────────────────────────────────────────
+#
+# An in-progress game has already produced some of its cat stats (already
+# baked into the live cumulative state from ESPN). To avoid double-counting,
+# we scale that game's *remaining* production for each role. Different
+# roles consume innings differently:
+#
+#   - Hitters: production is spread across all 9 innings (cycle through
+#     the lineup ~3-4 times per game).
+#   - SPs: typically pulled around innings 5-6, so their remaining work
+#     shrinks fast and hits zero past their expected exit.
+#   - RPs: most of their work happens in the back of the game (innings
+#     6-9), so their remaining stays near 1.0 until late innings.
+#
+# Anything other than `Final` and `In Progress` (e.g. Scheduled, Pre-Game,
+# Warmup, Postponed) is treated as a full game ahead.
+
+# Innings of a typical game in which RPs do their work. Used as the
+# denominator for the RP "innings of bullpen work remaining" calculation.
+RP_WORK_INNINGS = 4
+RP_WORK_STARTS_AT = 6  # earliest inning we expect RP work
+
+
+def _elapsed_innings(g: dict) -> float:
+    """Best-effort elapsed-innings count for an in-progress game. Uses the
+    half-inning state when available; falls back to mid-inning assumption."""
+    cur = g.get("current_inning")
+    if cur is None:
+        return 0.0
+    state = (g.get("inning_state") or "").lower()
+    # "Top N":    inning N starting → (N-1) innings completed
+    # "Middle N": top of N done, bottom not started → N-0.5
+    # "Bottom N": bottom of N happening → N-0.5
+    # "End N":    inning N fully done → N
+    if state == "top":
+        return float(cur) - 1.0
+    if state == "end":
+        return float(cur)
+    # "Middle"/"Bottom" or unknown: assume top half completed
+    return float(cur) - 0.5
+
+
+def _hitter_factor(g: dict) -> float:
+    status = g.get("game_status")
+    if status == "Final":
+        return 0.0
+    if g.get("current_inning") is None:
+        return 1.0
+    elapsed = _elapsed_innings(g)
+    return max(0.0, (9.0 - elapsed) / 9.0)
+
+
+def _rp_factor(g: dict) -> float:
+    status = g.get("game_status")
+    if status == "Final":
+        return 0.0
+    if g.get("current_inning") is None:
+        return 1.0
+    elapsed = _elapsed_innings(g)
+    # RPs only start consuming "remaining" once the game enters the
+    # bullpen window (~inning 6). Before that, full appearance ahead.
+    rp_elapsed = max(0.0, elapsed - (RP_WORK_STARTS_AT - 1))
+    return max(0.0, min(1.0, (RP_WORK_INNINGS - rp_elapsed) / RP_WORK_INNINGS))
+
+
+def _sp_factor(g: dict, sp_exit_inning: float) -> float:
+    status = g.get("game_status")
+    if status == "Final":
+        return 0.0
+    if g.get("current_inning") is None:
+        return 1.0
+    elapsed = _elapsed_innings(g)
+    if sp_exit_inning <= 0:
+        return 0.0
+    return max(0.0, (sp_exit_inning - elapsed) / sp_exit_inning)
+
+
+def _hitter_remaining_units(team_id: int,
+                            schedule_by_team: dict[int, list[dict]]) -> float:
+    return sum(_hitter_factor(g) for g in schedule_by_team.get(team_id, []))
+
+
+def _rp_remaining_units(team_id: int,
+                        schedule_by_team: dict[int, list[dict]]) -> float:
+    return sum(_rp_factor(g) for g in schedule_by_team.get(team_id, []))
+
+
 def _remaining_team_games(team_id: int, schedule_by_team: dict[int, list[dict]]) -> int:
+    """Integer count of non-Final games. Used by the future-week SP
+    estimator where there's no inning data anyway."""
     games = schedule_by_team.get(team_id, [])
     return sum(1 for g in games if g.get("game_status") != "Final")
 
 
 def _probable_starts_for(player_name: str, team_id: int,
-                         schedule_by_team: dict[int, list[dict]]) -> int:
+                         schedule_by_team: dict[int, list[dict]],
+                         sp_exit_inning: float) -> float:
+    """Sum of SP factors over games where this pitcher is the probable
+    starter. Returns a float in [0, n_probable_games] — partial credit for
+    in-progress games that the SP is currently pitching."""
     target = _norm_name(player_name)
     if not target:
-        return 0
-    starts = 0
+        return 0.0
+    total = 0.0
     for g in schedule_by_team.get(team_id, []):
-        if g.get("game_status") == "Final":
-            continue
         if _norm_name(g.get("probable_pitcher_name")) == target:
-            starts += 1
-    return starts
+            total += _sp_factor(g, sp_exit_inning)
+    return total
 
 
 def build_budgets(roster: list[dict],
@@ -241,25 +332,42 @@ def build_budgets(roster: list[dict],
                     else:
                         units = 0
                 else:
-                    units = _probable_starts_for(p["full_name"], team_id, schedule_by_team)
+                    # Current-week SP: scale their probable start(s) by how
+                    # much of their typical outing is still ahead in any
+                    # in-progress game. avg_innings_per_start = (ros_outs /
+                    # ros_gs) / 3; the SP's "done" point is ~1 inning past
+                    # their average.
+                    if gs_ros > 0:
+                        avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
+                        sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
+                    else:
+                        sp_exit_inning = 6.0  # safe default
+                    units = _probable_starts_for(
+                        p["full_name"], team_id, schedule_by_team, sp_exit_inning,
+                    )
                 denom = gs_ros
                 role = "SP"
             else:
-                team_games = _remaining_team_games(team_id, schedule_by_team)
+                # RP units scale per-game using the bullpen-window factor —
+                # see _rp_factor. Final games drop to 0, mid-game games to a
+                # partial value; everything else stays at 1.0.
+                rp_remaining = _rp_remaining_units(team_id, schedule_by_team)
                 total_ros = team_total_ros_games.get(team_id, 0)
                 # Per-player appearance rate beats a fixed constant: a long-
                 # reliever might appear in <20% of team games while a closer
                 # is near 50%. Multiplying both by a flat 0.60 inflates the
                 # long-reliever's projection 3×.
                 if total_ros > 0 and gp_ros > 0:
-                    units = (gp_ros / total_ros) * team_games
+                    units = (gp_ros / total_ros) * rp_remaining
                 else:
-                    units = team_games * RP_APPEARANCE_RATE
+                    units = rp_remaining * RP_APPEARANCE_RATE
                 denom = gp_ros
                 role = "RP"
             counters = PITCHER_COUNTERS
         else:  # Hitter
-            units = _remaining_team_games(team_id, schedule_by_team)
+            # Hitter units are now a float — each in-progress game contributes
+            # less than 1.0 based on innings remaining (see _hitter_factor).
+            units = _hitter_remaining_units(team_id, schedule_by_team)
             denom = ros.get(STAT_HIT_G) or 0
             counters = HITTER_COUNTERS
             role = "HIT"
@@ -521,7 +629,8 @@ def load_schedule_by_team(conn: sqlite3.Connection,
     rows = conn.execute(
         """
         SELECT pro_team_id, game_date, opponent_pro_team_id, is_home,
-               probable_pitcher_mlbam_id, probable_pitcher_name, game_status
+               probable_pitcher_mlbam_id, probable_pitcher_name, game_status,
+               current_inning, inning_state
         FROM team_schedule
         WHERE matchup_period_id = ?
         ORDER BY game_date

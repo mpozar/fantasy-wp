@@ -6,7 +6,7 @@ https://mpozar.github.io/fantasy-wp/ only updates when **fast.sh** pushes a new
 
 | Script        | What it does                                                    | Suggested cadence |
 | ------------- | --------------------------------------------------------------- | ----------------- |
-| `fast.sh`     | `fetch` (all periods) + `compute` (current week) + `publish` + push | every 5 min       |
+| `fast.sh`     | `refresh-live` + `fetch` + `compute` (current week) + `publish` + push | every 5 min       |
 | `medium.sh`   | `refresh-rosters` + `compute --future` (all remaining weeks)    | every 4 hours     |
 | `daily.sh`    | `refresh-schedule` (MLB games + probable pitchers, full season) | once a day        |
 

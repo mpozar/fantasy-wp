@@ -229,8 +229,8 @@ def refresh_schedule() -> None:
                             (matchup_period_id, game_pk, game_date, pro_team_id,
                              opponent_pro_team_id, is_home,
                              probable_pitcher_mlbam_id, probable_pitcher_name,
-                             game_status, fetched_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)
+                             game_status, current_inning, inning_state, fetched_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
                             game_date=excluded.game_date,
                             opponent_pro_team_id=excluded.opponent_pro_team_id,
@@ -238,12 +238,15 @@ def refresh_schedule() -> None:
                             probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
                             probable_pitcher_name=excluded.probable_pitcher_name,
                             game_status=excluded.game_status,
+                            current_inning=excluded.current_inning,
+                            inning_state=excluded.inning_state,
                             fetched_at=excluded.fetched_at
                         """,
                         (period_id, g["game_pk"], g["game_date"], g["espn_team_id"],
                          g["opponent_espn_team_id"], g["is_home"],
                          g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
-                         g["game_status"], now),
+                         g["game_status"], g.get("current_inning"), g.get("inning_state"),
+                         now),
                     )
             total_games += len(games)
     finally:
@@ -252,6 +255,57 @@ def refresh_schedule() -> None:
     click.echo(
         f"Refreshed schedule: periods {current}..{last}, "
         f"team_game_rows={total_games}"
+    )
+
+
+@cli.command("refresh-live")
+def refresh_live() -> None:
+    """Upsert today's MLB games' status + inning state into team_schedule.
+
+    Cheap (one MLB API call for today's date range) and safe to run every
+    fast-tier tick — no DELETE, just upserts on the existing rows. The sim
+    uses current_inning + inning_state to scale remaining production for
+    in-progress games.
+    """
+    from datetime import date
+
+    shape = espn.fetch_league_shape()
+    period_id = shape.current_matchup_period
+    today = date.today()
+    games = mlb.fetch_schedule(today, today)
+    now = _now_iso()
+
+    conn = db.connect()
+    try:
+        with conn:
+            for g in games:
+                conn.execute(
+                    """
+                    INSERT INTO team_schedule
+                        (matchup_period_id, game_pk, game_date, pro_team_id,
+                         opponent_pro_team_id, is_home,
+                         probable_pitcher_mlbam_id, probable_pitcher_name,
+                         game_status, current_inning, inning_state, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
+                        game_status=excluded.game_status,
+                        current_inning=excluded.current_inning,
+                        inning_state=excluded.inning_state,
+                        probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
+                        probable_pitcher_name=excluded.probable_pitcher_name,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    (period_id, g["game_pk"], g["game_date"], g["espn_team_id"],
+                     g["opponent_espn_team_id"], g["is_home"],
+                     g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
+                     g["game_status"], g.get("current_inning"), g.get("inning_state"),
+                     now),
+                )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Refreshed live game state: {today.isoformat()}, team_game_rows={len(games)}"
     )
 
 

@@ -17,6 +17,7 @@ source "$(dirname "$0")/_common.sh"
 
     log fast "start"
 
+    "$APP" refresh-live
     "$APP" fetch
     "$APP" compute
     "$APP" publish
