@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from app import LEAGUE_ID, SEASON_ID, db, espn, mlb, model, stats
+from app import LEAGUE_ID, SEASON_ID, db, espn, mlb, model, sim, stats
 
 
 def _now_iso() -> str:
@@ -240,7 +240,13 @@ def refresh_schedule() -> None:
 
 
 @cli.command()
-def compute() -> None:
+@click.option("--model", "model_name",
+              type=click.Choice(["mc-v1", "ratio-v0"]),
+              default="mc-v1", show_default=True,
+              help="Which WP model to use.")
+@click.option("--sims", type=int, default=sim.DEFAULT_SIMS, show_default=True,
+              help="Monte Carlo sim count (mc-v1 only).")
+def compute(model_name: str, sims: int) -> None:
     """Compute WP for all matchups in the current matchup period."""
     conn = db.connect()
     try:
@@ -251,14 +257,6 @@ def compute() -> None:
         if ss is None:
             raise click.ClickException("No scoring_settings. Run `app fetch` first.")
 
-        categories_raw = json.loads(ss["categories_json"])
-        categories = [
-            model.CatConfig(stat_id=c["stat_id"], reversed=c["reversed"])
-            for c in categories_raw
-        ]
-        tiebreaker = ss["tiebreaker_stat_id"]
-
-        # Latest matchup_period_id we have in matchups table
         row = conn.execute(
             "SELECT MAX(matchup_period_id) AS p FROM matchups"
         ).fetchone()
@@ -271,13 +269,53 @@ def compute() -> None:
             (period_id,),
         ).fetchall()
 
+        if model_name == "mc-v1":
+            schedule_by_team = sim.load_schedule_by_team(conn, period_id)
+            if not schedule_by_team:
+                raise click.ClickException(
+                    "No team_schedule rows for the current period. "
+                    "Run `app refresh-schedule` first."
+                )
+            rosters_present = conn.execute(
+                "SELECT COUNT(*) FROM team_rosters WHERE matchup_period_id=?",
+                (period_id,),
+            ).fetchone()[0]
+            if rosters_present == 0:
+                raise click.ClickException(
+                    "No rosters for the current period. "
+                    "Run `app refresh-rosters` first."
+                )
+
+        categories_raw = json.loads(ss["categories_json"])
+        categories = [
+            model.CatConfig(stat_id=c["stat_id"], reversed=c["reversed"])
+            for c in categories_raw
+        ]
+        tiebreaker = ss["tiebreaker_stat_id"]
+
         now = _now_iso()
         for m in ms:
             home_scores = _latest_scores(conn, m["id"], m["home_team_id"])
             away_scores = _latest_scores(conn, m["id"], m["away_team_id"])
-            home_wp, away_wp, details = model.compute_wp(
-                home_scores, away_scores, categories, tiebreaker,
-            )
+
+            if model_name == "mc-v1":
+                inputs = sim.MatchupInputs(
+                    matchup_id=m["id"],
+                    home_state=home_scores,
+                    away_state=away_scores,
+                    home_roster=sim.load_team_roster(conn, period_id, m["home_team_id"]),
+                    away_roster=sim.load_team_roster(conn, period_id, m["away_team_id"]),
+                )
+                home_wp, away_wp, details = sim.simulate(
+                    inputs, schedule_by_team, n_sims=sims,
+                )
+                version = sim.MODEL_VERSION
+            else:
+                home_wp, away_wp, details = model.compute_wp(
+                    home_scores, away_scores, categories, tiebreaker,
+                )
+                version = model.MODEL_VERSION
+
             conn.execute(
                 """
                 INSERT OR REPLACE INTO wp_snapshots
@@ -285,11 +323,13 @@ def compute() -> None:
                      model_version, details_json)
                 VALUES (?,?,?,?,?,?)
                 """,
-                (m["id"], now, home_wp, away_wp, model.MODEL_VERSION,
-                 json.dumps(details)),
+                (m["id"], now, home_wp, away_wp, version, json.dumps(details)),
             )
         conn.commit()
-        click.echo(f"Computed WP for {len(ms)} matchups (period {period_id}).")
+        click.echo(
+            f"Computed WP for {len(ms)} matchups (period {period_id}) "
+            f"using {model_name}."
+        )
     finally:
         conn.close()
 
