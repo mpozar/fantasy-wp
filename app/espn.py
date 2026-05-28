@@ -115,6 +115,83 @@ def fetch_teams() -> list[dict]:
     return out
 
 
+def fetch_rosters_and_projections() -> dict:
+    """Pull every fantasy team's roster + each rostered player's ROS projection.
+
+    Returns a dict with:
+      - matchup_period_id (int)
+      - season_id (int)
+      - players: [{id, full_name, pro_team_id, default_position_id,
+                   eligible_slots, injury_status}]
+      - roster_entries: [{fantasy_team_id, player_id, lineup_slot_id, status}]
+      - projections: [{player_id, stat_id, value, split_id, season_id}]
+        Only ROS (statSourceId=1, statSplitTypeId=6) is included.
+    """
+    d = _get(["mRoster"])
+    period_id = d["status"]["currentMatchupPeriod"]
+    season_id = d.get("seasonId", SEASON_ID)
+
+    players: list[dict] = []
+    roster_entries: list[dict] = []
+    projections: list[dict] = []
+    seen_player_ids: set[int] = set()
+
+    for t in d.get("teams", []):
+        team_id = t["id"]
+        for entry in t.get("roster", {}).get("entries", []):
+            ppe = entry.get("playerPoolEntry") or {}
+            p = ppe.get("player") or {}
+            pid = p.get("id")
+            if pid is None:
+                continue
+
+            roster_entries.append({
+                "fantasy_team_id": team_id,
+                "player_id": pid,
+                "lineup_slot_id": entry.get("lineupSlotId"),
+                "status": entry.get("status"),
+            })
+
+            if pid in seen_player_ids:
+                continue
+            seen_player_ids.add(pid)
+
+            players.append({
+                "id": pid,
+                "full_name": p.get("fullName") or "",
+                "pro_team_id": p.get("proTeamId"),
+                "default_position_id": p.get("defaultPositionId"),
+                "eligible_slots": p.get("eligibleSlots") or [],
+                "injury_status": p.get("injuryStatus"),
+            })
+
+            ros = next(
+                (s for s in p.get("stats", [])
+                 if s.get("statSourceId") == 1 and s.get("statSplitTypeId") == 6),
+                None,
+            )
+            if ros:
+                proj_season = ros.get("seasonId", season_id)
+                for stat_id_str, value in (ros.get("stats") or {}).items():
+                    if value is None:
+                        continue
+                    projections.append({
+                        "player_id": pid,
+                        "stat_id": int(stat_id_str),
+                        "value": float(value),
+                        "split_id": 6,
+                        "season_id": proj_season,
+                    })
+
+    return {
+        "matchup_period_id": period_id,
+        "season_id": season_id,
+        "players": players,
+        "roster_entries": roster_entries,
+        "projections": projections,
+    }
+
+
 def fetch_matchup_period(period_id: int) -> list[dict]:
     """All matchups for a given matchup period, each with cat-by-cat scores.
 

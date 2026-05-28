@@ -111,6 +111,81 @@ def fetch() -> None:
     )
 
 
+@cli.command("refresh-rosters")
+def refresh_rosters() -> None:
+    """Pull rosters + per-player ROS projections from ESPN into SQLite.
+
+    Transactional: nothing is changed in the DB unless the whole ESPN fetch
+    succeeds. Safe to run every few hours via cron.
+    """
+    snap = espn.fetch_rosters_and_projections()
+    now = _now_iso()
+    period_id = snap["matchup_period_id"]
+
+    conn = db.connect()
+    try:
+        with conn:
+            for p in snap["players"]:
+                conn.execute(
+                    """
+                    INSERT INTO players
+                        (id, full_name, pro_team_id, default_position_id,
+                         eligible_slots_json, injury_status, fetched_at)
+                    VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        full_name=excluded.full_name,
+                        pro_team_id=excluded.pro_team_id,
+                        default_position_id=excluded.default_position_id,
+                        eligible_slots_json=excluded.eligible_slots_json,
+                        injury_status=excluded.injury_status,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    (p["id"], p["full_name"], p["pro_team_id"],
+                     p["default_position_id"], json.dumps(p["eligible_slots"]),
+                     p["injury_status"], now),
+                )
+
+            # Replace roster for this matchup period in one shot
+            conn.execute(
+                "DELETE FROM team_rosters WHERE matchup_period_id=?",
+                (period_id,),
+            )
+            for r in snap["roster_entries"]:
+                conn.execute(
+                    """
+                    INSERT INTO team_rosters
+                        (matchup_period_id, fantasy_team_id, player_id,
+                         lineup_slot_id, status, fetched_at)
+                    VALUES (?,?,?,?,?,?)
+                    """,
+                    (period_id, r["fantasy_team_id"], r["player_id"],
+                     r["lineup_slot_id"], r["status"], now),
+                )
+
+            for pr in snap["projections"]:
+                conn.execute(
+                    """
+                    INSERT INTO player_projections
+                        (player_id, stat_id, value, split_id, season_id, fetched_at)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(player_id, stat_id, split_id, season_id) DO UPDATE SET
+                        value=excluded.value,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    (pr["player_id"], pr["stat_id"], pr["value"],
+                     pr["split_id"], pr["season_id"], now),
+                )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Refreshed rosters: period={period_id}, "
+        f"players={len(snap['players'])}, "
+        f"roster_entries={len(snap['roster_entries'])}, "
+        f"projections={len(snap['projections'])}"
+    )
+
+
 @cli.command()
 def compute() -> None:
     """Compute WP for all matchups in the current matchup period."""
