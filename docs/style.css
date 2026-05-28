@@ -362,6 +362,62 @@ ol.contrib .m {
   padding: .35rem 0;
 }
 
+/* ── Category win rates table ── */
+.catwp-hint {
+  margin: -.15rem 0 .55rem;
+  font-size: .78rem;
+  color: var(--muted);
+}
+
+table.catwp {
+  width: 100%;
+  max-width: 520px;
+  border-collapse: collapse;
+  font-size: .88rem;
+  font-variant-numeric: tabular-nums;
+}
+
+table.catwp th {
+  font-size: .72rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+  padding: .35rem .55rem .3rem;
+  border-bottom: 1px solid var(--line);
+}
+table.catwp th:first-child { text-align: left; }
+
+table.catwp td {
+  padding: .3rem .55rem;
+  border-bottom: 1px solid var(--line);
+}
+table.catwp tbody tr:last-child td { border-bottom: 0; }
+
+.catwp-name {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.catwp-name .cat-rev {
+  color: var(--muted);
+  font-size: .85em;
+  margin-left: .1em;
+}
+
+/* Probability → color. p=0 pink, p=0.5 pale yellow, p=1 green. */
+.catwp-cell {
+  background: hsl(calc(var(--p) * 120), 60%, 92%);
+  font-feature-settings: "tnum";
+  text-align: right;
+  font-weight: 500;
+}
+
+.catwp-tie {
+  color: var(--tie-fg);
+  font-size: .85rem;
+}
+
 /* ── WP-over-time chart ── */
 .wp-chart {
   width: 100%;

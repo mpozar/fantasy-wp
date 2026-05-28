@@ -119,13 +119,63 @@ function contributorsList(budgets, side) {
   return `<ol class="contrib ${side}">${rows}</ol>`;
 }
 
-function renderDetails(m) {
+// Per-category sim win rates. Renders a compact table with a probability →
+// color gradient so close vs. settled categories jump out at a glance.
+function renderCategoryWP(d, cats, m) {
+  if (!d.category_wp || !cats) return "";
+  const n = d.n_sims;
+  const byStat = Object.create(null);
+  for (const c of d.category_wp) byStat[c.stat_id] = c;
+
+  const ordered = [...cats.batting, ...cats.pitching];
+  const anyTies = ordered.some((c) => {
+    const e = byStat[c.stat_id];
+    return e && e.ties / n >= 0.005;
+  });
+
+  const cell = (p) =>
+    `<td class="num catwp-cell" style="--p:${p.toFixed(3)}">${(p * 100).toFixed(1)}%</td>`;
+
+  const rows = ordered.map((c) => {
+    const e = byStat[c.stat_id];
+    if (!e) return "";
+    const h = e.home_wins / n;
+    const a = e.away_wins / n;
+    const t = e.ties / n;
+    const arrow = c.reversed ? ' <span class="cat-rev" title="lower is better">↓</span>' : "";
+    return `
+      <tr>
+        <td class="catwp-name">${c.name}${arrow}</td>
+        ${cell(h)}
+        ${cell(a)}
+        ${anyTies ? `<td class="num catwp-tie">${(t * 100).toFixed(1)}%</td>` : ""}
+      </tr>`;
+  }).join("");
+
+  return `
+    <h3>Category win rates</h3>
+    <p class="catwp-hint">Out of ${n.toLocaleString()} sims — green = usually wins this category, pink = usually loses, neutral = coin flip.</p>
+    <table class="catwp">
+      <thead>
+        <tr>
+          <th></th>
+          <th>${m.home.name ?? "Home"}</th>
+          <th>${m.away.name ?? "Away"}</th>
+          ${anyTies ? "<th>tie</th>" : ""}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderDetails(m, cats) {
   if (!m.details) return "";
   const d = m.details;
   return `
     <div class="details-inner">
       <h3>Win probability over time</h3>
       ${renderChart(m.history, m.model_version)}
+      ${renderCategoryWP(d, cats, m)}
       <h3>What's driving the projection</h3>
       <div class="details-grid">
         <div>
@@ -189,7 +239,7 @@ function renderMatchup(m, cats, tbId, idx) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m)}
+        ${renderDetails(m, cats)}
       </div>
     </section>`;
 }

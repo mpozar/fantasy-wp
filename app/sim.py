@@ -240,33 +240,38 @@ def build_budgets(roster: list[dict],
 
 # ── Score a single simulated matchup ──
 
-def _decide(home_counters: dict, away_counters: dict) -> str:
-    """Return 'HOME', 'AWAY', or 'TIE' (which never happens since we always
-    break with hits, but keep for safety)."""
+def _decide(home_counters: dict,
+            away_counters: dict) -> tuple[str, dict[int, str]]:
+    """Return (matchup_winner, per_cat) where per_cat maps stat_id to
+    'HOME' | 'AWAY' | 'TIE'."""
+    per_cat: dict[int, str] = {}
     home_cats = 0
     away_cats = 0
     for stat_id, reversed_ in CATEGORIES:
         h = _cat_value(home_counters, stat_id)
         a = _cat_value(away_counters, stat_id)
         if h == a:
+            per_cat[stat_id] = "TIE"
             continue
         home_better = (h < a) if reversed_ else (h > a)
         if home_better:
+            per_cat[stat_id] = "HOME"
             home_cats += 1
         else:
+            per_cat[stat_id] = "AWAY"
             away_cats += 1
     if home_cats > away_cats:
-        return "HOME"
+        return "HOME", per_cat
     if away_cats > home_cats:
-        return "AWAY"
+        return "AWAY", per_cat
     # Categories tied — tiebreaker on hits
     h_tb = _cat_value(home_counters, TIEBREAKER_STAT_ID)
     a_tb = _cat_value(away_counters, TIEBREAKER_STAT_ID)
     if h_tb > a_tb:
-        return "HOME"
+        return "HOME", per_cat
     if a_tb > h_tb:
-        return "AWAY"
-    return "TIE"
+        return "AWAY", per_cat
+    return "TIE", per_cat
 
 
 # ── Per-sim team-totals draw ──
@@ -300,16 +305,21 @@ def simulate(inputs: MatchupInputs,
     home_wins = 0
     away_wins = 0
     ties = 0
+    cat_counts: dict[int, dict[str, int]] = {
+        stat_id: {"HOME": 0, "AWAY": 0, "TIE": 0} for stat_id, _ in CATEGORIES
+    }
     for _ in range(n_sims):
         h = _simulate_team(inputs.home_state, home_budgets)
         a = _simulate_team(inputs.away_state, away_budgets)
-        w = _decide(h, a)
+        w, per_cat = _decide(h, a)
         if w == "HOME":
             home_wins += 1
         elif w == "AWAY":
             away_wins += 1
         else:
             ties += 1
+        for stat_id, outcome in per_cat.items():
+            cat_counts[stat_id][outcome] += 1
 
     home_wp = home_wins / n_sims
     away_wp = away_wins / n_sims
@@ -328,12 +338,23 @@ def simulate(inputs: MatchupInputs,
             "exp_qs": round(b.expected.get(STAT_QS, 0), 2),
         } for b in bs]
 
+    category_wp = [
+        {
+            "stat_id": stat_id,
+            "home_wins": cat_counts[stat_id]["HOME"],
+            "away_wins": cat_counts[stat_id]["AWAY"],
+            "ties": cat_counts[stat_id]["TIE"],
+        }
+        for stat_id, _ in CATEGORIES
+    ]
+
     details = {
         "model": MODEL_VERSION,
         "n_sims": n_sims,
         "home_wins": home_wins,
         "away_wins": away_wins,
         "ties": ties,
+        "category_wp": category_wp,
         "home_budgets": budget_summary(home_budgets),
         "away_budgets": budget_summary(away_budgets),
     }
