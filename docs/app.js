@@ -115,6 +115,7 @@ function contributorsList(budgets, side) {
          <span class="m">${b.exp_k.toFixed(1)} K</span>
          <span class="m">${b.exp_outs.toFixed(0)} OUT</span>
          ${b.exp_qs > 0.05 ? `<span class="m">${b.exp_qs.toFixed(2)} QS</span>` : ""}
+         ${b.exp_svhd > 0.05 ? `<span class="m">${b.exp_svhd.toFixed(2)} SVHD</span>` : ""}
          ${b.exp_era != null ? `<span class="m">${b.exp_era.toFixed(2)} ERA</span>` : ""}
          ${b.exp_whip != null ? `<span class="m">${b.exp_whip.toFixed(2)} WHIP</span>` : ""}`
       : `<span class="m">${b.units.toFixed(0)} G</span>

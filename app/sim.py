@@ -78,8 +78,10 @@ TIEBREAKER_STAT_ID = STAT_H
 # Slots we exclude from production
 EXCLUDED_SLOTS = {16, 17}  # BE, IL
 
-# RP appearance rate as a fraction of team games (rough constant for v1)
-RP_APPEARANCE_RATE = 0.60
+# Fallback RP appearance rate when ROS projection or team-total games are
+# missing. Real per-player rates range ~0.1 (mop-up) to ~0.5 (workhorse
+# closer), so this fallback is intentionally middle-of-the-pack.
+RP_APPEARANCE_RATE = 0.40
 
 # Cap on per-team-game SP start rate when estimating from ROS projections.
 # Real MLB rotations top out near 1-start-per-5-team-games (20%); slight slack
@@ -213,34 +215,49 @@ def build_budgets(roster: list[dict],
         pos = p["default_position_id"]
         team_id = p["pro_team_id"]
 
-        if pos == 1:  # SP
-            if estimate_sp_starts:
+        is_pitcher = pos in (1, 11)
+        if is_pitcher:
+            # Classify by projected usage, not by ESPN's defaultPositionId.
+            # RP-eligible swingmen (Wrobleski, etc.) get default_position_id=11
+            # but are projected like starters; without this check they'd be
+            # given `team_games × 0.60` RP appearances using SP-shaped per-
+            # appearance stats, which over-projects outs by 3-4×.
+            gs_ros = ros.get(STAT_GS) or 0
+            gp_ros = ros.get(STAT_PITCH_GP) or 0
+            if gp_ros > 0:
+                is_sp = (gs_ros / gp_ros) > 0.5
+            else:
+                is_sp = (pos == 1)
+
+            if is_sp:
+                if estimate_sp_starts:
+                    team_games = _remaining_team_games(team_id, schedule_by_team)
+                    total_ros = team_total_ros_games.get(team_id, 0)
+                    if total_ros > 0 and gs_ros > 0 and team_games > 0:
+                        # Cap the per-team-game start rate at the realistic
+                        # 5-man-rotation ceiling (see MAX_SP_RATE).
+                        rate = min(gs_ros / total_ros, MAX_SP_RATE)
+                        units = rate * team_games
+                    else:
+                        units = 0
+                else:
+                    units = _probable_starts_for(p["full_name"], team_id, schedule_by_team)
+                denom = gs_ros
+                role = "SP"
+            else:
                 team_games = _remaining_team_games(team_id, schedule_by_team)
                 total_ros = team_total_ros_games.get(team_id, 0)
-                gs_ros = ros.get(STAT_GS) or 0
-                if total_ros > 0 and gs_ros > 0 and team_games > 0:
-                    # Cap the per-team-game start rate at the realistic
-                    # 5-man-rotation ceiling. ESPN's ROS projection for top
-                    # aces sometimes implies >25% (i.e., one start every <4
-                    # games), which no MLB rotation slot actually delivers.
-                    # Without the cap, a typical 6-game week credits an ace
-                    # with ~1.55 starts; capped, it's ~1.26 — matching the
-                    # 5-man-rotation expectation.
-                    rate = min(gs_ros / total_ros, MAX_SP_RATE)
-                    units = rate * team_games
+                # Per-player appearance rate beats a fixed constant: a long-
+                # reliever might appear in <20% of team games while a closer
+                # is near 50%. Multiplying both by a flat 0.60 inflates the
+                # long-reliever's projection 3×.
+                if total_ros > 0 and gp_ros > 0:
+                    units = (gp_ros / total_ros) * team_games
                 else:
-                    units = 0
-            else:
-                units = _probable_starts_for(p["full_name"], team_id, schedule_by_team)
-            denom = ros.get(STAT_GS) or 0
+                    units = team_games * RP_APPEARANCE_RATE
+                denom = gp_ros
+                role = "RP"
             counters = PITCHER_COUNTERS
-            role = "SP"
-        elif pos == 11:  # RP
-            team_games = _remaining_team_games(team_id, schedule_by_team)
-            units = team_games * RP_APPEARANCE_RATE
-            denom = ros.get(STAT_PITCH_GP) or 0
-            counters = PITCHER_COUNTERS
-            role = "RP"
         else:  # Hitter
             units = _remaining_team_games(team_id, schedule_by_team)
             denom = ros.get(STAT_HIT_G) or 0
@@ -392,6 +409,7 @@ def simulate(inputs: MatchupInputs,
                     "exp_k":    round(b.expected.get(STAT_K, 0), 1),
                     "exp_outs": round(exp_outs, 1),
                     "exp_qs":   round(b.expected.get(STAT_QS, 0), 2),
+                    "exp_svhd": round(b.expected.get(STAT_SVHD, 0), 2),
                 })
                 # ERA/WHIP need at least ~1 IP of expected production to be
                 # informative — otherwise it's noise from a 1-out projection.

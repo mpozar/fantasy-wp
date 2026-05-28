@@ -298,11 +298,11 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         ]
         tiebreaker = ss["tiebreaker_stat_id"]
 
-        # For future-week SP estimation, the share of a team's remaining season
-        # games that fall in any given week. Cheap to compute once.
+        # Used by both future-week SP estimation and per-player RP rates.
+        # Cheap (one query) so always load when we're running mc-v1.
         team_total_ros_games = (
             sim.load_total_remaining_games(conn, current, last_reg)
-            if (future_only and model_name == "mc-v1") else {}
+            if model_name == "mc-v1" else {}
         )
 
         now = _now_iso()
