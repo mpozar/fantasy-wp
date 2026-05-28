@@ -117,12 +117,12 @@ RP_APPEARANCE_RATE = 0.40
 # above that to allow for occasional spot starts when other arms are unavailable.
 MAX_SP_RATE = 0.21
 
-# Cap on per-appearance SV+HLD rate. ESPN's projection encoding for stat_id 83
-# is inconsistent across players — some have it ≈ GF (~half of GP), others
-# have it equal to GP itself, giving an unphysical 1.0 rate. Real elite
-# closers/setup men top out around 60-65% (one of SV or HLD is earned per
-# appearance, never both, and many appearances are non-save/non-hold spots).
-MAX_SVHD_RATE = 0.65
+# Cap on per-appearance SV+HLD rate. The ROS SVHD value is derived from the
+# player's actual season-to-date rate (with a fallback to ESPN's full-season
+# projection rate when sample size is small), so this cap only guards against
+# extreme cases — e.g. a hot reliever whose actual rate is > 80% in a small
+# sample. Realistic elite high-leverage RPs top out near 0.75-0.80.
+MAX_SVHD_RATE = 0.80
 
 
 # ── name matching for probable pitchers ──

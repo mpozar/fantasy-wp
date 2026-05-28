@@ -15,6 +15,11 @@ BASE_URL = (
     f"/segments/0/leagues/{LEAGUE_ID}"
 )
 
+# Minimum games a reliever needs in the current season for their actual
+# SV+HLD rate to be trusted. Below this we fall back to ESPN's full-season
+# projection rate so a tiny sample doesn't blow up the projection.
+MIN_ACT_GP_FOR_SVHD_RATE = 15
+
 
 class ESPNAuthError(RuntimeError):
     """Raised when ESPN responds with a redirect (cookies invalid/expired)."""
@@ -186,19 +191,17 @@ def fetch_rosters_and_projections() -> dict:
                 ros_stats = dict((ros.get("stats") or {}))
 
                 # ESPN's ROS projection encoding for stat_id 83 (SV+HLD) is
-                # unreliable — for some players it returns total GP instead
-                # of remaining SV+HLD. The full-season projection's stat 83
-                # IS reliable (verified against ESPN's web UI). Override the
-                # ROS value with `full_season_proj_svhd - actual_to_date_svhd`
-                # (using ACT stat 56, which is the trustworthy SV+HLD counter
-                # in actual data).
-                full_proj = next(
-                    (s for s in p.get("stats", [])
-                     if s.get("statSourceId") == 1
-                     and s.get("statSplitTypeId") == 0
-                     and s.get("seasonId") == season_id),
-                    None,
-                )
+                # unreliable — for some players it returns total GP. Their
+                # full-season projection (split=0) is also unreliable as a
+                # forecasting source: it's a preseason number that doesn't
+                # update with current performance, so subtracting actuals
+                # from it goes negative when a player outperforms it.
+                #
+                # Instead, derive a per-appearance SVHD rate from the player's
+                # *actual* season-to-date numbers (where stat_id 56 reliably
+                # equals SV + HLD) and apply that rate to projected ROS GP.
+                # For low-sample players (early in the season or recent
+                # call-ups), fall back to the full-season projection's rate.
                 act_ytd = next(
                     (s for s in p.get("stats", [])
                      if s.get("statSourceId") == 0
@@ -206,11 +209,30 @@ def fetch_rosters_and_projections() -> dict:
                      and s.get("seasonId") == season_id),
                     None,
                 )
-                full_svhd = (full_proj.get("stats") or {}).get("83") if full_proj else None
-                actual_svhd = (act_ytd.get("stats") or {}).get("56") if act_ytd else None
-                if full_svhd is not None:
-                    derived_ros_svhd = max(0.0, float(full_svhd) - float(actual_svhd or 0))
-                    ros_stats["83"] = derived_ros_svhd
+                full_proj = next(
+                    (s for s in p.get("stats", [])
+                     if s.get("statSourceId") == 1
+                     and s.get("statSplitTypeId") == 0
+                     and s.get("seasonId") == season_id),
+                    None,
+                )
+                svhd_rate: float | None = None
+                if act_ytd:
+                    act_stats = act_ytd.get("stats") or {}
+                    act_gp = act_stats.get("32")
+                    act_svhd = act_stats.get("56")
+                    if act_gp and float(act_gp) >= MIN_ACT_GP_FOR_SVHD_RATE:
+                        svhd_rate = float(act_svhd or 0) / float(act_gp)
+                if svhd_rate is None and full_proj:
+                    fp = full_proj.get("stats") or {}
+                    proj_gp = fp.get("32")
+                    proj_svhd = fp.get("83")
+                    if proj_gp and float(proj_gp) > 0:
+                        svhd_rate = float(proj_svhd or 0) / float(proj_gp)
+                if svhd_rate is not None:
+                    ros_gp = ros_stats.get("32") or 0
+                    if float(ros_gp) > 0:
+                        ros_stats["83"] = svhd_rate * float(ros_gp)
 
                 for stat_id_str, value in ros_stats.items():
                     if value is None:
