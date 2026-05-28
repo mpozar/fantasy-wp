@@ -81,6 +81,11 @@ EXCLUDED_SLOTS = {16, 17}  # BE, IL
 # RP appearance rate as a fraction of team games (rough constant for v1)
 RP_APPEARANCE_RATE = 0.60
 
+# Cap on per-team-game SP start rate when estimating from ROS projections.
+# Real MLB rotations top out near 1-start-per-5-team-games (20%); slight slack
+# above that to allow for occasional spot starts when other arms are unavailable.
+MAX_SP_RATE = 0.21
+
 
 # ── name matching for probable pitchers ──
 
@@ -214,7 +219,15 @@ def build_budgets(roster: list[dict],
                 total_ros = team_total_ros_games.get(team_id, 0)
                 gs_ros = ros.get(STAT_GS) or 0
                 if total_ros > 0 and gs_ros > 0 and team_games > 0:
-                    units = gs_ros * (team_games / total_ros)
+                    # Cap the per-team-game start rate at the realistic
+                    # 5-man-rotation ceiling. ESPN's ROS projection for top
+                    # aces sometimes implies >25% (i.e., one start every <4
+                    # games), which no MLB rotation slot actually delivers.
+                    # Without the cap, a typical 6-game week credits an ace
+                    # with ~1.55 starts; capped, it's ~1.26 — matching the
+                    # 5-man-rotation expectation.
+                    rate = min(gs_ros / total_ros, MAX_SP_RATE)
+                    units = rate * team_games
                 else:
                     units = 0
             else:
