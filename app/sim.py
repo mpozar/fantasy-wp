@@ -367,6 +367,13 @@ def simulate(inputs: MatchupInputs,
     cat_counts: dict[int, dict[str, int]] = {
         stat_id: {"HOME": 0, "AWAY": 0, "TIE": 0} for stat_id, _ in CATEGORIES
     }
+    # Sum each side's underlying counters across sims so we can report the
+    # expected end-of-matchup value per category. For rate stats (OPS/ERA/
+    # WHIP) we use ratio-of-expectations (derive from averaged counters)
+    # rather than expectation-of-ratios — the latter explodes when any sim
+    # has near-zero innings.
+    counter_sums_h: dict[int, float] = {}
+    counter_sums_a: dict[int, float] = {}
     for _ in range(n_sims):
         h = _simulate_team(inputs.home_state, home_budgets)
         a = _simulate_team(inputs.away_state, away_budgets)
@@ -379,6 +386,10 @@ def simulate(inputs: MatchupInputs,
             ties += 1
         for stat_id, outcome in per_cat.items():
             cat_counts[stat_id][outcome] += 1
+        for sid, v in h.items():
+            counter_sums_h[sid] = counter_sums_h.get(sid, 0.0) + v
+        for sid, v in a.items():
+            counter_sums_a[sid] = counter_sums_a.get(sid, 0.0) + v
 
     home_wp = home_wins / n_sims
     away_wp = away_wins / n_sims
@@ -422,12 +433,16 @@ def simulate(inputs: MatchupInputs,
             out.append(rec)
         return out
 
+    avg_h = {sid: s / n_sims for sid, s in counter_sums_h.items()}
+    avg_a = {sid: s / n_sims for sid, s in counter_sums_a.items()}
     category_wp = [
         {
             "stat_id": stat_id,
             "home_wins": cat_counts[stat_id]["HOME"],
             "away_wins": cat_counts[stat_id]["AWAY"],
             "ties": cat_counts[stat_id]["TIE"],
+            "home_avg": _cat_value(avg_h, stat_id),
+            "away_avg": _cat_value(avg_a, stat_id),
         }
         for stat_id, _ in CATEGORIES
     ]

@@ -451,6 +451,14 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   font-feature-settings: "tnum";
   text-align: right;
   font-weight: 500;
+  white-space: nowrap;
+}
+.catwp-pct { font-weight: 500; }
+.catwp-avg {
+  margin-left: .5em;
+  color: var(--muted);
+  font-size: .85em;
+  font-weight: 400;
 }
 
 .catwp-tie {

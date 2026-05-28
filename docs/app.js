@@ -143,8 +143,11 @@ function renderCategoryWP(d, cats, m) {
     return e && e.ties / n >= 0.005;
   });
 
-  const cell = (p) =>
-    `<td class="num catwp-cell" style="--p:${p.toFixed(3)}">${(p * 100).toFixed(1)}%</td>`;
+  const cell = (p, avg, statId) =>
+    `<td class="num catwp-cell" style="--p:${p.toFixed(3)}">
+       <span class="catwp-pct">${(p * 100).toFixed(1)}%</span>
+       <span class="catwp-avg">${fmtStat(statId, avg)}</span>
+     </td>`;
 
   const rows = ordered.map((c) => {
     const e = byStat[c.stat_id];
@@ -156,8 +159,8 @@ function renderCategoryWP(d, cats, m) {
     return `
       <tr>
         <td class="catwp-name">${c.name}${arrow}</td>
-        ${cell(h)}
-        ${cell(a)}
+        ${cell(h, e.home_avg, c.stat_id)}
+        ${cell(a, e.away_avg, c.stat_id)}
         ${anyTies ? `<td class="num catwp-tie">${(t * 100).toFixed(1)}%</td>` : ""}
       </tr>`;
   }).join("");
