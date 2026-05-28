@@ -6,6 +6,11 @@
 source "$(dirname "$0")/_common.sh"
 
 {
+    # Slow job — wait for any fast.sh in flight rather than skipping, so
+    # the every-4-hour projection refresh actually happens.
+    wait_lock
+    trap 'release_lock' EXIT
+
     log medium "start"
     "$APP" refresh-rosters
     # Recompute future-week WPs with the fresh projections. DB-only; the next

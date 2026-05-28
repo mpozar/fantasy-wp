@@ -6,6 +6,9 @@
 source "$(dirname "$0")/_common.sh"
 
 {
+    wait_lock
+    trap 'release_lock' EXIT
+
     log daily "start"
     "$APP" refresh-schedule
     log daily "done"

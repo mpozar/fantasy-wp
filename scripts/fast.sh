@@ -4,20 +4,16 @@
 
 source "$(dirname "$0")/_common.sh"
 
-LOCK="$REPO/.fast.lock"
-
 {
-    # Skip if another fast.sh is still running (e.g. previous tick ran long,
-    # or someone kicked off a manual run while cron also fired).
-    if [ -e "$LOCK" ]; then
-        PID=$(cat "$LOCK" 2>/dev/null || true)
-        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-            log fast "another run (pid $PID) still active; skipping"
-            exit 0
-        fi
+    # Skip this tick if any other DB-writing job is in flight (another
+    # fast.sh, medium.sh, daily.sh, or an interactive `app` invocation).
+    # Better to drop a 5-min update than queue up and chain into the next
+    # cron fire.
+    if ! acquire_lock; then
+        log fast "another app job holds the lock; skipping this tick"
+        exit 0
     fi
-    echo $$ > "$LOCK"
-    trap 'rm -f "$LOCK"' EXIT
+    trap 'release_lock' EXIT
 
     log fast "start"
 

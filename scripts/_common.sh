@@ -28,3 +28,33 @@ read_zshenv_var() {
     grep -m1 "^export $1=" "$HOME/.zshenv" \
         | sed -E "s/^export $1=//; s/^['\"]//; s/['\"]\$//"
 }
+
+# Shared lock used by every script that writes to data.db. SQLite serializes
+# writes itself, but its default behavior is to error on contention rather
+# than wait — and the lockfile is a clearer signal anyway. Fast jobs should
+# skip on contention; slow jobs should wait their turn.
+LOCKFILE="$REPO/.app.lock"
+
+# Try to acquire the lock. Returns 0 on success, 1 if held by a live process.
+acquire_lock() {
+    if [ -e "$LOCKFILE" ]; then
+        local pid
+        pid=$(cat "$LOCKFILE" 2>/dev/null || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+    fi
+    echo $$ > "$LOCKFILE"
+    return 0
+}
+
+# Block until the lock can be acquired.
+wait_lock() {
+    while ! acquire_lock; do
+        sleep 5
+    done
+}
+
+release_lock() {
+    rm -f "$LOCKFILE"
+}
