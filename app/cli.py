@@ -264,17 +264,21 @@ def refresh_schedule() -> None:
 def refresh_live() -> None:
     """Upsert today's MLB games' status + inning state into team_schedule.
 
-    Cheap (one MLB API call for today's date range) and safe to run every
-    fast-tier tick — no DELETE, just upserts on the existing rows. The sim
-    uses current_inning + inning_state to scale remaining production for
-    in-progress games.
+    Fetches a 2-day window (yesterday + today in local time) so we don't
+    miss in-progress games from the previous MLB calendar day — important
+    for any timezone east of US Pacific, where local "today" rolls over
+    while West Coast night games are still being played and dated to the
+    previous day in MLB's schedule.
+
+    No DELETE, just upserts on the existing rows.
     """
-    from datetime import date
+    from datetime import date, timedelta
 
     shape = espn.fetch_league_shape()
     period_id = shape.current_matchup_period
     today = date.today()
-    games = mlb.fetch_schedule(today, today)
+    yesterday = today - timedelta(days=1)
+    games = mlb.fetch_schedule(yesterday, today)
     now = _now_iso()
 
     conn = db.connect()
@@ -307,7 +311,8 @@ def refresh_live() -> None:
         conn.close()
 
     click.echo(
-        f"Refreshed live game state: {today.isoformat()}, team_game_rows={len(games)}"
+        f"Refreshed live game state: {yesterday.isoformat()}..{today.isoformat()}, "
+        f"team_game_rows={len(games)}"
     )
 
 
