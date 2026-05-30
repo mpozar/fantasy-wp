@@ -202,16 +202,25 @@ echo $$ > .app.lock
 trap 'rm -f .app.lock' EXIT
 ```
 
-## Live data freshness (a known limit)
+## Live data freshness — DOM scraping with Playwright
 
-ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. Their UI loads an initial REST snapshot then receives real-time updates via a **FastCast WebSocket** (`fastcast.semfs.engsvc.go.com`). The REST endpoint we use is updated by ESPN's backend on a slower aggregation cycle.
+ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. The UI loads an initial REST snapshot then receives real-time updates via a **FastCast WebSocket** (`fastcast.semfs.engsvc.go.com`). The REST endpoint we use is updated by ESPN's backend on a slower aggregation cycle, so we can't get true real-time data from it.
 
-Discussed solutions:
-1. **Per-day mRoster aggregation** — 7 API calls (one per scoring period), sum per-team active-player stats. Inaccurate by ~5% due to mid-week lineup changes we can't reconstruct.
-2. **FastCast WebSocket integration** — accurate but requires a long-lived daemon process (not cron-friendly), reverse-engineering the message protocol, reconnection logic. ~200-300 lines.
-3. **Headless browser scraping** (Playwright/Chromium) — accurate and matches what the user sees. Adds 10-20s to fast.sh runtime, ~200 MB RAM per scrape, but cron-compatible. Fragile to ESPN DOM changes.
+We work around this by **scraping the rendered DOM** with headless Chromium via Playwright. `app/espn_scrape.py` opens `fantasy.espn.com/baseball/league/scoreboard`, waits for tables + WebSocket settle, then reads cat-by-cat values straight from the matchup tables. `cli.fetch` overrides the REST `cumulativeScore.scoreByStat` values with the scraped ones for the current period. Falls back to REST data silently if the scrape errors.
 
-Status as of writing: not yet implemented. We accept the REST lag.
+### Auth (the tricky part)
+
+ESPN's web UI requires more than the `SWID`/`espn_s2` cookies we use for REST — it also needs MyDisney session cookies (`ESPN-ONESITE.WEB-PROD.token`, `dtcAuth`, `espnAuth`) that are httpOnly and only get set through the full MyDisney login flow.
+
+Solution: a **Playwright persistent profile** at `.playwright_profile/` (gitignored). One-time setup by running `scripts/espn_auth_setup.py` — opens visible Chromium, user logs in once, profile dir saves all cookies. The cron-driven scraper then launches `launch_persistent_context(user_data_dir=...)` headlessly against that same profile.
+
+When ESPN expires the session (weeks/months later), the scraper returns empty data and `cli.fetch` falls back to REST. The fix is to re-run `espn_auth_setup.py`.
+
+### Performance
+
+- Adds ~10-25s to each `fast.sh` tick (browser launch + page load + 6s settle wait)
+- ~200 MB RAM per scrape, released after each run
+- Total `fast.sh` runtime ~30-40s (up from ~15s) — still well under the 5-min cadence budget
 
 ## Investigating "why did this WP change?"
 

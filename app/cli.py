@@ -111,16 +111,57 @@ def fetch() -> None:
                      s["score"], s["result"], now),
                 )
         conn.commit()
+
+        # Override the (lagging) REST scoreByStat for the CURRENT period with
+        # values scraped from ESPN's web UI. The UI gets real-time updates via
+        # FastCast WebSocket; the REST endpoint we just polled can be 5-30 min
+        # stale during live games. Fall back to REST data silently if the
+        # scrape errors or returns nothing (auth wall, profile not set up).
+        scraped_count = 0
+        try:
+            from app import espn_scrape
+            abbrev_to_id = {t["abbrev"]: t["id"] for t in teams}
+            scraped = espn_scrape.scrape_live_matchup_scores(
+                shape.current_matchup_period, abbrev_to_id,
+            )
+        except Exception as e:
+            scraped = {}
+            click.echo(f"  (live scrape skipped: {e})", err=True)
+
+        if scraped:
+            # Re-find the current-period matchups and overlay
+            current_matchups = [m for m in matchups
+                                if m["matchup_period_id"] == shape.current_matchup_period]
+            for m in current_matchups:
+                for team_id in (m["home_team_id"], m["away_team_id"]):
+                    rows = scraped.get(team_id)
+                    if not rows:
+                        continue
+                    for s in rows:
+                        if s["score"] is None:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO category_state
+                                (matchup_id, team_id, stat_id, score, result, fetched_at)
+                            VALUES (?,?,?,?,?,?)
+                            """,
+                            (m["matchup_id"], team_id, s["stat_id"],
+                             s["score"], s["result"], now),
+                        )
+                        scraped_count += 1
+            conn.commit()
     finally:
         conn.close()
 
     periods_seen = sorted({m["matchup_period_id"] for m in matchups})
-    click.echo(
-        f"Fetched: league={shape.name!r}, current period={shape.current_matchup_period}, "
-        f"last regular season period={shape.last_regular_season_period}, "
-        f"teams={len(teams)}, matchups={len(matchups)} across "
-        f"periods {periods_seen[0]}..{periods_seen[-1]}"
-    )
+    msg = (f"Fetched: league={shape.name!r}, current period={shape.current_matchup_period}, "
+           f"last regular season period={shape.last_regular_season_period}, "
+           f"teams={len(teams)}, matchups={len(matchups)} across "
+           f"periods {periods_seen[0]}..{periods_seen[-1]}")
+    if scraped_count:
+        msg += f", live-scraped {scraped_count} category cells"
+    click.echo(msg)
 
 
 @cli.command("refresh-rosters")
