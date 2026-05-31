@@ -128,7 +128,7 @@
   },
   "current_matchup_period": 9,
   "last_regular_season_period": 22,
-  "generated_at": "2026-05-31T04:00:29+00:00",
+  "generated_at": "2026-05-31T04:05:31+00:00",
   "weeks": [
     {
       "matchup_period_id": 9,
@@ -144,7 +144,7 @@
             "name": "Scarlet Knights",
             "owner": "Luke Quinton",
             "abbrev": "LQ",
-            "wp": 0.0052,
+            "wp": 0.0035,
             "record": {
               "W": 3,
               "L": 7,
@@ -230,7 +230,7 @@
             "name": "Desert Dawgs",
             "owner": "Jennifer Nyerick",
             "abbrev": "JDWG",
-            "wp": 0.9948,
+            "wp": 0.9964,
             "record": {
               "W": 7,
               "L": 3,
@@ -312,7 +312,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -4148,62 +4148,68 @@
               "home_wp": 0.0052,
               "away_wp": 0.9948,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 0.0035,
+              "away_wp": 0.9964,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
             "model": "mc-v1",
             "n_sims": 10000,
-            "home_wins": 52,
-            "away_wins": 9948,
-            "ties": 0,
+            "home_wins": 35,
+            "away_wins": 9964,
+            "ties": 1,
             "category_wp": [
               {
                 "stat_id": 1,
-                "home_wins": 3312,
-                "away_wins": 5832,
-                "ties": 856,
-                "home_avg": 56.4508,
-                "away_avg": 57.8562
+                "home_wins": 3257,
+                "away_wins": 5893,
+                "ties": 850,
+                "home_avg": 56.4124,
+                "away_avg": 57.8107
               },
               {
                 "stat_id": 5,
-                "home_wins": 5698,
-                "away_wins": 2200,
-                "ties": 2102,
-                "home_avg": 8.2495,
-                "away_avg": 7.5192
+                "home_wins": 5721,
+                "away_wins": 2141,
+                "ties": 2138,
+                "home_avg": 8.2415,
+                "away_avg": 7.506
               },
               {
                 "stat_id": 20,
-                "home_wins": 385,
-                "away_wins": 9302,
-                "ties": 313,
-                "home_avg": 28.2016,
-                "away_avg": 33.5203
+                "home_wins": 370,
+                "away_wins": 9310,
+                "ties": 320,
+                "home_avg": 28.2069,
+                "away_avg": 33.5759
               },
               {
                 "stat_id": 23,
-                "home_wins": 3,
-                "away_wins": 9963,
-                "ties": 34,
-                "home_avg": 0.7063,
-                "away_avg": 4.8308
+                "home_wins": 2,
+                "away_wins": 9972,
+                "ties": 26,
+                "home_avg": 0.7216,
+                "away_avg": 4.8124
               },
               {
                 "stat_id": 18,
-                "home_wins": 5121,
-                "away_wins": 4879,
+                "home_wins": 5063,
+                "away_wins": 4937,
                 "ties": 0,
-                "home_avg": 0.8095035309094968,
-                "away_avg": 0.8082867227746271
+                "home_avg": 0.8089064249273625,
+                "away_avg": 0.8075368203876298
               },
               {
                 "stat_id": 48,
                 "home_wins": 0,
                 "away_wins": 10000,
                 "ties": 0,
-                "home_avg": 42.2033,
-                "away_avg": 52.3117
+                "home_avg": 42.2206,
+                "away_avg": 52.2306
               },
               {
                 "stat_id": 63,
@@ -4215,27 +4221,27 @@
               },
               {
                 "stat_id": 47,
-                "home_wins": 4,
-                "away_wins": 9996,
+                "home_wins": 5,
+                "away_wins": 9995,
                 "ties": 0,
-                "home_avg": 5.079381520020471,
-                "away_avg": 3.0347538571607577
+                "home_avg": 5.072029195681795,
+                "away_avg": 3.041142051919549
               },
               {
                 "stat_id": 41,
                 "home_wins": 14,
                 "away_wins": 9986,
                 "ties": 0,
-                "home_avg": 1.4475661138868472,
-                "away_avg": 1.2350812661430817
+                "home_avg": 1.4468127605756382,
+                "away_avg": 1.235660980162699
               },
               {
                 "stat_id": 83,
-                "home_wins": 5580,
-                "away_wins": 1698,
-                "ties": 2722,
-                "home_avg": 3.6138,
-                "away_avg": 3.0124
+                "home_wins": 5679,
+                "away_wins": 1659,
+                "ties": 2662,
+                "home_avg": 3.6148,
+                "away_avg": 2.9879
               }
             ],
             "home_budgets": [
@@ -4412,11 +4418,11 @@
                 "player_id": 40939,
                 "name": "Andres Munoz",
                 "role": "RP",
-                "units": 0.95,
-                "exp_k": 1.3,
-                "exp_outs": 2.7,
+                "units": 0.89,
+                "exp_k": 1.2,
+                "exp_outs": 2.5,
                 "exp_qs": 0,
-                "exp_svhd": 0.37,
+                "exp_svhd": 0.35,
                 "exp_era": 3.15,
                 "exp_whip": 1.12
               },
@@ -4543,7 +4549,7 @@
             "name": "WAR (What is it good for?)",
             "owner": "Chris Prinz",
             "abbrev": "CCT",
-            "wp": 0.1994,
+            "wp": 0.1956,
             "record": {
               "W": 5,
               "L": 5,
@@ -4629,7 +4635,7 @@
             "name": "Bear Nation",
             "owner": "Molly Quinton",
             "abbrev": "BEAR",
-            "wp": 0.796,
+            "wp": 0.8005,
             "record": {
               "W": 5,
               "L": 5,
@@ -4711,7 +4717,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -8547,94 +8553,100 @@
               "home_wp": 0.1994,
               "away_wp": 0.796,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 0.1956,
+              "away_wp": 0.8005,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
             "model": "mc-v1",
             "n_sims": 10000,
-            "home_wins": 1994,
-            "away_wins": 7960,
-            "ties": 46,
+            "home_wins": 1956,
+            "away_wins": 8005,
+            "ties": 39,
             "category_wp": [
               {
                 "stat_id": 1,
-                "home_wins": 6475,
-                "away_wins": 2725,
-                "ties": 800,
-                "home_avg": 54.4029,
-                "away_avg": 52.222
+                "home_wins": 6485,
+                "away_wins": 2706,
+                "ties": 809,
+                "home_avg": 54.3969,
+                "away_avg": 52.1959
               },
               {
                 "stat_id": 5,
-                "home_wins": 24,
-                "away_wins": 9885,
-                "ties": 91,
-                "home_avg": 5.2813,
-                "away_avg": 9.6927
+                "home_wins": 25,
+                "away_wins": 9890,
+                "ties": 85,
+                "home_avg": 5.2913,
+                "away_avg": 9.6996
               },
               {
                 "stat_id": 20,
-                "home_wins": 1283,
-                "away_wins": 7942,
-                "ties": 775,
-                "home_avg": 24.2001,
-                "away_avg": 27.3409
+                "home_wins": 1245,
+                "away_wins": 7969,
+                "ties": 786,
+                "home_avg": 24.1711,
+                "away_avg": 27.3502
               },
               {
                 "stat_id": 23,
-                "home_wins": 7867,
-                "away_wins": 608,
-                "ties": 1525,
-                "home_avg": 7.1684,
-                "away_avg": 5.6671
+                "home_wins": 7883,
+                "away_wins": 576,
+                "ties": 1541,
+                "home_avg": 7.1756,
+                "away_avg": 5.6816
               },
               {
                 "stat_id": 18,
-                "home_wins": 108,
-                "away_wins": 9892,
+                "home_wins": 104,
+                "away_wins": 9896,
                 "ties": 0,
-                "home_avg": 0.7276303596111825,
-                "away_avg": 0.8787408348315517
+                "home_avg": 0.7272913203643601,
+                "away_avg": 0.8789166452194255
               },
               {
                 "stat_id": 48,
-                "home_wins": 3486,
-                "away_wins": 5655,
-                "ties": 859,
-                "home_avg": 47.1784,
-                "away_avg": 48.3655
+                "home_wins": 3515,
+                "away_wins": 5613,
+                "ties": 872,
+                "home_avg": 47.1676,
+                "away_avg": 48.3646
               },
               {
                 "stat_id": 63,
-                "home_wins": 2491,
-                "away_wins": 4529,
-                "ties": 2980,
-                "home_avg": 2.1684,
-                "away_avg": 2.4185
+                "home_wins": 2453,
+                "away_wins": 4413,
+                "ties": 3134,
+                "home_avg": 2.164,
+                "away_avg": 2.408
               },
               {
                 "stat_id": 47,
-                "home_wins": 2709,
-                "away_wins": 7274,
-                "ties": 17,
-                "home_avg": 3.802589149624581,
-                "away_avg": 3.4131240451146727
+                "home_wins": 2662,
+                "away_wins": 7327,
+                "ties": 11,
+                "home_avg": 3.8065159715460926,
+                "away_avg": 3.4012340278776936
               },
               {
                 "stat_id": 41,
-                "home_wins": 1018,
-                "away_wins": 8977,
-                "ties": 5,
-                "home_avg": 1.2570219692579359,
-                "away_avg": 1.1112913880003528
+                "home_wins": 983,
+                "away_wins": 9013,
+                "ties": 4,
+                "home_avg": 1.2583638336557552,
+                "away_avg": 1.1129242513084614
               },
               {
                 "stat_id": 83,
                 "home_wins": 10000,
                 "away_wins": 0,
                 "ties": 0,
-                "home_avg": 7.7758,
-                "away_avg": 0.5998
+                "home_avg": 7.7697,
+                "away_avg": 0.6126
               }
             ],
             "home_budgets": [
@@ -8708,11 +8720,11 @@
                 "player_id": 35009,
                 "name": "Paul Sewald",
                 "role": "RP",
-                "units": 0.63,
-                "exp_k": 0.6,
-                "exp_outs": 1.7,
+                "units": 0.59,
+                "exp_k": 0.5,
+                "exp_outs": 1.6,
                 "exp_qs": 0,
-                "exp_svhd": 0.37,
+                "exp_svhd": 0.34,
                 "exp_era": 4.15,
                 "exp_whip": 1.23
               },
@@ -8990,7 +9002,7 @@
             "name": "Sox Teacher",
             "owner": "Colin Quinton",
             "abbrev": "SOX",
-            "wp": 0.094,
+            "wp": 0.092,
             "record": {
               "W": 2,
               "L": 6,
@@ -9076,7 +9088,7 @@
             "name": "Seattle Norsemen",
             "owner": "Mike Pozar",
             "abbrev": "Po9",
-            "wp": 0.9021,
+            "wp": 0.9042,
             "record": {
               "W": 6,
               "L": 2,
@@ -9158,7 +9170,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -12994,94 +13006,100 @@
               "home_wp": 0.094,
               "away_wp": 0.9021,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 0.092,
+              "away_wp": 0.9042,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
             "model": "mc-v1",
             "n_sims": 10000,
-            "home_wins": 940,
-            "away_wins": 9021,
-            "ties": 39,
+            "home_wins": 920,
+            "away_wins": 9042,
+            "ties": 38,
             "category_wp": [
               {
                 "stat_id": 1,
-                "home_wins": 3192,
-                "away_wins": 5887,
-                "ties": 921,
-                "home_avg": 62.2649,
-                "away_avg": 63.7327
+                "home_wins": 3223,
+                "away_wins": 5898,
+                "ties": 879,
+                "home_avg": 62.2551,
+                "away_avg": 63.7419
               },
               {
                 "stat_id": 5,
-                "home_wins": 543,
-                "away_wins": 8494,
-                "ties": 963,
-                "home_avg": 13.4468,
-                "away_avg": 15.7269
+                "home_wins": 550,
+                "away_wins": 8484,
+                "ties": 966,
+                "home_avg": 13.4733,
+                "away_avg": 15.7165
               },
               {
                 "stat_id": 20,
-                "home_wins": 3685,
-                "away_wins": 5146,
-                "ties": 1169,
-                "home_avg": 40.1009,
-                "away_avg": 40.7378
+                "home_wins": 3657,
+                "away_wins": 5129,
+                "ties": 1214,
+                "home_avg": 40.1625,
+                "away_avg": 40.7841
               },
               {
                 "stat_id": 23,
-                "home_wins": 9970,
+                "home_wins": 9973,
                 "away_wins": 4,
-                "ties": 26,
-                "home_avg": 9.6218,
-                "away_avg": 5.0382
+                "ties": 23,
+                "home_avg": 9.6251,
+                "away_avg": 5.052
               },
               {
                 "stat_id": 18,
-                "home_wins": 586,
-                "away_wins": 9414,
+                "home_wins": 572,
+                "away_wins": 9428,
                 "ties": 0,
-                "home_avg": 1.00535262816313,
-                "away_avg": 1.1142013941807036
+                "home_avg": 1.0046393793438586,
+                "away_avg": 1.1141959806302808
               },
               {
                 "stat_id": 48,
-                "home_wins": 409,
-                "away_wins": 9434,
-                "ties": 157,
-                "home_avg": 62.5773,
-                "away_avg": 72.4412
+                "home_wins": 376,
+                "away_wins": 9440,
+                "ties": 184,
+                "home_avg": 62.5458,
+                "away_avg": 72.3152
               },
               {
                 "stat_id": 63,
-                "home_wins": 3239,
-                "away_wins": 4460,
-                "ties": 2301,
-                "home_avg": 5.8889,
-                "away_avg": 6.1061
+                "home_wins": 3192,
+                "away_wins": 4443,
+                "ties": 2365,
+                "home_avg": 5.8831,
+                "away_avg": 6.0993
               },
               {
                 "stat_id": 47,
-                "home_wins": 2066,
-                "away_wins": 7925,
-                "ties": 9,
-                "home_avg": 3.6809975281833673,
-                "away_avg": 3.095092526786437
+                "home_wins": 1977,
+                "away_wins": 8021,
+                "ties": 2,
+                "home_avg": 3.685637122119427,
+                "away_avg": 3.0858592194518195
               },
               {
                 "stat_id": 41,
-                "home_wins": 5035,
-                "away_wins": 4957,
-                "ties": 8,
-                "home_avg": 1.1206548467040036,
-                "away_avg": 1.122696726252058
+                "home_wins": 5043,
+                "away_wins": 4950,
+                "ties": 7,
+                "home_avg": 1.1218815056546447,
+                "away_avg": 1.1222959658051732
               },
               {
                 "stat_id": 83,
-                "home_wins": 589,
-                "away_wins": 7928,
-                "ties": 1483,
-                "home_avg": 3.7872,
-                "away_avg": 5.4672
+                "home_wins": 595,
+                "away_wins": 8054,
+                "ties": 1351,
+                "home_avg": 3.7386,
+                "away_avg": 5.4361
               }
             ],
             "home_budgets": [
@@ -13181,11 +13199,11 @@
                 "player_id": 35135,
                 "name": "Tanner Scott",
                 "role": "RP",
-                "units": 0.89,
+                "units": 0.83,
                 "exp_k": 1.0,
-                "exp_outs": 2.6,
+                "exp_outs": 2.4,
                 "exp_qs": 0,
-                "exp_svhd": 0.36,
+                "exp_svhd": 0.33,
                 "exp_era": 3.0,
                 "exp_whip": 1.08
               },
@@ -13433,11 +13451,11 @@
                 "player_id": 42622,
                 "name": "Alex Vesia",
                 "role": "RP",
-                "units": 1.07,
-                "exp_k": 1.2,
-                "exp_outs": 2.8,
+                "units": 1.0,
+                "exp_k": 1.1,
+                "exp_outs": 2.6,
                 "exp_qs": 0,
-                "exp_svhd": 0.4,
+                "exp_svhd": 0.38,
                 "exp_era": 3.21,
                 "exp_whip": 1.07
               },
@@ -13486,7 +13504,7 @@
             "name": "Bikini Bottom Beach Bums",
             "owner": "Alec Bumgarner",
             "abbrev": "BUMS",
-            "wp": 0.0222,
+            "wp": 0.0233,
             "record": {
               "W": 4,
               "L": 5,
@@ -13572,7 +13590,7 @@
             "name": "Seattle Melonheads",
             "owner": "Timothy Prinz",
             "abbrev": "TOM",
-            "wp": 0.9778,
+            "wp": 0.9767,
             "record": {
               "W": 5,
               "L": 4,
@@ -13654,7 +13672,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -17490,94 +17508,100 @@
               "home_wp": 0.0222,
               "away_wp": 0.9778,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 0.0233,
+              "away_wp": 0.9767,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
             "model": "mc-v1",
             "n_sims": 10000,
-            "home_wins": 222,
-            "away_wins": 9778,
+            "home_wins": 233,
+            "away_wins": 9767,
             "ties": 0,
             "category_wp": [
               {
                 "stat_id": 1,
                 "home_wins": 1,
-                "away_wins": 9996,
-                "ties": 3,
-                "home_avg": 56.3721,
-                "away_avg": 72.9929
+                "away_wins": 9997,
+                "ties": 2,
+                "home_avg": 56.399,
+                "away_avg": 73.0576
               },
               {
                 "stat_id": 5,
-                "home_wins": 7752,
-                "away_wins": 980,
-                "ties": 1268,
-                "home_avg": 12.5333,
-                "away_avg": 10.736
+                "home_wins": 7699,
+                "away_wins": 1005,
+                "ties": 1296,
+                "home_avg": 12.5216,
+                "away_avg": 10.7382
               },
               {
                 "stat_id": 20,
                 "home_wins": 3,
-                "away_wins": 9988,
-                "ties": 9,
-                "home_avg": 26.521,
-                "away_avg": 37.5686
+                "away_wins": 9991,
+                "ties": 6,
+                "home_avg": 26.507,
+                "away_avg": 37.5518
               },
               {
                 "stat_id": 23,
-                "home_wins": 8412,
-                "away_wins": 462,
-                "ties": 1126,
-                "home_avg": 4.712,
-                "away_avg": 2.9965
+                "home_wins": 8379,
+                "away_wins": 447,
+                "ties": 1174,
+                "home_avg": 4.7145,
+                "away_avg": 2.9978
               },
               {
                 "stat_id": 18,
-                "home_wins": 724,
-                "away_wins": 9276,
+                "home_wins": 739,
+                "away_wins": 9261,
                 "ties": 0,
-                "home_avg": 0.9256334030143729,
-                "away_avg": 1.0273914849893644
+                "home_avg": 0.9258522736601019,
+                "away_avg": 1.0278070855648347
               },
               {
                 "stat_id": 48,
-                "home_wins": 7480,
-                "away_wins": 1840,
-                "ties": 680,
-                "home_avg": 39.6311,
-                "away_avg": 36.3273
+                "home_wins": 7477,
+                "away_wins": 1824,
+                "ties": 699,
+                "home_avg": 39.5199,
+                "away_avg": 36.2863
               },
               {
                 "stat_id": 63,
-                "home_wins": 2670,
-                "away_wins": 3101,
-                "ties": 4229,
-                "home_avg": 2.5577,
-                "away_avg": 2.6264
+                "home_wins": 2652,
+                "away_wins": 3002,
+                "ties": 4346,
+                "home_avg": 2.5506,
+                "away_avg": 2.6011
               },
               {
                 "stat_id": 47,
-                "home_wins": 5068,
-                "away_wins": 4816,
-                "ties": 116,
-                "home_avg": 4.3603977117122605,
-                "away_avg": 4.3899224449858485
+                "home_wins": 5061,
+                "away_wins": 4847,
+                "ties": 92,
+                "home_avg": 4.372456769578338,
+                "away_avg": 4.388423716621636
               },
               {
                 "stat_id": 41,
-                "home_wins": 121,
-                "away_wins": 9878,
-                "ties": 1,
-                "home_avg": 1.440121543550932,
-                "away_avg": 1.0758509052462915
+                "home_wins": 109,
+                "away_wins": 9888,
+                "ties": 3,
+                "home_avg": 1.4427664854296558,
+                "away_avg": 1.0759226200919332
               },
               {
                 "stat_id": 83,
-                "home_wins": 34,
-                "away_wins": 9747,
-                "ties": 219,
-                "home_avg": 1.3564,
-                "away_avg": 3.797
+                "home_wins": 26,
+                "away_wins": 9764,
+                "ties": 210,
+                "home_avg": 1.3382,
+                "away_avg": 3.7598
               }
             ],
             "home_budgets": [
@@ -17707,11 +17731,11 @@
                 "player_id": 41939,
                 "name": "Eduard Bazardo",
                 "role": "RP",
-                "units": 0.97,
-                "exp_k": 1.0,
-                "exp_outs": 3.0,
+                "units": 0.91,
+                "exp_k": 0.9,
+                "exp_outs": 2.8,
                 "exp_qs": 0,
-                "exp_svhd": 0.36,
+                "exp_svhd": 0.34,
                 "exp_era": 3.4,
                 "exp_whip": 1.18
               }
@@ -17844,11 +17868,11 @@
                 "player_id": 35292,
                 "name": "Brad Keller",
                 "role": "RP",
-                "units": 0.8,
+                "units": 0.75,
                 "exp_k": 0.8,
-                "exp_outs": 2.7,
+                "exp_outs": 2.5,
                 "exp_qs": 0,
-                "exp_svhd": 0.33,
+                "exp_svhd": 0.31,
                 "exp_era": 3.82,
                 "exp_whip": 1.32
               },
@@ -17921,7 +17945,7 @@
                 "stat_id": 48,
                 "name": "K",
                 "reversed": false,
-                "score": 30.0,
+                "score": 31.0,
                 "result": "WIN"
               },
               {
@@ -17935,14 +17959,14 @@
                 "stat_id": 47,
                 "name": "ERA",
                 "reversed": true,
-                "score": 2.912,
+                "score": 2.856,
                 "result": "WIN"
               },
               {
                 "stat_id": 41,
                 "name": "WHIP",
                 "reversed": true,
-                "score": 1.324,
+                "score": 1.298,
                 "result": "LOSS"
               },
               {
@@ -18041,7 +18065,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -21877,6 +21901,12 @@
               "home_wp": 1.0,
               "away_wp": 0.0,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 1.0,
+              "away_wp": 0.0,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
@@ -21891,80 +21921,80 @@
                 "home_wins": 10000,
                 "away_wins": 0,
                 "ties": 0,
-                "home_avg": 69.793,
-                "away_avg": 49.1165
+                "home_avg": 69.7966,
+                "away_avg": 49.1099
               },
               {
                 "stat_id": 5,
-                "home_wins": 8403,
-                "away_wins": 598,
-                "ties": 999,
-                "home_avg": 13.7564,
-                "away_avg": 11.5277
+                "home_wins": 8449,
+                "away_wins": 582,
+                "ties": 969,
+                "home_avg": 13.7346,
+                "away_avg": 11.4963
               },
               {
                 "stat_id": 20,
                 "home_wins": 9878,
-                "away_wins": 54,
-                "ties": 68,
-                "home_avg": 40.7979,
-                "away_avg": 32.6762
+                "away_wins": 59,
+                "ties": 63,
+                "home_avg": 40.7758,
+                "away_avg": 32.6299
               },
               {
                 "stat_id": 23,
                 "home_wins": 9844,
-                "away_wins": 34,
-                "ties": 122,
-                "home_avg": 7.9807,
-                "away_avg": 4.1889
+                "away_wins": 35,
+                "ties": 121,
+                "home_avg": 8.0225,
+                "away_avg": 4.2125
               },
               {
                 "stat_id": 18,
-                "home_wins": 9998,
-                "away_wins": 2,
+                "home_wins": 9994,
+                "away_wins": 6,
                 "ties": 0,
-                "home_avg": 1.0826101308048823,
-                "away_avg": 0.8489651047411892
+                "home_avg": 1.0825007061800485,
+                "away_avg": 0.848217913522156
               },
               {
                 "stat_id": 48,
-                "home_wins": 9720,
-                "away_wins": 160,
-                "ties": 120,
-                "home_avg": 38.4598,
-                "away_avg": 30.0536
+                "home_wins": 9855,
+                "away_wins": 76,
+                "ties": 69,
+                "home_avg": 39.4715,
+                "away_avg": 29.9047
               },
               {
                 "stat_id": 63,
-                "home_wins": 7247,
-                "away_wins": 707,
-                "ties": 2046,
-                "home_avg": 2.6966,
-                "away_avg": 1.6105
+                "home_wins": 7195,
+                "away_wins": 733,
+                "ties": 2072,
+                "home_avg": 2.6909,
+                "away_avg": 1.6186
               },
               {
                 "stat_id": 47,
-                "home_wins": 9862,
-                "away_wins": 133,
-                "ties": 5,
-                "home_avg": 3.0565092154018547,
-                "away_avg": 5.486033134104599
+                "home_wins": 9859,
+                "away_wins": 138,
+                "ties": 3,
+                "home_avg": 3.0749943193946194,
+                "away_avg": 5.492169628717226
               },
               {
                 "stat_id": 41,
-                "home_wins": 4900,
-                "away_wins": 5038,
-                "ties": 62,
-                "home_avg": 1.2972783456961565,
-                "away_avg": 1.2948507304728751
+                "home_wins": 4840,
+                "away_wins": 5100,
+                "ties": 60,
+                "home_avg": 1.2997328394075647,
+                "away_avg": 1.2959458032729192
               },
               {
                 "stat_id": 83,
-                "home_wins": 15,
-                "away_wins": 9948,
-                "ties": 37,
-                "home_avg": 4.0571,
-                "away_avg": 8.9795
+                "home_wins": 14,
+                "away_wins": 9951,
+                "ties": 35,
+                "home_avg": 4.0356,
+                "away_avg": 8.9187
               }
             ],
             "home_budgets": [
@@ -22199,11 +22229,11 @@
                 "player_id": 41109,
                 "name": "Jhoan Duran",
                 "role": "RP",
-                "units": 1.16,
-                "exp_k": 1.5,
-                "exp_outs": 3.4,
+                "units": 1.08,
+                "exp_k": 1.4,
+                "exp_outs": 3.2,
                 "exp_qs": 0,
-                "exp_svhd": 0.75,
+                "exp_svhd": 0.7,
                 "exp_era": 3.0,
                 "exp_whip": 1.08
               },
@@ -22371,7 +22401,7 @@
                 "stat_id": 18,
                 "name": "OPS",
                 "reversed": false,
-                "score": 0.7545,
+                "score": 0.7503,
                 "result": "LOSS"
               }
             ],
@@ -22480,14 +22510,14 @@
                 "stat_id": 47,
                 "name": "ERA",
                 "reversed": true,
-                "score": 1.788,
+                "score": 1.776,
                 "result": "WIN"
               },
               {
                 "stat_id": 41,
                 "name": "WHIP",
                 "reversed": true,
-                "score": 0.954,
+                "score": 0.947,
                 "result": "LOSS"
               },
               {
@@ -22500,7 +22530,7 @@
             ]
           },
           "winner": "UNDECIDED",
-          "computed_at": "2026-05-31T04:00:15+00:00",
+          "computed_at": "2026-05-31T04:05:18+00:00",
           "model_version": "mc-v1",
           "history": [
             {
@@ -26336,6 +26366,12 @@
               "home_wp": 0.0,
               "away_wp": 1.0,
               "model_version": "mc-v1"
+            },
+            {
+              "computed_at": "2026-05-31T04:05:18+00:00",
+              "home_wp": 0.0,
+              "away_wp": 1.0,
+              "model_version": "mc-v1"
             }
           ],
           "details": {
@@ -26350,80 +26386,80 @@
                 "home_wins": 0,
                 "away_wins": 10000,
                 "ties": 0,
-                "home_avg": 51.669,
-                "away_avg": 70.1335
+                "home_avg": 51.63,
+                "away_avg": 70.1665
               },
               {
                 "stat_id": 5,
                 "home_wins": 0,
-                "away_wins": 10000,
-                "ties": 0,
-                "home_avg": 7.3227,
-                "away_avg": 14.5586
+                "away_wins": 9998,
+                "ties": 2,
+                "home_avg": 7.3203,
+                "away_avg": 14.5299
               },
               {
                 "stat_id": 20,
                 "home_wins": 0,
                 "away_wins": 10000,
                 "ties": 0,
-                "home_avg": 25.5546,
-                "away_avg": 40.538
+                "home_avg": 25.6017,
+                "away_avg": 40.528
               },
               {
                 "stat_id": 23,
-                "home_wins": 1239,
-                "away_wins": 6577,
-                "ties": 2184,
-                "home_avg": 1.9413,
-                "away_avg": 2.9364
+                "home_wins": 1272,
+                "away_wins": 6567,
+                "ties": 2161,
+                "home_avg": 1.9529,
+                "away_avg": 2.9416
               },
               {
                 "stat_id": 18,
-                "home_wins": 51,
-                "away_wins": 9949,
+                "home_wins": 61,
+                "away_wins": 9939,
                 "ties": 0,
-                "home_avg": 0.8816289810056235,
-                "away_avg": 1.056056325283907
+                "home_avg": 0.8803631015821658,
+                "away_avg": 1.0559518139937003
               },
               {
                 "stat_id": 48,
                 "home_wins": 0,
                 "away_wins": 10000,
                 "ties": 0,
-                "home_avg": 32.5047,
-                "away_avg": 63.4845
+                "home_avg": 32.4005,
+                "away_avg": 62.9896
               },
               {
                 "stat_id": 63,
-                "home_wins": 17,
-                "away_wins": 9269,
-                "ties": 714,
-                "home_avg": 3.0885,
-                "away_avg": 4.1535
+                "home_wins": 33,
+                "away_wins": 9266,
+                "ties": 701,
+                "home_avg": 3.0847,
+                "away_avg": 4.1024
               },
               {
                 "stat_id": 47,
                 "home_wins": 152,
-                "away_wins": 9846,
-                "ties": 2,
-                "home_avg": 3.5604140715605004,
-                "away_avg": 2.2704027140792866
+                "away_wins": 9847,
+                "ties": 1,
+                "home_avg": 3.5615481720483433,
+                "away_avg": 2.248168007079073
               },
               {
                 "stat_id": 41,
-                "home_wins": 6434,
-                "away_wins": 3531,
-                "ties": 35,
-                "home_avg": 1.0012037713156652,
-                "away_avg": 1.0350824531888803
+                "home_wins": 6414,
+                "away_wins": 3549,
+                "ties": 37,
+                "home_avg": 1.0016763275597953,
+                "away_avg": 1.0333429385535478
               },
               {
                 "stat_id": 83,
-                "home_wins": 6528,
-                "away_wins": 1368,
-                "ties": 2104,
-                "home_avg": 5.0861,
-                "away_avg": 4.0701
+                "home_wins": 6523,
+                "away_wins": 1397,
+                "ties": 2080,
+                "home_avg": 5.0834,
+                "away_avg": 4.0621
               }
             ],
             "home_budgets": [
@@ -26532,10 +26568,10 @@
                 "player_id": 5134638,
                 "name": "Roki Sasaki",
                 "role": "RP",
-                "units": 0.54,
-                "exp_k": 1.6,
-                "exp_outs": 5.1,
-                "exp_qs": 0.09,
+                "units": 0.5,
+                "exp_k": 1.5,
+                "exp_outs": 4.8,
+                "exp_qs": 0.08,
                 "exp_svhd": 0,
                 "exp_era": 3.91,
                 "exp_whip": 1.32
@@ -26591,10 +26627,10 @@
                 "player_id": 4629089,
                 "name": "Bryan Woo",
                 "role": "SP",
-                "units": 0.2,
-                "exp_k": 1.1,
-                "exp_outs": 3.5,
-                "exp_qs": 0.13,
+                "units": 0.13,
+                "exp_k": 0.7,
+                "exp_outs": 2.2,
+                "exp_qs": 0.08,
                 "exp_svhd": 0,
                 "exp_era": 3.29,
                 "exp_whip": 1.02
@@ -26715,9 +26751,9 @@
                 "player_id": 4417203,
                 "name": "Justin Wrobleski",
                 "role": "RP",
-                "units": 0.49,
-                "exp_k": 1.2,
-                "exp_outs": 4.9,
+                "units": 0.46,
+                "exp_k": 1.1,
+                "exp_outs": 4.6,
                 "exp_qs": 0.02,
                 "exp_svhd": 0,
                 "exp_era": 4.07,
