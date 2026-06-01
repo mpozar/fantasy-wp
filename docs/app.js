@@ -36,10 +36,21 @@ const headerCells = (blocks, tbId) =>
     .join("");
 
 // ── WP-over-time SVG line chart ──────────────────────────────────────
-function renderChart(history, currentModel) {
+// `startIso` is the matchup's Monday (week.start); `scope` is "full" or
+// "matchup". In "matchup" scope the pre-matchup projection points (computed
+// before the week began) are clipped so the chart rescales to the in-matchup
+// window — where WP actually moves. Clipping is skipped if it would leave too
+// few points to plot (e.g. a matchup that just started).
+function renderChart(history, currentModel, startIso, scope) {
   if (!history || history.length === 0) return "";
-  const pts = history.filter((h) => h.model_version === currentModel);
+  let pts = history.filter((h) => h.model_version === currentModel);
   if (pts.length === 0) return "";
+
+  const cutoff = startIso ? new Date(startIso + "T00:00:00").getTime() : null;
+  if (scope === "matchup" && cutoff != null) {
+    const clipped = pts.filter((p) => new Date(p.computed_at).getTime() >= cutoff);
+    if (clipped.length >= 2) pts = clipped;
+  }
 
   const W = 600, H = 140, padL = 40, padR = 12, padT = 12, padB = 22;
   const innerW = W - padL - padR;
@@ -69,6 +80,16 @@ function renderChart(history, currentModel) {
   const gridY = yTicks
     .map((p) => `<line x1="${padL}" y1="${y(p)}" x2="${W - padR}" y2="${y(p)}" class="grid ${p === 0.5 ? "mid" : ""}"></line>`)
     .join("");
+
+  // In full view, mark where the matchup began (only if there's pre-matchup
+  // history to its left). Hidden in "matchup" scope since the chart starts there.
+  let startMarker = "";
+  if (scope !== "matchup" && cutoff != null && cutoff > t0 && cutoff < tN) {
+    const mx = x(cutoff);
+    startMarker =
+      `<line class="matchup-start" x1="${mx}" y1="${padT}" x2="${mx}" y2="${padT + innerH}"></line>` +
+      `<text x="${mx}" y="${padT - 3}" class="axis matchup-start-label" text-anchor="middle">matchup start</text>`;
+  }
   const labelsY = yTicks
     .map((p) => `<text x="${padL - 6}" y="${y(p) + 3}" class="axis">${(p * 100) | 0}%</text>`)
     .join("");
@@ -108,6 +129,7 @@ function renderChart(history, currentModel) {
     <div class="wp-chart-wrap">
       <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
         ${gridY}
+        ${startMarker}
         ${polyline("home_wp", "home")}
         ${polyline("away_wp", "away")}
         ${labelsY}
@@ -249,14 +271,14 @@ function renderCategoryWP(d, cats, m) {
     </table>`;
 }
 
-function renderDetails(m, cats, isCurrent) {
+function renderDetails(m, cats, isCurrent, startIso, scope) {
   if (!m.details) return "";
   const d = m.details;
   // WP-over-time renders whenever snapshot history exists — for the live week
   // and for past weeks (upcoming weeks have no history yet). The `isCurrent`
   // flag (week started) no longer gates it.
   const chart = m.history && m.history.length > 1
-    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version)}`
+    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, startIso, scope)}`
     : "";
   return `
     <div class="details-inner">
@@ -277,7 +299,7 @@ function renderDetails(m, cats, isCurrent) {
 }
 
 // ── Per-matchup render ────────────────────────────────────────────────
-function renderMatchup(m, cats, tbId, idx, isCurrent) {
+function renderMatchup(m, cats, tbId, idx, isCurrent, startIso, scope) {
   const home = m.home, away = m.away;
   const homeFav = (home.wp ?? 0.5) > 0.5;
   const awayFav = (away.wp ?? 0.5) > 0.5;
@@ -325,7 +347,7 @@ function renderMatchup(m, cats, tbId, idx, isCurrent) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m, cats, isCurrent)}
+        ${renderDetails(m, cats, isCurrent, startIso, scope)}
       </div>
     </section>`;
 }
@@ -337,6 +359,12 @@ function fmtDateRange(startIso, endIso) {
   const e = new Date(endIso + "T00:00:00").toLocaleDateString(undefined, opts);
   return `${s} – ${e}`;
 }
+
+// Win-probability chart x-axis scope: "full" (entire history, default) or
+// "matchup" (clipped to the week's start). Toggled globally; `active` holds
+// the currently displayed week so the toggle can re-render in place.
+let chartScope = "full";
+const active = { data: null, week: null };
 
 // A week is "started" once any of its games has begun (state set server-side
 // from game statuses). Started weeks show real scores; upcoming weeks are
@@ -354,6 +382,8 @@ function pickDefaultWeek(data) {
 }
 
 function renderWeek(data, week) {
+  active.data = data;
+  active.week = week;
   const cats = data.league.categories_by_group;
   const tb = data.league.tiebreaker_stat_id;
   const isCurrent = isStarted(week);
@@ -365,7 +395,7 @@ function renderWeek(data, week) {
 
   const root = document.getElementById("matchups");
   root.innerHTML = week.matchups
-    .map((m, i) => renderMatchup(m, cats, tb, i, isCurrent))
+    .map((m, i) => renderMatchup(m, cats, tb, i, isCurrent, week.start, chartScope))
     .join("");
 
   // Hook up expand toggles (re-bound on every week switch since DOM is fresh).
@@ -401,6 +431,8 @@ function render(data) {
     ` · Model <code>${firstModel}</code>` +
     ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
       `<span class="caret">▸</span> How this works</button>` +
+    ` · <button id="chart-scope-toggle" class="about-toggle" title="Toggle whether WP-over-time graphs show the full history or just since the matchup began">` +
+      `Graph: ${chartScope === "matchup" ? "since matchup start" : "full history"}</button>` +
     ` · ${select}`;
 
   renderWeek(data, defaultWeek);
@@ -409,6 +441,23 @@ function render(data) {
     const periodId = parseInt(e.target.value, 10);
     const w = data.weeks.find((w) => w.matchup_period_id === periodId);
     if (w) renderWeek(data, w);
+  });
+
+  // Global graph-scope toggle: flip full ↔ matchup-start and re-render the
+  // current week, preserving which detail panels are expanded.
+  const scopeBtn = document.getElementById("chart-scope-toggle");
+  scopeBtn.addEventListener("click", () => {
+    chartScope = chartScope === "matchup" ? "full" : "matchup";
+    scopeBtn.textContent =
+      "Graph: " + (chartScope === "matchup" ? "since matchup start" : "full history");
+    const openIds = [...document.querySelectorAll('.expand-toggle[aria-expanded="true"]')]
+      .map((b) => b.getAttribute("aria-controls"));
+    if (active.week) renderWeek(active.data, active.week);
+    openIds.forEach((id) => {
+      const panel = document.getElementById(id);
+      const btn = document.querySelector(`.expand-toggle[aria-controls="${id}"]`);
+      if (panel && btn) { panel.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+    });
   });
 }
 
