@@ -369,16 +369,6 @@ def _rp_remaining_units(team_id: int,
                if _game_after_return(g, return_date))
 
 
-def _remaining_team_games(team_id: int,
-                          schedule_by_team: dict[int, list[dict]],
-                          return_date: date | None = None) -> int:
-    """Integer count of non-Final games on/after the player's return date."""
-    games = schedule_by_team.get(team_id, [])
-    return sum(1 for g in games
-               if g.get("game_status") != "Final"
-               and _game_after_return(g, return_date))
-
-
 def _probable_starts_for(player_name: str, team_id: int,
                          schedule_by_team: dict[int, list[dict]],
                          sp_exit_inning: float,
@@ -394,6 +384,29 @@ def _probable_starts_for(player_name: str, team_id: int,
             continue
         if _norm_name(g.get("probable_pitcher_name")) == target:
             total += _sp_factor(g, sp_exit_inning)
+    return total
+
+
+def _open_sp_game_weight(team_id: int,
+                         schedule_by_team: dict[int, list[dict]],
+                         sp_exit_inning: float,
+                         return_date: date | None = None) -> float:
+    """SP-factor weight of this team's games with **no probable announced yet**
+    (and on/after the player's return date).
+
+    These are games a rostered SP might start but MLB hasn't posted a probable
+    for — the part of the week beyond the ~3-day probable horizon. Used to
+    estimate starts there via the pitcher's ROS-share. Games that already have
+    a probable are excluded (that start is counted by `_probable_starts_for`,
+    so no double-count); Final games contribute 0 through `_sp_factor`. For a
+    future week (no probables at all) this is just every remaining game."""
+    total = 0.0
+    for g in schedule_by_team.get(team_id, []):
+        if not _game_after_return(g, return_date):
+            continue
+        if g.get("probable_pitcher_name"):
+            continue
+        total += _sp_factor(g, sp_exit_inning)
     return total
 
 
@@ -546,7 +559,6 @@ def _hitter_days_slotted(roster: list[dict],
 
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
-                  estimate_sp_starts: bool = False,
                   team_total_ros_games: dict[int, int] | None = None,
                   lineup_slot_counts: dict[int, int] | None = None,
                   ) -> list[Budget]:
@@ -554,14 +566,12 @@ def build_budgets(roster: list[dict],
 
     Inclusion rules:
       - IL slot or definitely-out injury status → skipped.
-      - All other rostered pitchers (BE included) → considered. Their
-        per-week units come from probable pitchers (current week SPs) or
-        the ROS-rate estimator (future-week SPs and all RPs).
+      - All other rostered pitchers (BE included) → considered. SP starts use
+        the hybrid estimate (announced probables + a ROS-share estimate over
+        games with no probable yet — see the SP branch); RP appearances come
+        from the ROS-rate estimator.
       - Hitters → run through the per-day lineup optimizer; their units
         are the sum of days they win a slot.
-
-    When `estimate_sp_starts` is True (future weeks: no probable pitchers),
-    SP starts are estimated as `ros_gs * (week_games / total_ros_games)`.
     """
     team_total_ros_games = team_total_ros_games or {}
     lineup_slot_counts = lineup_slot_counts or {}
@@ -581,6 +591,12 @@ def build_budgets(roster: list[dict],
         if ret is not None and ret <= today:
             ret = None  # healthy → no game filter needed
 
+        # Estimated (un-probabled) SP starts for this player. Subtracted from a
+        # two-way player's hitter days below, since the lineup optimizer only
+        # blocks *announced-probable* start days, not estimated ones. 0 for
+        # non-SPs and non-pitchers.
+        sp_est_units = 0.0
+
         # ── Pitcher budget ─────────────────────────────────────────────
         if _has_pitcher_ros(ros):
             # Classify SP vs RP by projected usage, not ESPN's
@@ -594,26 +610,31 @@ def build_budgets(roster: list[dict],
                 is_sp = (pos == 1)
 
             if is_sp:
-                if estimate_sp_starts:
-                    team_games = _remaining_team_games(team_id, schedule_by_team, ret)
-                    total_ros = team_total_ros_games.get(team_id, 0)
-                    if total_ros > 0 and gs_ros > 0 and team_games > 0:
-                        rate = min(gs_ros / total_ros, MAX_SP_RATE)
-                        sp_units = rate * team_games
-                    else:
-                        sp_units = 0
+                # Hybrid SP-start estimate — one path for current and future
+                # weeks: announced probable starts PLUS a ROS-share estimate
+                # over this team's games with no probable posted yet (the part
+                # of the week past MLB's ~3-day probable horizon). No double-
+                # count: open games exclude any with a probable. Future weeks
+                # (no probables) reduce to the pure ROS estimate; late in a week
+                # (all probables posted) it reduces to probables-only.
+                if gs_ros > 0:
+                    avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
+                    sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
                 else:
-                    if gs_ros > 0:
-                        avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
-                        sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
-                    else:
-                        sp_exit_inning = 6.0
-                    sp_units = _probable_starts_for(
-                        p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
-                    )
+                    sp_exit_inning = 6.0
+                probable_units = _probable_starts_for(
+                    p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
+                )
+                open_weight = _open_sp_game_weight(
+                    team_id, schedule_by_team, sp_exit_inning, ret,
+                )
+                total_ros = team_total_ros_games.get(team_id, 0)
+                if total_ros > 0 and gs_ros > 0 and open_weight > 0:
+                    rate = min(gs_ros / total_ros, MAX_SP_RATE)
+                    sp_est_units = rate * open_weight
+                units_p = probable_units + sp_est_units
                 denom_p = gs_ros
                 role_p = "SP"
-                units_p = sp_units
             else:
                 rp_remaining = _rp_remaining_units(team_id, schedule_by_team, ret)
                 total_ros = team_total_ros_games.get(team_id, 0)
@@ -627,19 +648,17 @@ def build_budgets(roster: list[dict],
             budget = _make_budget(p, ros, units_p, denom_p, PITCHER_COUNTERS, role_p)
             if budget:
                 out.append(budget)
-        else:
-            sp_units = 0  # for the two-way hitter-day adjustment below
 
         # ── Hitter budget ──────────────────────────────────────────────
         if _has_hitter_ros(ros):
             units_h = hitter_units.get(p["player_id"], 0.0)
-            # Two-way players in future weeks: the optimizer slotted them
-            # every day (no probable pitchers to block their pitching
-            # days), so subtract expected SP days here to avoid double-
-            # counting. Current-week two-ways already had their start days
-            # filtered out inside the optimizer, so no adjustment needed.
-            if estimate_sp_starts and _has_pitcher_ros(ros):
-                units_h = max(0.0, units_h - sp_units)
+            # Two-way players (Ohtani): the lineup optimizer blocks them as
+            # hitters only on *announced-probable* start days, so subtract the
+            # *estimated* (un-probabled) start days here to avoid counting them
+            # both batting and pitching. For a future week that's all of their
+            # SP starts; for the current week it's just the un-announced ones.
+            if _has_pitcher_ros(ros):
+                units_h = max(0.0, units_h - sp_est_units)
             denom_h = ros.get(STAT_HIT_G) or 0
             budget = _make_budget(p, ros, units_h, denom_h, HITTER_COUNTERS, "HIT")
             if budget:
@@ -742,19 +761,16 @@ class MatchupInputs:
 def simulate(inputs: MatchupInputs,
              schedule_by_team: dict[int, list[dict]],
              n_sims: int = DEFAULT_SIMS,
-             estimate_sp_starts: bool = False,
              team_total_ros_games: dict[int, int] | None = None,
              lineup_slot_counts: dict[int, int] | None = None,
              ) -> tuple[float, float, dict]:
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
-        estimate_sp_starts=estimate_sp_starts,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
-        estimate_sp_starts=estimate_sp_starts,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
     )

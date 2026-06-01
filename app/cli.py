@@ -455,7 +455,6 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     )
                     home_wp, away_wp, details = sim.simulate(
                         inputs, schedule_by_team, n_sims=sims,
-                        estimate_sp_starts=future_only,
                         team_total_ros_games=team_total_ros_games,
                         lineup_slot_counts=lineup_slot_counts,
                     )

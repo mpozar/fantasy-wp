@@ -67,13 +67,25 @@ ESPN's `default_position_id` is wrong for some players. We classify pitchers by 
 
 This catches RP-eligible swingmen (e.g. Wrobleski, pos=11 but usage ≈ SP), and also catches the two-way case below.
 
+### SP start estimation (hybrid — current & future weeks share one path)
+
+A rostered SP's expected starts for the week =
+**announced probable starts** (`_probable_starts_for`, weighted by `_sp_factor` so an in-progress start gets partial credit) **+ a ROS-share estimate** over that pitcher's team-games that have **no probable announced yet** (`_open_sp_game_weight` × `min(ros_gs / total_ros_games, MAX_SP_RATE)`).
+
+The two pieces never overlap: a game with *any* probable announced is excluded from the open-game weight (that start is already counted, by whoever's named). So:
+- **Future weeks** (MLB posts no probables that far out) → pure ROS estimate, full rotation.
+- **Early in the current week** → first ~3 days are announced, the rest is estimated. Avoids the old bug where the back half of a not-yet-fully-announced week scored 0 starts (a 6-man rotation showed only 1–2 starts on Monday).
+- **Late in a week** (every game has a probable) → reduces to probables-only.
+
+Before this, `compute` switched hard between a probables-only path (current week) and a ROS-estimate path (`--future`); the gap was the un-announced tail of the current week. There's no `estimate_sp_starts` flag anymore — the data (probable present or not) drives it.
+
 ### Two-way players (Ohtani)
 
 A player with both `gs > 0` (pitcher projections) AND `hit_g > 0` (hitter projections) gets **two budgets**: one pitcher (handled by the pitcher path; gs/gp ratio decides SP vs RP), one hitter (handled by the hitter path). They appear twice in the contributors UI with separate role pills.
 
-Day-conflict resolution:
-- Current week: in the hitter optimizer, skip the player on days they're the probable starter for their team (`_is_probable_starter_on`)
-- Future weeks: no probables, so subtract `expected SP units` from hitter days after the fact (`if estimate_sp_starts and _has_pitcher_ros(ros): units_h = max(0, units_h - sp_units)`)
+Day-conflict resolution (so a two-way isn't counted batting *and* pitching the same day):
+- The hitter optimizer skips the player on days they're the **announced** probable starter (`_is_probable_starter_on`).
+- That only covers announced days, so we also subtract the **estimated** (un-probabled) start days afterward: `units_h = max(0, units_h - sp_est_units)` where `sp_est_units` is the open-game estimate from the SP hybrid. For a future week that's all their starts; for the current week it's just the un-announced tail.
 
 ### Lineup optimization (hitters)
 
@@ -95,7 +107,7 @@ Greedy is good enough at ~10-12 hitters × ~10 slots — exact Hungarian matchin
 - `OUT`, `INJURY_RESERVE`, unknown → None (indefinite, excluded entirely)
 - `ACTIVE`, `NORMAL`, `DAY_TO_DAY`, `QUESTIONABLE`, `PROBABLE`, null → today (playable now)
 
-The estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_remaining_team_games`, `_probable_starts_for`, `_hitter_remaining_units`, `_rp_remaining_units`, and the hitter optimizer.
+The estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_hitter_remaining_units`, `_rp_remaining_units`, and the hitter optimizer.
 
 IL slot (17) is also a hard filter — manager-stashed players in IL slot stay excluded even if their status is "ACTIVE". BE slot (16) is included for pitchers (managers cycle SPs and RPs through bench day-to-day); hitters in BE go through the optimizer.
 
@@ -187,7 +199,7 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 
 `_probable_starts_for` matches by normalized name (lowercase, alphanumeric only). If MLB and ESPN spell a name differently, an SP can lose credit for a probable start. Rare but a documented known limitation. The reverse — names matching when they shouldn't — also rare but possible.
 
-When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that player's SP units jump from 0 to 1, causing a 5-10 point WP swing for their fantasy team. This is normal behavior.
+When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
 
 ## Cron architecture
 
@@ -279,7 +291,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
 2. Identify the transition timestamp(s) — look for jumps > 1pp between consecutive 5-min ticks (anything within ±1pp is Monte Carlo noise; MC SE ≈ √(p(1-p)/10000) × 100 ≈ 0.4pp at p≈0.5).
 3. **Diff the budgets** between the snapshot before and after the transition:
    - Roster changes: compare `details_json.home_budgets[].player_id` sets — added/removed players
-   - Probable pitcher changes: same roster, but a player whose `units` went from 0 → 1 (or vice versa). MLB just announced/un-announced their start.
+   - Probable pitcher changes: same roster, but an SP whose `units` stepped up toward 1 (from its estimated open-game share) — or back down. MLB just announced/un-announced their start.
    - IL/injury changes: a player who disappeared from the budget — check their injury_status
    - SVHD/projection refresh: usually happens around medium.sh runs (every 4h) — same players, different `expected[83]` values
 4. **Diff the live category state** for backfilled stat corrections:
@@ -366,7 +378,7 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 ## When the user asks about a WP swing
 
 Read this file's "Investigating WP changes" section first. The most common causes (in rough order of frequency):
-1. Probable pitcher announcement (player.units 0 → 1)
+1. Probable pitcher announcement (an SP's units step toward 1 from its estimate)
 2. Roster move (player added/removed)
 3. ESPN stat backfill (live category state updates retroactively)
 4. medium.sh refresh (projections updated)
