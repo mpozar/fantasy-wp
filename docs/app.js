@@ -271,12 +271,11 @@ function renderCategoryWP(d, cats, m) {
     </table>`;
 }
 
-function renderDetails(m, cats, isCurrent, startIso, scope) {
+function renderDetails(m, cats, startIso, scope) {
   if (!m.details) return "";
   const d = m.details;
   // WP-over-time renders whenever snapshot history exists — for the live week
-  // and for past weeks (upcoming weeks have no history yet). The `isCurrent`
-  // flag (week started) no longer gates it.
+  // and for past weeks (upcoming weeks have no history yet).
   const chart = m.history && m.history.length > 1
     ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, startIso, scope)}`
     : "";
@@ -299,7 +298,7 @@ function renderDetails(m, cats, isCurrent, startIso, scope) {
 }
 
 // ── Per-matchup render ────────────────────────────────────────────────
-function renderMatchup(m, cats, tbId, idx, isCurrent, startIso, scope) {
+function renderMatchup(m, cats, tbId, idx, started, startIso, scope) {
   const home = m.home, away = m.away;
   const homeFav = (home.wp ?? 0.5) > 0.5;
   const awayFav = (away.wp ?? 0.5) > 0.5;
@@ -317,7 +316,7 @@ function renderMatchup(m, cats, tbId, idx, isCurrent, startIso, scope) {
     </tr>`;
 
   return `
-    <section class="matchup ${isCurrent ? "" : "future"}">
+    <section class="matchup ${started ? "" : "future"}">
       <table>
         <colgroup>
           <col class="c-team"><col class="c-record"><col class="c-wp">
@@ -332,7 +331,7 @@ function renderMatchup(m, cats, tbId, idx, isCurrent, startIso, scope) {
           </tr>
           <tr class="cat-row">
             <th class="team-h">Team</th>
-            <th class="record-h">${isCurrent ? "Cats" : ""}</th>
+            <th class="record-h">${started ? "Cats" : ""}</th>
             <th class="wp-h">WP</th>
             ${headerCells(cats.batting, tbId)}
             ${headerCells(cats.pitching, tbId)}
@@ -347,7 +346,7 @@ function renderMatchup(m, cats, tbId, idx, isCurrent, startIso, scope) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m, cats, isCurrent, startIso, scope)}
+        ${renderDetails(m, cats, startIso, scope)}
       </div>
     </section>`;
 }
@@ -386,16 +385,16 @@ function renderWeek(data, week) {
   active.week = week;
   const cats = data.league.categories_by_group;
   const tb = data.league.tiebreaker_stat_id;
-  const isCurrent = isStarted(week);
+  const started = isStarted(week);
 
   document.getElementById("subtitle").innerHTML =
     `${week.label} · ${fmtDateRange(week.start, week.end)}` +
-    (isCurrent ? "" : ' · <span class="future-pill">Projection</span>') +
+    (started ? "" : ' · <span class="future-pill">Projection</span>') +
     ` · ${data.league.size}-team H2H · Tiebreaker: ${data.league.tiebreaker_name}`;
 
   const root = document.getElementById("matchups");
   root.innerHTML = week.matchups
-    .map((m, i) => renderMatchup(m, cats, tb, i, isCurrent, week.start, chartScope))
+    .map((m, i) => renderMatchup(m, cats, tb, i, started, week.start, chartScope))
     .join("");
 
   // Hook up expand toggles (re-bound on every week switch since DOM is fresh).

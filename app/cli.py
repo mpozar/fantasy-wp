@@ -586,7 +586,7 @@ def publish() -> None:
                 (period_id,),
             ).fetchall()
             matchups_out = [
-                _matchup_block(conn, teams, m, is_current=started)
+                _matchup_block(conn, teams, m, started=started)
                 for m in ms
             ]
             weeks_out.append({
@@ -594,9 +594,8 @@ def publish() -> None:
                 "label": f"Week {period_id}",
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                # "state": data-driven default-selection signal for the UI.
+                # "state" drives the UI's default week selection.
                 "state": state,
-                "is_current": period_id == current,
                 "matchups": matchups_out,
             })
 
@@ -701,8 +700,12 @@ def _week_state(conn, period_id: int) -> str:
     return "final" if all(s in _FINAL_GAME_STATES for s in statuses) else "live"
 
 
-def _matchup_block(conn, teams: dict, m, *, is_current: bool) -> dict:
-    """One matchup with team blocks, current snapshot, and history."""
+def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
+    """One matchup with team blocks, current snapshot, and history.
+
+    `started` = the week has begun (state != "upcoming"); when False the team
+    blocks emit null scores/records so the UI shows dashes for a pure projection.
+    """
     home_team_id = m["home_team_id"]
     away_team_id = m["away_team_id"]
     home_state = _latest_score_rows(conn, m["id"], home_team_id)
@@ -744,10 +747,10 @@ def _matchup_block(conn, teams: dict, m, *, is_current: bool) -> dict:
         "matchup_id": m["id"],
         "home": _team_block(teams, home_team_id, home_state,
                             wp_row["home_wp"] if wp_row else None,
-                            is_current=is_current),
+                            started=started),
         "away": _team_block(teams, away_team_id, away_state,
                             wp_row["away_wp"] if wp_row else None,
-                            is_current=is_current),
+                            started=started),
         "winner": m["winner"],
         "computed_at": wp_row["computed_at"] if wp_row else None,
         "model_version": wp_row["model_version"] if wp_row else None,
@@ -774,7 +777,7 @@ def _latest_score_rows(conn, matchup_id: int, team_id: int) -> dict[int, dict]:
 
 
 def _team_block(teams: dict, team_id: int, state: dict[int, dict],
-                wp: float | None, *, is_current: bool) -> dict:
+                wp: float | None, *, started: bool) -> dict:
     t = teams.get(team_id, {})
     record = {"W": 0, "L": 0, "T": 0}
     for s in state.values():
@@ -790,9 +793,9 @@ def _team_block(teams: dict, team_id: int, state: dict[int, dict],
         out = []
         for sid in stat_ids:
             s = state.get(sid, {})
-            # Future weeks haven't started — emit nulls so the UI shows dashes.
-            score = s.get("score") if is_current else None
-            result = s.get("result") if is_current else None
+            # Upcoming weeks haven't started — emit nulls so the UI shows dashes.
+            score = s.get("score") if started else None
+            result = s.get("result") if started else None
             out.append({
                 "stat_id": sid,
                 "name": stats.name(sid),
@@ -808,7 +811,7 @@ def _team_block(teams: dict, team_id: int, state: dict[int, dict],
         "owner": t.get("owner"),
         "abbrev": t.get("abbrev"),
         "wp": wp,
-        "record": record if is_current else None,
+        "record": record if started else None,
         "batting": block(stats.BATTING_STAT_IDS),
         "pitching": block(stats.PITCHING_STAT_IDS),
     }

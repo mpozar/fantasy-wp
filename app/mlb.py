@@ -30,12 +30,6 @@ def monday_of(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
-def current_matchup_window(today: date | None = None) -> tuple[date, date]:
-    """Monday→Sunday containing `today` (defaults to local today)."""
-    monday = monday_of(today or date.today())
-    return monday, monday + timedelta(days=6)
-
-
 def matchup_period_window(period_id: int) -> tuple[date, date]:
     """Mon→Sun for a matchup period, anchored absolutely on the season start.
 
