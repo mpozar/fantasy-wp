@@ -197,7 +197,7 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 
 ### Probable pitchers — name-matching
 
-`_probable_starts_for` matches by normalized name (lowercase, alphanumeric only). If MLB and ESPN spell a name differently, an SP can lose credit for a probable start. Rare but a documented known limitation. The reverse — names matching when they shouldn't — also rare but possible.
+`_probable_starts_for` matches by normalized name (`_norm_name`: strip diacritics → lowercase → alphanumeric only). Diacritic stripping matters — MLB's probable feed accents names ("Cristopher Sánchez") while ESPN's rosters often don't ("Sanchez"); without normalization they miss and the SP loses credit for a confirmed start (and with the hybrid estimate, the announced game is *also* excluded from the open-game weight, so the start vanishes entirely). Remaining mismatch risk is genuinely different spellings (nicknames, Jr./Sr., punctuation) — rare. The reverse, two names colliding after normalization, is also possible but rare.
 
 When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
 

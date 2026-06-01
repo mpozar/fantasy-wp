@@ -19,6 +19,7 @@ import math
 import random
 import sqlite3
 import string
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -167,6 +168,12 @@ ER_VMR_BY_ROLE = {"SP": 1.60, "RP": 1.83}
 def _norm_name(s: str | None) -> str:
     if not s:
         return ""
+    # Strip diacritics first so accented spellings match ASCII ones — MLB's
+    # probable-pitcher feed uses accents ("Cristopher Sánchez") while ESPN's
+    # roster names often don't ("Cristopher Sanchez"). Without this they fail
+    # to match and the SP loses credit for a confirmed start.
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
     return "".join(c for c in s.lower() if c.isalnum())
 
 
