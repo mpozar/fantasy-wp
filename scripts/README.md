@@ -17,7 +17,7 @@ public site keeps working with the previous projection snapshot.
 Future-week WPs only change when projections or the MLB schedule change, so
 they're computed on the medium tier (4 h). The current week's WP needs faster
 turnaround (matchup state moves with every MLB game), so it stays on the fast
-tier (15 min).
+tier (5 min).
 
 ## Setup with crontab
 

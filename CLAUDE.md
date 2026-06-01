@@ -21,7 +21,9 @@ app/
                 # refresh-live, compute [--future], publish
   espn.py       # ESPN fantasy API client. fetch_league_shape, fetch_teams,
                 # fetch_all_matchups, fetch_rosters_and_projections
-  mlb.py        # MLB statsapi client. matchup_period_window, fetch_schedule
+  mlb.py        # MLB statsapi client + calendar-absolute period windows.
+                # matchup_period_window / period_for_date (SEASON_ANCHOR_MONDAY),
+                # monday_of, fetch_schedule
   sim.py        # Monte Carlo simulator (model mc-v1). build_budgets, simulate
   model.py      # Legacy ratio-v0 model — kept as fallback via `app compute --model ratio-v0`
   db.py         # SQLite schema + migrations
@@ -126,6 +128,31 @@ If the user complains that a category WP "feels too lopsided," it's almost alway
 - `MAX_SVHD_RATE = 0.80` — caps per-appearance SV+HLD rate. Realistic elite RPs top out near 0.75-0.80.
 - `RP_APPEARANCE_RATE = 0.40` — fallback only, used when ROS GP or team-total games unavailable. Normal path is per-player derived.
 
+## Matchup periods & the Monday rollover
+
+Matchup periods are weekly (Mon→Sun). Their date windows are **calendar-absolute**,
+anchored on `SEASON_ANCHOR_MONDAY` in `mlb.py`: period N = anchor + (N−1)×7.
+`matchup_period_window(period)` and `period_for_date(date)` are inverses and
+depend on nothing but the calendar — not on "today", not on ESPN.
+
+**Do not trust ESPN's `status.currentMatchupPeriod` for date math.** It lags the
+calendar by several hours around the Monday rollover (it flips near US midnight =
+early-to-mid Monday *morning* in Oslo). The old code anchored period windows
+relative to *today* + ESPN's current period; when those two disagreed on Monday
+morning, every period shifted forward a week — the just-finished matchup absorbed
+the new week's games and got re-simulated instead of resolving to 100/0. The
+absolute anchor removes that entire class of bug.
+
+Consequences:
+- `refresh-schedule` writes each period's games via `matchup_period_window`.
+- `refresh-live` attributes each game to `period_for_date(game_date)` — by the
+  game's own date, never the current period — so a new week's games can't leak
+  into the prior matchup.
+- The UI's "current week" is **data-driven**, not from ESPN's number — see
+  "Front-end behavior".
+- `SEASON_ANCHOR_MONDAY` is a dated constant: **update it once per season**
+  (verify against a known period→week mapping, e.g. period 9 = May 25–31 in 2026).
+
 ## ESPN API quirks (the gotchas)
 
 ### `stat_id 83` = SVHD in actuals AND projections (UI-displayed value)
@@ -222,6 +249,24 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 - ~200 MB RAM per scrape, released after each run
 - Total `fast.sh` runtime ~30-40s (up from ~15s) — still well under the 5-min cadence budget
 
+## Front-end behavior (docs/app.js)
+
+- **`publish` emits every regular-season week** (period 1 → last_reg), so past
+  matchups stay selectable in the dropdown. Each week carries a data-driven
+  `state` in `data.json`: `final` / `live` / `upcoming`, computed by `_week_state`
+  from game statuses — with a decided-winner fallback for old weeks whose
+  `team_schedule` rows have been pruned (only current+future weeks keep them).
+- **Default week = the latest week with `state != "upcoming"`** (the latest one
+  that has *started*). No wall clock: on Monday morning it stays on last week
+  until the new week's first game goes live, then flips on its own. `state` also
+  gates whether team blocks show real scores vs projection dashes (the `started`
+  flag through `_matchup_block`/`_team_block`).
+- **WP-over-time graph scope toggle** — one global control, default "full
+  history". "Since matchup start" clips the chart to the week's Monday
+  (`week.start`), dropping the pre-matchup `--future` projection points (they're
+  flat and compress the volatile in-matchup portion); full view draws a faint
+  "matchup start" marker. Pure front-end — the cutoff is just `week.start`.
+
 ## Investigating "why did this WP change?"
 
 Common case: user notices a sudden WP shift and asks why. Method:
@@ -305,8 +350,8 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Single-database SQLite (`data.db`), migrations live in `db.init()` via `ALTER TABLE ADD COLUMN` with `try/except OperationalError` (idempotent).
 - Secrets in `~/.zshenv` (never inline in commands). Read via `read_zshenv_var` in shell or `_read_zshenv_var` in Python.
 - Cache-bust assets on every UI change: bump `?v=N` in `index.html` for `style.css` and `app.js`.
-- Don't recompute history snapshots on model changes — let new snapshots accumulate forward and trim old ones if needed.
-- Front-end is intentionally tiny: no framework, vanilla JS, ~400 lines.
+- Don't recompute history snapshots on model changes — let new snapshots accumulate forward. **Never delete snapshots** (see "wp_snapshot history retention"); the chart filters by `model_version` and `publish` downsamples the payload, so stale points are harmless.
+- Front-end is intentionally tiny: no framework, vanilla JS, ~480 lines.
 
 ## Known limitations (documented in "How this works")
 

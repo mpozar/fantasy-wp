@@ -5,9 +5,10 @@ Win probability estimator for a single ESPN head-to-head fantasy baseball league
 
 ## How it works
 
-Local Python pulls matchup state from ESPN, stores it in SQLite, computes a
-placeholder win probability per matchup, and writes a static `docs/data.json`
-that a tiny HTML page renders. The static site can be served by GitHub Pages.
+Local Python pulls matchup state from ESPN, stores it in SQLite, runs a Monte
+Carlo simulation (model `mc-v1`) to compute a win probability per matchup, and
+writes a static `docs/data.json` that a tiny HTML page renders. The static site
+can be served by GitHub Pages.
 
 ```
 ESPN  ──(fetch)──▶  SQLite  ──(compute)──▶  wp_snapshots  ──(publish)──▶  docs/data.json  ──▶  docs/index.html
