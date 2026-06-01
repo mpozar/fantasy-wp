@@ -258,7 +258,7 @@ def refresh_schedule() -> None:
     conn = db.connect()
     try:
         for period_id in range(current, last + 1):
-            start, end = mlb.matchup_period_window(period_id, current)
+            start, end = mlb.matchup_period_window(period_id)
             games = mlb.fetch_schedule(start, end)
             with conn:
                 conn.execute(
@@ -315,8 +315,6 @@ def refresh_live() -> None:
     """
     from datetime import date, timedelta
 
-    shape = espn.fetch_league_shape()
-    period_id = shape.current_matchup_period
     today = date.today()
     yesterday = today - timedelta(days=1)
     games = mlb.fetch_schedule(yesterday, today)
@@ -326,6 +324,11 @@ def refresh_live() -> None:
     try:
         with conn:
             for g in games:
+                # Attribute each game to the period its date falls in — not to
+                # ESPN's reported current period, which lags the calendar around
+                # the Monday rollover and would otherwise file a new week's games
+                # under the period that just ended.
+                period_id = mlb.period_for_date(date.fromisoformat(g["game_date"]))
                 conn.execute(
                     """
                     INSERT INTO team_schedule
@@ -560,20 +563,30 @@ def publish() -> None:
         if current is None or last_reg is None:
             raise click.ClickException("Missing period metadata. Run `app fetch` first.")
 
+        first_row = conn.execute(
+            "SELECT MIN(matchup_period_id) AS p FROM matchups"
+        ).fetchone()
+        first = first_row["p"] if first_row and first_row["p"] else 1
+
         teams = {
             r["id"]: dict(r) for r in conn.execute("SELECT * FROM teams").fetchall()
         }
 
+        # Emit every regular-season week — past weeks stay selectable in the
+        # dropdown so prior sims/graphs remain viewable. Whether a week is
+        # "started" (has real scores) is data-driven: derived from its games'
+        # statuses, not from the date or ESPN's current-period number.
         weeks_out = []
-        for period_id in range(current, last_reg + 1):
-            is_current = period_id == current
-            start, end = mlb.matchup_period_window(period_id, current)
+        for period_id in range(first, last_reg + 1):
+            state = _week_state(conn, period_id)
+            started = state != "upcoming"
+            start, end = mlb.matchup_period_window(period_id)
             ms = conn.execute(
                 "SELECT * FROM matchups WHERE matchup_period_id=? ORDER BY id",
                 (period_id,),
             ).fetchall()
             matchups_out = [
-                _matchup_block(conn, teams, m, is_current=is_current)
+                _matchup_block(conn, teams, m, is_current=started)
                 for m in ms
             ]
             weeks_out.append({
@@ -581,7 +594,9 @@ def publish() -> None:
                 "label": f"Week {period_id}",
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                "is_current": is_current,
+                # "state": data-driven default-selection signal for the UI.
+                "state": state,
+                "is_current": period_id == current,
                 "matchups": matchups_out,
             })
 
@@ -606,10 +621,84 @@ def publish() -> None:
         out_path.write_text(json.dumps(out, indent=2))
         click.echo(
             f"Wrote {out_path} ({out_path.stat().st_size} bytes) — "
-            f"{len(weeks_out)} weeks (periods {current}..{last_reg})"
+            f"{len(weeks_out)} weeks (periods {first}..{last_reg})"
         )
     finally:
         conn.close()
+
+
+# MLB detailedState values that mean a game is over.
+_FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
+
+# Max WP-over-time points embedded per matchup, per model version, in
+# data.json. The DB keeps every snapshot (so no history is ever lost); we
+# only thin what the static site downloads. ~200 points is far more than the
+# ~640px-wide chart can resolve, so downsampled graphs look identical to full.
+MAX_HISTORY_POINTS = 200
+
+
+def _downsample_history(history: list[dict],
+                        max_points: int = MAX_HISTORY_POINTS) -> list[dict]:
+    """Thin a matchup's snapshot history for the published payload.
+
+    Grouped by model_version (the chart only ever plots one model's series),
+    each group is reduced to evenly-spaced points that always include its
+    first and last. Nothing is deleted from the DB — this only shrinks
+    data.json so past weeks can keep their graphs without unbounded growth.
+    """
+    by_ver: dict[str, list[dict]] = {}
+    for h in history:
+        by_ver.setdefault(h["model_version"], []).append(h)
+
+    def evenly(rows: list[dict]) -> list[dict]:
+        n = len(rows)
+        if n <= max_points:
+            return rows
+        step = (n - 1) / (max_points - 1)
+        idx = sorted({round(i * step) for i in range(max_points)})
+        return [rows[i] for i in idx]
+
+    out = [h for rows in by_ver.values() for h in evenly(rows)]
+    out.sort(key=lambda h: h["computed_at"])
+    return out
+
+
+def _week_state(conn, period_id: int) -> str:
+    """Data-driven status of a matchup week, from its games' statuses:
+
+      - "upcoming": no game has started (all Scheduled/Pre-Game) — show as projection
+      - "live":     at least one game started, but not all are final
+      - "final":    every game is over
+
+    Used by the UI to pick the default week (the latest non-"upcoming" one)
+    without consulting any wall clock.
+    """
+    # ESPN-finalized weeks: every matchup has a decided winner. This also
+    # covers older weeks whose team_schedule rows have since been deleted
+    # (refresh-schedule only retains current+future weeks).
+    winners = [
+        r["winner"] for r in conn.execute(
+            "SELECT winner FROM matchups WHERE matchup_period_id=?", (period_id,)
+        ).fetchall()
+    ]
+    if winners and all(w and w != "UNDECIDED" for w in winners):
+        return "final"
+
+    # Otherwise derive from game statuses — handles the just-finished week
+    # (games final but ESPN hasn't set the winner yet), live, and upcoming.
+    rows = conn.execute(
+        "SELECT DISTINCT game_status FROM team_schedule WHERE matchup_period_id=?",
+        (period_id,),
+    ).fetchall()
+    statuses = [r["game_status"] for r in rows]
+    if not statuses:
+        return "upcoming"
+    started = any(
+        s == "In Progress" or s in _FINAL_GAME_STATES for s in statuses
+    )
+    if not started:
+        return "upcoming"
+    return "final" if all(s in _FINAL_GAME_STATES for s in statuses) else "live"
 
 
 def _matchup_block(conn, teams: dict, m, *, is_current: bool) -> dict:
@@ -644,6 +733,7 @@ def _matchup_block(conn, teams: dict, m, *, is_current: bool) -> dict:
         }
         for r in history_rows
     ]
+    history = _downsample_history(history)
     details = None
     if wp_row and wp_row["details_json"]:
         try:

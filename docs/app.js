@@ -252,9 +252,10 @@ function renderCategoryWP(d, cats, m) {
 function renderDetails(m, cats, isCurrent) {
   if (!m.details) return "";
   const d = m.details;
-  // WP-over-time only makes sense for the current week (no history exists
-  // for future weeks before now).
-  const chart = isCurrent && m.history && m.history.length > 1
+  // WP-over-time renders whenever snapshot history exists — for the live week
+  // and for past weeks (upcoming weeks have no history yet). The `isCurrent`
+  // flag (week started) no longer gates it.
+  const chart = m.history && m.history.length > 1
     ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version)}`
     : "";
   return `
@@ -337,10 +338,25 @@ function fmtDateRange(startIso, endIso) {
   return `${s} – ${e}`;
 }
 
+// A week is "started" once any of its games has begun (state set server-side
+// from game statuses). Started weeks show real scores; upcoming weeks are
+// pure projections.
+function isStarted(week) {
+  return week.state !== "upcoming";
+}
+
+// Default to the latest week that has started — keeps last week's results
+// visible until the new week's first game goes live, then flips on its own.
+// No wall clock involved.
+function pickDefaultWeek(data) {
+  const started = data.weeks.filter(isStarted);
+  return started.length ? started[started.length - 1] : data.weeks[0];
+}
+
 function renderWeek(data, week) {
   const cats = data.league.categories_by_group;
   const tb = data.league.tiebreaker_stat_id;
-  const isCurrent = week.is_current;
+  const isCurrent = isStarted(week);
 
   document.getElementById("subtitle").innerHTML =
     `${week.label} · ${fmtDateRange(week.start, week.end)}` +
@@ -369,13 +385,14 @@ function render(data) {
   document.getElementById("league-name").textContent = data.league.name;
   const ts = new Date(data.generated_at);
   const firstModel = data.weeks[0]?.matchups[0]?.model_version ?? "—";
+  const defaultWeek = pickDefaultWeek(data);
   const select = `
     <label class="week-picker">
       Week
       <select id="week-select">
         ${data.weeks.map((w) => `
-          <option value="${w.matchup_period_id}" ${w.is_current ? "selected" : ""}>
-            ${w.label}${w.is_current ? " (current)" : ""} · ${fmtDateRange(w.start, w.end)}
+          <option value="${w.matchup_period_id}" ${w.matchup_period_id === defaultWeek.matchup_period_id ? "selected" : ""}>
+            ${w.label}${w.state === "live" ? " (live)" : ""} · ${fmtDateRange(w.start, w.end)}
           </option>`).join("")}
       </select>
     </label>`;
@@ -386,8 +403,7 @@ function render(data) {
       `<span class="caret">▸</span> How this works</button>` +
     ` · ${select}`;
 
-  const current = data.weeks.find((w) => w.is_current) ?? data.weeks[0];
-  renderWeek(data, current);
+  renderWeek(data, defaultWeek);
 
   document.getElementById("week-select").addEventListener("change", (e) => {
     const periodId = parseInt(e.target.value, 10);

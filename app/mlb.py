@@ -13,28 +13,48 @@ from app.teams import MLBAM_TO_ESPN
 
 BASE_URL = "https://statsapi.mlb.com/api/v1"
 
+# Monday of matchup period 1 for the current season. Period windows are
+# computed *absolutely* off this anchor — never relative to "today" or to
+# ESPN's `currentMatchupPeriod`, both of which drift around the Monday
+# rollover (ESPN's period number lags the calendar by several hours, and a
+# server clock past midnight Monday has already advanced to the new week).
+# Anchoring to a fixed Monday keeps each period pinned to its true Mon→Sun
+# week regardless of when the pipeline runs. Verified: period 9 = May 25–31,
+# so period 1 = March 30 (= May 25 − 8×7 days). Both are Mondays.
+# Update once per season.
+SEASON_ANCHOR_MONDAY = date(2026, 3, 30)
+
+
+def monday_of(d: date) -> date:
+    """Monday of the Mon→Sun week containing `d`."""
+    return d - timedelta(days=d.weekday())
+
 
 def current_matchup_window(today: date | None = None) -> tuple[date, date]:
     """Monday→Sunday containing `today` (defaults to local today)."""
-    today = today or date.today()
-    monday = today - timedelta(days=today.weekday())
-    sunday = monday + timedelta(days=6)
-    return monday, sunday
+    monday = monday_of(today or date.today())
+    return monday, monday + timedelta(days=6)
 
 
-def matchup_period_window(period_id: int, current_period_id: int,
-                          today: date | None = None) -> tuple[date, date]:
-    """Mon→Sun for an arbitrary matchup period.
+def matchup_period_window(period_id: int) -> tuple[date, date]:
+    """Mon→Sun for a matchup period, anchored absolutely on the season start.
 
-    Anchors on the current period's Mon→Sun and adds 7 days per period offset.
     Assumes weekly matchup periods (matchupPeriodLength=1 in ESPN settings),
-    which is what this league uses.
+    which is what this league uses. Independent of the current date and of
+    ESPN's reported current period — see SEASON_ANCHOR_MONDAY.
     """
-    monday_curr, _ = current_matchup_window(today)
-    delta = (period_id - current_period_id) * 7
-    monday = monday_curr + timedelta(days=delta)
-    sunday = monday + timedelta(days=6)
-    return monday, sunday
+    monday = SEASON_ANCHOR_MONDAY + timedelta(days=(period_id - 1) * 7)
+    return monday, monday + timedelta(days=6)
+
+
+def period_for_date(d: date) -> int:
+    """Which matchup period a calendar date falls in, by the season anchor.
+
+    Inverse of `matchup_period_window`. Used to attribute live MLB games to
+    the correct period by their game date rather than by whatever period
+    ESPN currently reports as 'current'.
+    """
+    return (monday_of(d) - SEASON_ANCHOR_MONDAY).days // 7 + 1
 
 
 def fetch_schedule(start: date, end: date) -> list[dict]:

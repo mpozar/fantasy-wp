@@ -271,15 +271,24 @@ trap 'rm -f .app.lock' EXIT
 ```
 Pulls fresh MLB game logs, prints a `VMR = {...}` dict. Paste into `sim.py`. Re-run yearly or when the model seems off.
 
-### Trimming wp_snapshot history
+### wp_snapshot history retention
 
-When the model changes a lot, old snapshots become misleading. Trim:
-```sql
-DELETE FROM wp_snapshots
-WHERE computed_at < ?
-  AND computed_at != (SELECT MAX(computed_at) FROM wp_snapshots ws2 WHERE ws2.matchup_id = wp_snapshots.matchup_id);
-```
-Keeps the latest snapshot per matchup so future-week matchups (computed on 4h cadence) don't get orphaned.
+**Policy: never delete snapshots.** The DB keeps every snapshot so every week —
+including completed past weeks — keeps its full WP-over-time graph. Payload size
+is handled at *publish* time instead: `_downsample_history` thins each matchup's
+history to `MAX_HISTORY_POINTS` (200) per model version when writing `data.json`,
+so the static site stays small while the graphs look identical (the chart is
+~640px wide — it can't resolve more than ~200 points anyway).
+
+Mixed-model history is *not* a reason to delete: the front-end chart filters to
+the matchup's current `model_version` (`renderChart`), so old-model points are
+never plotted — they just sit harmlessly in the DB.
+
+Historical note: commit `fad4684` did a one-off `DELETE` keeping only the latest
+snapshot per matchup on a model-change day. That destroyed the graphs for weeks
+7–8 (they predate the surviving history). Don't do that again — if old-model
+points ever need clearing, scope the delete to `model_version = '<old>'` and only
+for non-final weeks, never a blanket "keep latest only."
 
 ### crontab
 
