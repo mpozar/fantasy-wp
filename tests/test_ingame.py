@@ -54,6 +54,11 @@ def test_qs_exited_in_progress_qualified_is_one():
     assert project_qs(starter(exited=True, outs=18, er=1)) == 1.0
 
 
+def test_qs_exited_strong_start_is_one():
+    # Exited after 7 IP / 2 ER, game still live → QS achieved, we supply the 1.
+    assert project_qs(starter(exited=True, outs=21, er=2)) == 1.0
+
+
 def test_qs_exited_short_outing_is_zero():
     assert project_qs(starter(exited=True, outs=17, er=0)) == 0.0   # 5.2 IP
 
@@ -70,9 +75,10 @@ def test_qs_currently_pitching_over_er_cap_is_zero():
 # ── QS: in-progress probabilities (structure, not exact values) ───────────────
 
 def test_qs_threshold_met_still_in_is_high_but_not_certain():
-    # 6 IP / 1 ER but still pitching — could still allow >3 ER → high, < 1.
+    # 6 IP / 1 ER but still pitching — could still allow >3 ER and lose it, so
+    # high but meaningfully below 1 (not ~0.999).
     p = project_qs(starter(outs=18, er=1, exp_outs_per_start=19))
-    assert 0.7 < p < 1.0
+    assert 0.85 < p < 0.99
 
 
 def test_qs_more_outs_recorded_raises_prob():

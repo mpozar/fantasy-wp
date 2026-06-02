@@ -90,25 +90,39 @@ def _continuation_prob(out_index: float, er: int, exp_outs_per_start: float) -> 
     return max(P_CONT_FLOOR, min(1.0, p))
 
 
+def _expected_remaining_outs(outs: int, er: int, exp_outs_per_start: float,
+                             horizon: int = 12) -> float:
+    """Expected additional outs the starter records, from the same continuation
+    hazard that drives the reach probability (Σ cumulative survival). A pitcher
+    still in after the 6th is projected to keep facing hitters, which is the ER
+    exposure that should pull a met-threshold QS *below* 1."""
+    total = 0.0
+    survival = 1.0
+    for k in range(outs, outs + horizon):
+        survival *= _continuation_prob(k, er, exp_outs_per_start)
+        total += survival
+        if survival < 0.02:
+            break
+    return total
+
+
 def _qs_inprogress_prob(outs: int, er: int,
                         exp_outs_per_start: float, er_per_out: float) -> float:
     """QS probability for a starter still pitching (caller guarantees er <= 3).
 
     P(reaches 18 outs before the hook) × P(stays <= 3 ER over the rest of the
-    outing). The reach term survives each remaining out at `_continuation_prob`
-    (conditioned on the line so far, so a cruising starter projects *up* as they
-    go deeper, not down); the ER term accrues over their expected remaining outs.
+    outing). Both terms come from the same per-out continuation hazard
+    (`_continuation_prob`), conditioned on the line so far — so a cruising
+    starter projects *up* as they go deeper, and a met-threshold pitcher who's
+    still in keeps real ER exposure (a 4th ER in the 7th still kills the QS).
     """
     # P(reach 18 outs): survive each of the outs still needed.
     p_reach = 1.0
     for k in range(outs, QS_OUTS):            # outs #(outs+1) … #18
         p_reach *= _continuation_prob(k, er, exp_outs_per_start)
 
-    # P(remaining ER keeps the total <= 3): ER risk runs over the whole rest of
-    # the outing (a 4th ER in the 7th still kills a QS), so the exposure is their
-    # expected final length — at least 6 IP if they're cruising there.
-    exp_final_outs = max(float(QS_OUTS), exp_outs_per_start)
-    exp_remaining = max(0.0, exp_final_outs - outs)
+    # P(remaining ER keeps the total <= 3) over their expected remaining outs.
+    exp_remaining = _expected_remaining_outs(outs, er, exp_outs_per_start)
     p_er_ok = _poisson_cdf(QS_MAX_ER - er, er_per_out * exp_remaining)
 
     return p_reach * p_er_ok
