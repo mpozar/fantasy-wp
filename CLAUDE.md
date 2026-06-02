@@ -342,6 +342,21 @@ trap 'rm -f .app.lock' EXIT
 ```
 Pulls fresh MLB game logs, prints a `VMR = {...}` dict. Paste into `sim.py`. Re-run yearly or when the model seems off.
 
+### Tests
+
+```sh
+.venv/bin/pip install -e '.[dev]'   # once: installs pytest
+.venv/bin/python -m pytest -q
+```
+Currently covers `app/ingame.py`, the in-progress QS/SVHD projection model
+(threshold/context stats that the linear `_sp_factor`/`_rp_factor` mis-projects
+mid-game). **Not yet wired into the pipeline** — it's pure, mock-tested
+functions plus `scripts/ingame_scenarios.py` (prints projections for hand-built
+in-progress states) so the model can be tuned before the live boxscore plumbing
+is built. See the state tables in the functions' docstrings. The known v0 gap:
+the QS pull model uses the unconditional avg start length, so it under-projects
+a *cruising* starter's QS — the next thing to refine.
+
 ### wp_snapshot history retention
 
 **Policy: never delete snapshots.** The DB keeps every snapshot so every week —
