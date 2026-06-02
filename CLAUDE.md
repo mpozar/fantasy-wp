@@ -122,7 +122,7 @@ When a game's status is `In Progress`, its *remaining* production scales by role
 
 Game state comes from MLB statsapi via `refresh-live` (calls `mlb.fetch_schedule` with `linescore` hydrated).
 
-### In-progress QS & SVHD (designed in `app/ingame.py` — NOT yet wired in)
+### In-progress QS & SVHD (`app/ingame.py`, wired into `build_budgets`)
 
 The linear scaling above is wrong for **QS** and **SVHD** because they're not
 accumulating counters — they're threshold/context outcomes:
@@ -160,16 +160,28 @@ status (not game innings elapsed). Decisions made:
   score *at entry* — the simple version infers it from the current margin; the
   accurate version would track entry score across `refresh-live` ticks.
 
-State tables live in the `project_qs`/`project_svhd` docstrings; `tests/` and
-`scripts/ingame_scenarios.py` exercise them on mock lines. Tuning knobs: `P_CONT_*`,
-`DEFAULT_SVHD_CONVERSION`, `game_script_gate`.
+State tables live in the `project_qs`/`project_svhd` docstrings. Tuning knobs:
+`P_CONT_*`, `DEFAULT_SVHD_CONVERSION`, `game_script_gate`.
 
-**To wire it in (future phase):** add a per-live-game boxscore fetch in
-`refresh-live` (per-pitcher outs/ER + pitcher order + score), store it, then have
-`build_budgets` route QS/SVHD for in-progress games through `ingame.py` instead of
-the linear factor (other counters stay on the linear scale). Confirm ESPN's live
-totals really exclude in-progress QS/SVHD before trusting the "banked at Final"
-reconciliation.
+**How it's wired:** `refresh-live` fetches a per-live-game **boxscore**
+(`mlb.fetch_boxscore`) for every In Progress game and stores per-pitcher lines in
+the `live_pitchers` table (outs/ER/K + appearance order → exit detection); the
+team score is stored on `team_schedule` (`team_runs`/`opponent_runs`). `compute`
+loads these via `sim.load_live_pitchers` and passes them to `simulate` →
+`build_budgets`, where `_override_sp_qs` / `_override_rp_svhd` replace **only the
+in-progress game's** QS/SVHD share with the `ingame.py` projection (matched to
+rostered players by `_norm_name`); other games and all other counters stay on the
+linear scale. With no live games `live_pitchers` is empty and the overrides are
+no-ops — behavior is identical to before. Tested in `tests/test_ingame.py`
+(model) and `tests/test_ingame_integration.py` (the build_budgets wiring on mock
+in-progress lines); `scripts/ingame_scenarios.py` prints the model over scenarios.
+
+**Caveats / follow-ups:** the SVHD "entered a save situation / blew it" check uses
+the *current* margin (`_is_save_situation` = leading by 1–3), not the score at
+entry — so an exited reliever or a lead that's changed since they pitched can be
+misjudged; the accurate version tracks entry score across ticks. Also still worth
+a one-time confirm that ESPN's live totals exclude in-progress QS/SVHD (the
+"banked at Final" assumption); if they don't, exited-while-live would double-count.
 
 ### Variance / overdispersion
 

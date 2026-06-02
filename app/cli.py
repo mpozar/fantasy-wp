@@ -323,6 +323,19 @@ def refresh_live() -> None:
     # Per game-date: distinct game statuses, for the activity tracker below.
     statuses_by_date: dict[str, set[str]] = {}
 
+    # Fetch live boxscores for in-progress games *before* opening the write
+    # transaction (network I/O shouldn't hold the DB lock). A boxscore failure
+    # just means no in-game QS/SVHD detail for that game — fall back silently.
+    window_pks = {g["game_pk"] for g in games}
+    in_progress_pks = sorted({g["game_pk"] for g in games
+                              if g["game_status"] == "In Progress"})
+    live_rows: list[dict] = []
+    for pk in in_progress_pks:
+        try:
+            live_rows.extend(mlb.fetch_boxscore(pk))
+        except Exception:  # noqa: BLE001 — best-effort; REST hiccup → skip game
+            pass
+
     conn = db.connect()
     try:
         with conn:
@@ -339,21 +352,24 @@ def refresh_live() -> None:
                         (matchup_period_id, game_pk, game_date, pro_team_id,
                          opponent_pro_team_id, is_home,
                          probable_pitcher_mlbam_id, probable_pitcher_name,
-                         game_status, current_inning, inning_state, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                         game_status, current_inning, inning_state,
+                         team_runs, opponent_runs, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
                         game_status=excluded.game_status,
                         current_inning=excluded.current_inning,
                         inning_state=excluded.inning_state,
                         probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
                         probable_pitcher_name=excluded.probable_pitcher_name,
+                        team_runs=excluded.team_runs,
+                        opponent_runs=excluded.opponent_runs,
                         fetched_at=excluded.fetched_at
                     """,
                     (period_id, g["game_pk"], g["game_date"], g["espn_team_id"],
                      g["opponent_espn_team_id"], g["is_home"],
                      g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
                      g["game_status"], g.get("current_inning"), g.get("inning_state"),
-                     now),
+                     g.get("team_runs"), g.get("opponent_runs"), now),
                 )
 
             # Observed game-day activity windows. active_start is stamped the
@@ -379,12 +395,34 @@ def refresh_live() -> None:
                      now if all_final else None,
                      now),
                 )
+
+            # Live pitcher lines: drop rows for games in this window that are no
+            # longer in progress (finished → QS/SVHD banked into totals), then
+            # replace the rows for each in-progress game with a fresh snapshot.
+            stale = [pk for pk in window_pks if pk not in in_progress_pks]
+            for pk in stale:
+                conn.execute("DELETE FROM live_pitchers WHERE game_pk=?", (pk,))
+            for pk in in_progress_pks:
+                conn.execute("DELETE FROM live_pitchers WHERE game_pk=?", (pk,))
+            for lp in live_rows:
+                conn.execute(
+                    """
+                    INSERT INTO live_pitchers
+                        (game_pk, mlbam_id, name, pro_team_id, order_idx, is_last,
+                         games_started, outs, er, k, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (lp["game_pk"], lp["mlbam_id"], lp["name"], lp["espn_team_id"],
+                     lp["order_idx"], 1 if lp["is_last"] else 0, lp["games_started"],
+                     lp["outs"], lp["er"], lp["k"], now),
+                )
     finally:
         conn.close()
 
     click.echo(
         f"Refreshed live game state: {yesterday.isoformat()}..{today.isoformat()}, "
-        f"team_game_rows={len(games)}"
+        f"team_game_rows={len(games)}, in_progress={len(in_progress_pks)}, "
+        f"live_pitcher_rows={len(live_rows)}"
     )
 
 
@@ -438,6 +476,12 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             if model_name == "mc-v1" else {}
         )
 
+        # Live pitcher lines for in-progress games → in-game QS/SVHD. Empty
+        # unless games are live now, in which case the sim behaves as before.
+        live_by_team = (
+            sim.load_live_pitchers(conn) if model_name == "mc-v1" else {}
+        )
+
         # League lineup-slot configuration for the hitter optimizer.
         lineup_slot_counts: dict[int, int] = {}
         if ss["lineup_slots_json"]:
@@ -485,6 +529,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         inputs, schedule_by_team, n_sims=sims,
                         team_total_ros_games=team_total_ros_games,
                         lineup_slot_counts=lineup_slot_counts,
+                        live_by_team=live_by_team,
                     )
                     version = sim.MODEL_VERSION
                 else:

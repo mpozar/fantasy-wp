@@ -23,6 +23,8 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from app import ingame
+
 MODEL_VERSION = "mc-v1"
 DEFAULT_SIMS = 10_000
 
@@ -564,10 +566,91 @@ def _hitter_days_slotted(roster: list[dict],
     return units
 
 
+def _team_margin(g: dict) -> int:
+    return (g.get("team_runs") or 0) - (g.get("opponent_runs") or 0)
+
+
+def _is_save_situation(margin: int) -> bool:
+    """Simplified: the team leads by 1–3. Ignores tying-run-on-deck and the
+    ≥3-IP save rule — the documented MVP heuristic."""
+    return 1 <= margin <= 3
+
+
+def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
+                    schedule_by_team: dict[int, list[dict]],
+                    live_by_team: dict[int, dict[str, dict]],
+                    team_id: int, gs_ros: float, sp_exit_inning: float) -> None:
+    """Swap the in-progress start's QS share for the conditional in-game
+    projection (`app.ingame`). Other games and other counters are untouched, so
+    with no live game this is a no-op."""
+    if gs_ros <= 0:
+        return
+    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
+    if not live or not live.get("games_started"):
+        return
+    ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
+                if g.get("game_status") == "In Progress"}
+    g = ip_games.get(live["game_pk"])
+    if g is None:
+        return
+    qs_rate = (ros.get(STAT_QS) or 0) / gs_ros
+    outs_tot = ros.get(STAT_OUTS) or 0
+    exp_outs = outs_tot / gs_ros if gs_ros else 18.0
+    er_per_out = (ros.get(STAT_ER) or 0) / outs_tot if outs_tot else 0.13
+    state = ingame.StarterState(
+        game_status="In Progress", appeared=True, exited=not live["is_last"],
+        outs=live["outs"], er=live["er"], exp_outs_per_start=exp_outs,
+        er_per_out=er_per_out, pregame_qs_rate=qs_rate,
+    )
+    ip_share = qs_rate * _sp_factor(g, sp_exit_inning)   # rate-based share to drop
+    cur = budget.expected.get(STAT_QS, 0.0)
+    budget.expected[STAT_QS] = max(0.0, cur - ip_share) + ingame.project_qs(state)
+
+
+def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
+                      schedule_by_team: dict[int, list[dict]],
+                      live_by_team: dict[int, dict[str, dict]],
+                      team_id: int, gp_ros: float, units_p: float,
+                      rp_remaining: float) -> None:
+    """Swap each in-progress game's SVHD share for the in-game projection: the
+    live line if the reliever has appeared, else a game-script-gated rate for a
+    closer who hasn't entered yet. No-op when nothing is live."""
+    if gp_ros <= 0 or rp_remaining <= 0:
+        return
+    ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
+                if g.get("game_status") == "In Progress"}
+    if not ip_games:
+        return
+    svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
+    appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
+    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
+    for game_pk, g in ip_games.items():
+        factor = _rp_factor(g)
+        if factor <= 0:
+            continue
+        base_share = svhd_rate * appearance_per_factor * factor   # rate-based share
+        cur = budget.expected.get(STAT_SVHD, 0.0)
+        margin = _team_margin(g)
+        if live and live["game_pk"] == game_pk:
+            state = ingame.RelieverState(
+                game_status="In Progress", appeared=True,
+                exited=not live["is_last"],
+                entered_save_situation=_is_save_situation(margin),
+                lead_intact=margin > 0,
+                recorded_out=live["outs"] >= 1,
+                svhd_rate=svhd_rate,
+            )
+            budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + ingame.project_svhd(state)
+        else:
+            gate = ingame.game_script_gate(margin, g.get("current_inning") or 0)
+            budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + base_share * gate
+
+
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
                   team_total_ros_games: dict[int, int] | None = None,
                   lineup_slot_counts: dict[int, int] | None = None,
+                  live_by_team: dict[int, dict[str, dict]] | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
@@ -582,6 +665,7 @@ def build_budgets(roster: list[dict],
     """
     team_total_ros_games = team_total_ros_games or {}
     lineup_slot_counts = lineup_slot_counts or {}
+    live_by_team = live_by_team or {}
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts)
     today = date.today()
 
@@ -603,6 +687,7 @@ def build_budgets(roster: list[dict],
         # blocks *announced-probable* start days, not estimated ones. 0 for
         # non-SPs and non-pitchers.
         sp_est_units = 0.0
+        rp_remaining = 0.0   # set in the RP branch; used by the SVHD override
 
         # ── Pitcher budget ─────────────────────────────────────────────
         if _has_pitcher_ros(ros):
@@ -654,6 +739,14 @@ def build_budgets(roster: list[dict],
 
             budget = _make_budget(p, ros, units_p, denom_p, PITCHER_COUNTERS, role_p)
             if budget:
+                # In-game override for the threshold/context stats — no-op
+                # unless this pitcher's team has a game in progress right now.
+                if role_p == "SP":
+                    _override_sp_qs(budget, p["full_name"], ros, schedule_by_team,
+                                    live_by_team, team_id, gs_ros, sp_exit_inning)
+                else:
+                    _override_rp_svhd(budget, p["full_name"], ros, schedule_by_team,
+                                      live_by_team, team_id, gp_ros, units_p, rp_remaining)
                 out.append(budget)
 
         # ── Hitter budget ──────────────────────────────────────────────
@@ -770,16 +863,19 @@ def simulate(inputs: MatchupInputs,
              n_sims: int = DEFAULT_SIMS,
              team_total_ros_games: dict[int, int] | None = None,
              lineup_slot_counts: dict[int, int] | None = None,
+             live_by_team: dict[int, dict[str, dict]] | None = None,
              ) -> tuple[float, float, dict]:
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
+        live_by_team=live_by_team,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
+        live_by_team=live_by_team,
     )
 
     home_wins = 0
@@ -950,9 +1046,9 @@ def load_schedule_by_team(conn: sqlite3.Connection,
                           matchup_period_id: int) -> dict[int, list[dict]]:
     rows = conn.execute(
         """
-        SELECT pro_team_id, game_date, opponent_pro_team_id, is_home,
+        SELECT pro_team_id, game_pk, game_date, opponent_pro_team_id, is_home,
                probable_pitcher_mlbam_id, probable_pitcher_name, game_status,
-               current_inning, inning_state
+               current_inning, inning_state, team_runs, opponent_runs
         FROM team_schedule
         WHERE matchup_period_id = ?
         ORDER BY game_date
@@ -962,6 +1058,22 @@ def load_schedule_by_team(conn: sqlite3.Connection,
     out: dict[int, list[dict]] = {}
     for r in rows:
         out.setdefault(r["pro_team_id"], []).append(dict(r))
+    return out
+
+
+def load_live_pitchers(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
+    """Live pitcher lines for in-progress games, keyed by ESPN proTeamId then
+    normalized pitcher name (matching how budgets look players up). Empty when
+    no games are live — in which case build_budgets behaves exactly as before."""
+    rows = conn.execute(
+        """
+        SELECT game_pk, name, pro_team_id, is_last, games_started, outs, er, k
+        FROM live_pitchers
+        """
+    ).fetchall()
+    out: dict[int, dict[str, dict]] = {}
+    for r in rows:
+        out.setdefault(r["pro_team_id"], {})[_norm_name(r["name"])] = dict(r)
     return out
 
 

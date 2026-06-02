@@ -89,6 +89,9 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
             linescore = g.get("linescore") or {}
             current_inning = linescore.get("currentInning")
             inning_state = linescore.get("inningState")  # "Top"/"Middle"/"Bottom"/"End"
+            ls_teams = linescore.get("teams") or {}
+            home_runs = (ls_teams.get("home") or {}).get("runs")
+            away_runs = (ls_teams.get("away") or {}).get("runs")
             teams = g.get("teams") or {}
             home = teams.get("home") or {}
             away = teams.get("away") or {}
@@ -101,6 +104,8 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
                 pp = side.get("probablePitcher") or {}
                 team_mlbam = (side.get("team") or {}).get("id")
                 opp_mlbam = (opp.get("team") or {}).get("id")
+                team_runs = home_runs if is_home else away_runs
+                opp_runs = away_runs if is_home else home_runs
                 out.append({
                     "game_pk": game_pk,
                     "game_date": game_date,
@@ -114,5 +119,60 @@ def fetch_schedule(start: date, end: date) -> list[dict]:
                     "game_status": status,
                     "current_inning": current_inning,
                     "inning_state": inning_state,
+                    "team_runs": team_runs,
+                    "opponent_runs": opp_runs,
                 })
+    return out
+
+
+def _ip_to_outs(ip: str | float | None) -> int:
+    """MLB inningsPitched ('5.2' = 5⅔) → integer outs."""
+    if ip is None:
+        return 0
+    whole, _, frac = str(ip).partition(".")
+    try:
+        return int(whole or 0) * 3 + int(frac or 0)
+    except ValueError:
+        return 0
+
+
+def fetch_boxscore(game_pk: int) -> list[dict]:
+    """Per-pitcher live lines for one game, for in-game QS/SVHD projection.
+
+    Returns one row per pitcher who has appeared, in appearance order:
+      {game_pk, mlbam_id, name, espn_team_id, order_idx, is_last (currently
+       pitching for their team), games_started, outs, er, k}
+
+    `order_idx`/`is_last` come from the team's ordered `pitchers` list — a
+    starter has exited once they're not the last entry. Skips teams not in the
+    MLBAM_TO_ESPN map.
+    """
+    with httpx.Client(timeout=30.0) as client:
+        r = client.get(f"{BASE_URL}/game/{game_pk}/boxscore")
+    r.raise_for_status()
+    teams = (r.json().get("teams") or {})
+
+    out: list[dict] = []
+    for side in ("home", "away"):
+        t = teams.get(side) or {}
+        team_mlbam = ((t.get("team") or {}).get("id"))
+        if team_mlbam not in MLBAM_TO_ESPN:
+            continue
+        order = t.get("pitchers") or []           # personIds, appearance order
+        players = t.get("players") or {}
+        for idx, pid in enumerate(order):
+            p = players.get(f"ID{pid}") or {}
+            st = (p.get("stats") or {}).get("pitching") or {}
+            out.append({
+                "game_pk": game_pk,
+                "mlbam_id": pid,
+                "name": (p.get("person") or {}).get("fullName"),
+                "espn_team_id": MLBAM_TO_ESPN[team_mlbam],
+                "order_idx": idx,
+                "is_last": idx == len(order) - 1,
+                "games_started": st.get("gamesStarted") or 0,
+                "outs": _ip_to_outs(st.get("inningsPitched")),
+                "er": st.get("earnedRuns") or 0,
+                "k": st.get("strikeOuts") or 0,
+            })
     return out

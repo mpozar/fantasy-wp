@@ -124,6 +124,27 @@ CREATE TABLE IF NOT EXISTS game_day_activity (
     updated_at         TEXT NOT NULL,
     PRIMARY KEY (matchup_period_id, game_date)
 );
+
+-- ── Live per-pitcher lines for in-progress games (in-game QS/SVHD model) ──
+-- One row per pitcher who has appeared in a currently in-progress game.
+-- Refreshed each fast tick; rows for a game are cleared when it's no longer
+-- in progress. Matched to rostered players by normalized name.
+CREATE TABLE IF NOT EXISTS live_pitchers (
+    game_pk        INTEGER NOT NULL,
+    mlbam_id       INTEGER NOT NULL,
+    name           TEXT,
+    pro_team_id    INTEGER,             -- ESPN proTeamId
+    order_idx      INTEGER,             -- appearance order (0 = starter)
+    is_last        INTEGER,             -- 1 if currently pitching for their team
+    games_started  INTEGER,
+    outs           INTEGER,
+    er             INTEGER,
+    k              INTEGER,
+    fetched_at     TEXT NOT NULL,
+    PRIMARY KEY (game_pk, mlbam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_live_pitchers_team
+    ON live_pitchers (pro_team_id);
 """
 
 
@@ -142,6 +163,8 @@ def init() -> None:
         for column_def in (
             ("team_schedule", "current_inning", "INTEGER"),
             ("team_schedule", "inning_state", "TEXT"),
+            ("team_schedule", "team_runs", "INTEGER"),
+            ("team_schedule", "opponent_runs", "INTEGER"),
             ("scoring_settings", "lineup_slots_json", "TEXT"),
         ):
             table, col, type_ = column_def
