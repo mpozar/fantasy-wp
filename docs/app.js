@@ -403,12 +403,13 @@ function fmtDay(dateStr) {
 }
 
 // WP-chart x-axis scope, chosen by the segmented control:
-//   "full"    — entire history (default)
+//   "full"    — entire history
 //   "matchup" — clipped to the week's start
-//   "active"  — dead time between game-days collapsed, day dividers
-// Global; `active` holds the currently displayed week so the control can
-// re-render in place.
-let chartScope = "full";
+//   "active"  — dead time between game-days collapsed, day dividers (default)
+// Falls back to the full linear range for weeks with no active intervals
+// (e.g. upcoming weeks). Global; `active` holds the currently displayed week
+// so the control can re-render in place.
+let chartScope = "active";
 const active = { data: null, week: null };
 const CHART_SCOPES = [
   { id: "full", label: "Full" },
