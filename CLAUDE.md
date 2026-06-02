@@ -122,6 +122,55 @@ When a game's status is `In Progress`, its *remaining* production scales by role
 
 Game state comes from MLB statsapi via `refresh-live` (calls `mlb.fetch_schedule` with `linescore` hydrated).
 
+### In-progress QS & SVHD (designed in `app/ingame.py` — NOT yet wired in)
+
+The linear scaling above is wrong for **QS** and **SVHD** because they're not
+accumulating counters — they're threshold/context outcomes:
+- **QS** = ≥18 outs AND ≤3 ER over the *whole* start. Time-scaling ignores the ER
+  already allowed (the main driver) and the threshold. A starter at 5 ER has QS
+  prob 0; one cruising through 5 should project *up*, not down.
+- **SVHD** = a save or hold, which only happens in a save situation (close-and-late
+  lead). Time-scaling ignores the score entirely.
+
+`app/ingame.py` implements a state machine for these, keyed on the pitcher's own
+status (not game innings elapsed). Decisions made:
+
+- **We compute QS/SVHD ourselves from raw running tallies** (`outs`, `earnedRuns`,
+  score, inning). The credited `qualityStarts`/`saves`/`holds`/`blownSaves` fields
+  are **only populated at Final**, so they're a Final-time cross-check, never a
+  live input.
+- **Exit detection** comes from the boxscore `pitchers` order: a pitcher has exited
+  once a later pitcher from their team appears (robust to between-innings, unlike
+  "current pitcher"). The starter is `pitchers[0]` (`gamesStarted=1`).
+- **Banked only at Final.** An earned QS/SVHD lands in the live cumulative totals
+  (which the sim starts from) only when the game finalizes and is scraped. So:
+  exited-and-earned **while the game is still live → we supply the 1**; once
+  **Final → 0** (it's in the totals; adding it would double-count). This replaces
+  the current bug where the linear factor hands an already-departed pitcher
+  spurious leftover credit.
+- **QS while still in**: `P(reach 18 outs) × P(stay ≤3 ER)`, both from a per-out
+  **continuation hazard** (`_continuation_prob`) conditioned on the line so far —
+  high while cruising, rising hazard with ER and once past the usual workload
+  (pitch-limit proxy). ER exposure = expected remaining outs from that same hazard,
+  so a met-threshold pitcher still in projects ~0.96 (not 1.0).
+- **SVHD while still in**: not a save situation → 0; in one with the lead intact →
+  fixed conversion prob; blew the lead → 0. *Not-yet-entered* (the common case for
+  a closer mid-game) → season SVHD rate gated by live score/inning
+  (`game_script_gate`). Determining "entered a save situation / blew it" needs the
+  score *at entry* — the simple version infers it from the current margin; the
+  accurate version would track entry score across `refresh-live` ticks.
+
+State tables live in the `project_qs`/`project_svhd` docstrings; `tests/` and
+`scripts/ingame_scenarios.py` exercise them on mock lines. Tuning knobs: `P_CONT_*`,
+`DEFAULT_SVHD_CONVERSION`, `game_script_gate`.
+
+**To wire it in (future phase):** add a per-live-game boxscore fetch in
+`refresh-live` (per-pitcher outs/ER + pitcher order + score), store it, then have
+`build_budgets` route QS/SVHD for in-progress games through `ingame.py` instead of
+the linear factor (other counters stay on the linear scale). Confirm ESPN's live
+totals really exclude in-progress QS/SVHD before trusting the "banked at Final"
+reconciliation.
+
 ### Variance / overdispersion
 
 We Poisson-sample most counters, but ER is the one stat with measurable overdispersion in real MLB data. Per-(stat, role) VMRs are empirically measured by `scripts/analyze_variance.py` from ~14k hitter games and ~5.4k pitcher appearances in this season's MLB statsapi game logs. Result table is in the script and the key bits are baked into `sim.py`:
@@ -348,16 +397,9 @@ Pulls fresh MLB game logs, prints a `VMR = {...}` dict. Paste into `sim.py`. Re-
 .venv/bin/pip install -e '.[dev]'   # once: installs pytest
 .venv/bin/python -m pytest -q
 ```
-Currently covers `app/ingame.py`, the in-progress QS/SVHD projection model
-(threshold/context stats that the linear `_sp_factor`/`_rp_factor` mis-projects
-mid-game). **Not yet wired into the pipeline** — it's pure, mock-tested
-functions plus `scripts/ingame_scenarios.py` (prints projections for hand-built
-in-progress states) so the model can be tuned before the live boxscore plumbing
-is built. See the state tables in the functions' docstrings. The QS pull model
-is a per-out continuation hazard (`_continuation_prob`) conditioned on the line
-so far — a cruising starter projects *up* as they go deeper; pull hazard rises
-with ER and past the usual workload. The `P_CONT_*` / `DEFAULT_SVHD_CONVERSION`
-/ `game_script_gate` constants are the main tuning knobs.
+Currently covers `app/ingame.py` (the in-progress QS/SVHD model — see "In-progress
+QS & SVHD" under the Sim model section for the design). `scripts/ingame_scenarios.py`
+prints projections for hand-built in-progress states for eyeballing/tuning.
 
 ### wp_snapshot history retention
 
