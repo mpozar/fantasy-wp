@@ -353,9 +353,11 @@ Currently covers `app/ingame.py`, the in-progress QS/SVHD projection model
 mid-game). **Not yet wired into the pipeline** — it's pure, mock-tested
 functions plus `scripts/ingame_scenarios.py` (prints projections for hand-built
 in-progress states) so the model can be tuned before the live boxscore plumbing
-is built. See the state tables in the functions' docstrings. The known v0 gap:
-the QS pull model uses the unconditional avg start length, so it under-projects
-a *cruising* starter's QS — the next thing to refine.
+is built. See the state tables in the functions' docstrings. The QS pull model
+is a per-out continuation hazard (`_continuation_prob`) conditioned on the line
+so far — a cruising starter projects *up* as they go deeper; pull hazard rises
+with ER and past the usual workload. The `P_CONT_*` / `DEFAULT_SVHD_CONVERSION`
+/ `game_script_gate` constants are the main tuning knobs.
 
 ### wp_snapshot history retention
 

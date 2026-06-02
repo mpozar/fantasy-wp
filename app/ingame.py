@@ -34,6 +34,15 @@ QS_MAX_ER = 3     # quality start allows at most 3 earned runs
 # an unresolved save/hold situation with the lead intact. Tuning knob.
 DEFAULT_SVHD_CONVERSION = 0.85
 
+# QS pull model — per-out probability the starter records the next out rather
+# than being pulled. Conditioned on the start *so far*, not the unconditional
+# average length (a cruising starter is rarely pulled before the 6th; the season
+# avg is dragged down by the starts that got an early hook). Tuning knobs:
+P_CONT_BASE = 0.985          # baseline per-out continuation while cruising (0 ER)
+P_CONT_ER_PENALTY = 0.06     # subtracted at the QS ER cap (3 ER) — quicker hook
+P_CONT_DEPTH_PENALTY = 0.04  # per out pitched beyond expected length (pitch limit)
+P_CONT_FLOOR = 0.5
+
 
 def _poisson_cdf(k: int, lam: float) -> float:
     """P(X <= k) for X ~ Poisson(lam). k < 0 → 0."""
@@ -70,27 +79,37 @@ class StarterState:
     pregame_qs_rate: float      # season QS probability for this start
 
 
+def _continuation_prob(out_index: float, er: int, exp_outs_per_start: float) -> float:
+    """Probability the starter records the out at `out_index` rather than being
+    pulled — higher pull hazard the more ER they've allowed and the further past
+    their usual workload they are. `er` is the current ER (constant across the
+    remaining outs — an approximation)."""
+    er_pressure = min(1.0, er / QS_MAX_ER)
+    over = max(0.0, out_index - exp_outs_per_start)
+    p = P_CONT_BASE - P_CONT_ER_PENALTY * er_pressure - P_CONT_DEPTH_PENALTY * over
+    return max(P_CONT_FLOOR, min(1.0, p))
+
+
 def _qs_inprogress_prob(outs: int, er: int,
                         exp_outs_per_start: float, er_per_out: float) -> float:
     """QS probability for a starter still pitching (caller guarantees er <= 3).
 
-    P(reaches 18 outs before being pulled) × P(allows <= 3-er more ER). Both
-    use the pitcher's expected remaining outs as the exposure. This is the
-    deliberately-simple first cut; the pull model (how many more outs before the
-    hook) is the main thing to refine — it ignores pitch count and that a
-    cruising pitcher tends to go past their average.
+    P(reaches 18 outs before the hook) × P(stays <= 3 ER over the rest of the
+    outing). The reach term survives each remaining out at `_continuation_prob`
+    (conditioned on the line so far, so a cruising starter projects *up* as they
+    go deeper, not down); the ER term accrues over their expected remaining outs.
     """
-    exp_remaining = max(0.0, exp_outs_per_start - outs)
-    outs_needed = max(0, QS_OUTS - outs)
+    # P(reach 18 outs): survive each of the outs still needed.
+    p_reach = 1.0
+    for k in range(outs, QS_OUTS):            # outs #(outs+1) … #18
+        p_reach *= _continuation_prob(k, er, exp_outs_per_start)
 
-    if outs_needed == 0:
-        p_reach = 1.0
-    else:
-        # P(records >= outs_needed more outs) with remaining outs ~ Poisson.
-        p_reach = 1.0 - _poisson_cdf(outs_needed - 1, exp_remaining)
-
-    er_headroom = QS_MAX_ER - er          # additional ER allowed (>= 0 here)
-    p_er_ok = _poisson_cdf(er_headroom, er_per_out * exp_remaining)
+    # P(remaining ER keeps the total <= 3): ER risk runs over the whole rest of
+    # the outing (a 4th ER in the 7th still kills a QS), so the exposure is their
+    # expected final length — at least 6 IP if they're cruising there.
+    exp_final_outs = max(float(QS_OUTS), exp_outs_per_start)
+    exp_remaining = max(0.0, exp_final_outs - outs)
+    p_er_ok = _poisson_cdf(QS_MAX_ER - er, er_per_out * exp_remaining)
 
     return p_reach * p_er_ok
 

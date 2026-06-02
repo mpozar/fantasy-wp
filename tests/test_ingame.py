@@ -94,6 +94,29 @@ def test_qs_inprogress_prob_in_unit_range():
             assert 0.0 <= p <= 1.0
 
 
+def test_qs_cruising_projects_above_pregame():
+    # The pull-model fix: a starter cruising through 5 (15 outs / 1 ER) should
+    # be MORE likely to get the QS than at first pitch, not less.
+    s = starter(outs=15, er=1, pregame_qs_rate=0.55)
+    assert project_qs(s) > 0.55
+
+
+def test_qs_cruising_monotonic_through_start():
+    # Going deeper while clean should keep raising the QS probability.
+    p3 = project_qs(starter(outs=3, er=0))
+    p9 = project_qs(starter(outs=9, er=0))
+    p15 = project_qs(starter(outs=15, er=0))
+    assert p3 < p9 < p15
+
+
+def test_qs_short_leash_lower_than_workhorse_when_cruising():
+    # Same clean line, but the pitcher who usually goes deeper is likelier to
+    # reach 18 outs (the other faces a pitch-limit hook).
+    workhorse = project_qs(starter(outs=15, er=0, exp_outs_per_start=20))
+    short_leash = project_qs(starter(outs=15, er=0, exp_outs_per_start=14))
+    assert workhorse > short_leash
+
+
 # ── SVHD: deterministic states ────────────────────────────────────────────────
 
 def test_svhd_final_is_banked_zero():
