@@ -438,11 +438,6 @@ function renderWeek(data, week) {
   const tb = data.league.tiebreaker_stat_id;
   const started = isStarted(week);
 
-  document.getElementById("subtitle").innerHTML =
-    `${week.label} · ${fmtDateRange(week.start, week.end)}` +
-    (started ? "" : ' · <span class="future-pill">Projection</span>') +
-    ` · ${data.league.size}-team H2H · Tiebreaker: ${data.league.tiebreaker_name}`;
-
   const root = document.getElementById("matchups");
   root.innerHTML = week.matchups
     .map((m, i) => renderMatchup(m, cats, tb, i, started, week, chartScope))
@@ -464,15 +459,22 @@ function renderWeek(data, week) {
 function render(data) {
   document.getElementById("league-name").textContent = data.league.name;
   const ts = new Date(data.generated_at);
-  const firstModel = data.weeks[0]?.matchups[0]?.model_version ?? "—";
   const defaultWeek = pickDefaultWeek(data);
+  // Model version of whatever week we land on; fall back to the first week that
+  // has any computed snapshot (weeks before the season's first sim show none).
+  const firstModel =
+    defaultWeek.matchups.find((m) => m.model_version)?.model_version ??
+    data.weeks.flatMap((w) => w.matchups).find((m) => m.model_version)?.model_version ??
+    "—";
+  const stateTag = (w) =>
+    w.state === "live" ? " · live" : w.state === "upcoming" ? " · projection" : "";
   const select = `
     <label class="week-picker">
       Week
       <select id="week-select">
         ${data.weeks.map((w) => `
           <option value="${w.matchup_period_id}" ${w.matchup_period_id === defaultWeek.matchup_period_id ? "selected" : ""}>
-            ${w.label}${w.state === "live" ? " (live)" : ""} · ${fmtDateRange(w.start, w.end)}
+            ${w.label} · ${fmtDateRange(w.start, w.end)}${stateTag(w)}
           </option>`).join("")}
       </select>
     </label>`;
@@ -483,13 +485,15 @@ function render(data) {
       `<button class="scope-btn${s.id === chartScope ? " active" : ""}" data-scope="${s.id}">${s.label}</button>`
     ).join("") +
     `</span>`;
+
+  // Primary controls (what you're looking at) in the toolbar; passive metadata
+  // on a smaller line below.
+  document.getElementById("toolbar").innerHTML = select + scopeControl;
   document.getElementById("meta").innerHTML =
     `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
     ` · Model <code>${firstModel}</code>` +
     ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
-      `<span class="caret">▸</span> How this works</button>` +
-    ` · ${scopeControl}` +
-    ` · ${select}`;
+      `<span class="caret">▸</span> How this works</button>`;
 
   renderWeek(data, defaultWeek);
 

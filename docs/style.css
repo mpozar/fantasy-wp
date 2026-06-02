@@ -45,10 +45,12 @@ header h1 {
   letter-spacing: -0.01em;
 }
 
-#subtitle {
-  margin: .15rem 0 .4rem;
-  color: var(--muted);
-  font-size: .95rem;
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem 1.5rem;
+  margin: .55rem 0 .5rem;
 }
 
 #meta, .meta-line {
@@ -415,19 +417,6 @@ ol.contrib .m {
 
 .week-picker select:hover { border-color: var(--accent); }
 
-.future-pill {
-  display: inline-block;
-  font-size: .7rem;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  padding: .05em .5em;
-  border-radius: 3px;
-  background: #eaf0fa;
-  color: #234c93;
-  vertical-align: baseline;
-}
-
 .matchup.future .team-row .wp { color: var(--muted); }
 .matchup.future .team-row.favored .wp { color: var(--accent); }
 .matchup.future .team-row.favored .team-name { color: var(--accent); }
@@ -626,7 +615,7 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 720px) {
   body { padding: 1rem .5rem 3rem; }
   header h1 { font-size: 1.3rem; }
-  #subtitle, #meta { font-size: .8rem; }
+  #meta { font-size: .8rem; }
   .matchup table { min-width: 640px; }
   .team-row td      { padding: .7rem .35rem; }
   .team-row td.num  { font-size: .9rem; padding-right: .4rem; padding-left: .4rem; }
