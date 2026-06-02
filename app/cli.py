@@ -320,6 +320,9 @@ def refresh_live() -> None:
     games = mlb.fetch_schedule(yesterday, today)
     now = _now_iso()
 
+    # Per game-date: distinct game statuses, for the activity tracker below.
+    statuses_by_date: dict[str, set[str]] = {}
+
     conn = db.connect()
     try:
         with conn:
@@ -329,6 +332,7 @@ def refresh_live() -> None:
                 # the Monday rollover and would otherwise file a new week's games
                 # under the period that just ended.
                 period_id = mlb.period_for_date(date.fromisoformat(g["game_date"]))
+                statuses_by_date.setdefault(g["game_date"], set()).add(g["game_status"])
                 conn.execute(
                     """
                     INSERT INTO team_schedule
@@ -349,6 +353,30 @@ def refresh_live() -> None:
                      g["opponent_espn_team_id"], g["is_home"],
                      g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
                      g["game_status"], g.get("current_inning"), g.get("inning_state"),
+                     now),
+                )
+
+            # Observed game-day activity windows. active_start is stamped the
+            # first tick any game is In Progress; active_end the first tick all
+            # of that day's games are Final. COALESCE keeps the earliest stamp
+            # of each (first observation wins), so repeated ticks don't move it.
+            for game_date, statuses in statuses_by_date.items():
+                period_id = mlb.period_for_date(date.fromisoformat(game_date))
+                any_live = "In Progress" in statuses
+                all_final = bool(statuses) and statuses <= _FINAL_GAME_STATES
+                conn.execute(
+                    """
+                    INSERT INTO game_day_activity
+                        (matchup_period_id, game_date, active_start, active_end, updated_at)
+                    VALUES (?,?,?,?,?)
+                    ON CONFLICT(matchup_period_id, game_date) DO UPDATE SET
+                        active_start = COALESCE(game_day_activity.active_start, excluded.active_start),
+                        active_end   = COALESCE(game_day_activity.active_end, excluded.active_end),
+                        updated_at   = excluded.updated_at
+                    """,
+                    (period_id, game_date,
+                     now if any_live else None,
+                     now if all_final else None,
                      now),
                 )
     finally:
@@ -571,6 +599,8 @@ def publish() -> None:
             r["id"]: dict(r) for r in conn.execute("SELECT * FROM teams").fetchall()
         }
 
+        now = _now_iso()
+
         # Emit every regular-season week — past weeks stay selectable in the
         # dropdown so prior sims/graphs remain viewable. Whether a week is
         # "started" (has real scores) is data-driven: derived from its games'
@@ -595,6 +625,8 @@ def publish() -> None:
                 "end": end.isoformat(),
                 # "state" drives the UI's default week selection.
                 "state": state,
+                # Observed game-day windows for the chart's "Active" x-axis.
+                "active_intervals": _active_intervals(conn, period_id, now),
                 "matchups": matchups_out,
             })
 
@@ -612,7 +644,7 @@ def publish() -> None:
             },
             "current_matchup_period": current,
             "last_regular_season_period": last_reg,
-            "generated_at": _now_iso(),
+            "generated_at": now,
             "weeks": weeks_out,
         }
         out_path = Path(__file__).resolve().parent.parent / "docs" / "data.json"
@@ -697,6 +729,32 @@ def _week_state(conn, period_id: int) -> str:
     if not started:
         return "upcoming"
     return "final" if all(s in _FINAL_GAME_STATES for s in statuses) else "live"
+
+
+def _active_intervals(conn, period_id: int, now: str) -> list[dict]:
+    """Observed game-day windows for a period, for the chart's "Active" x-axis.
+
+    One entry per game-day that has started, ordered in time. A day still in
+    progress (no active_end yet) is left open-ended at `now` so the live day's
+    interval extends to the latest snapshot.
+    """
+    rows = conn.execute(
+        """
+        SELECT game_date, active_start, active_end
+        FROM game_day_activity
+        WHERE matchup_period_id=? AND active_start IS NOT NULL
+        ORDER BY active_start
+        """,
+        (period_id,),
+    ).fetchall()
+    return [
+        {
+            "date": r["game_date"],
+            "start": r["active_start"],
+            "end": r["active_end"] or now,
+        }
+        for r in rows
+    ]
 
 
 def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:

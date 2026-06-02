@@ -36,43 +36,87 @@ const headerCells = (blocks, tbId) =>
     .join("");
 
 // ── WP-over-time SVG line chart ──────────────────────────────────────
-// `startIso` is the matchup's Monday (week.start); `scope` is "full" or
-// "matchup". In "matchup" scope the pre-matchup projection points (computed
-// before the week began) are clipped so the chart rescales to the in-matchup
-// window — where WP actually moves. Clipping is skipped if it would leave too
-// few points to plot (e.g. a matchup that just started).
-function renderChart(history, currentModel, startIso, scope) {
+// WP-over-time chart. `week` carries the matchup start (week.start) and the
+// observed game-day windows (week.active_intervals). `scope` picks the x-axis:
+//   "full"    — linear real time over all history; marks where the matchup began.
+//   "matchup" — clipped to the week's Monday (drops the pre-matchup projection).
+//   "active"  — dead time between game-days collapsed to nothing; one segment
+//               per game-day, with a labeled divider between days.
+function renderChart(history, currentModel, week, scope) {
   if (!history || history.length === 0) return "";
   let pts = history.filter((h) => h.model_version === currentModel);
   if (pts.length === 0) return "";
 
-  const cutoff = startIso ? new Date(startIso + "T00:00:00").getTime() : null;
-  if (scope === "matchup" && cutoff != null) {
-    const clipped = pts.filter((p) => new Date(p.computed_at).getTime() >= cutoff);
-    if (clipped.length >= 2) pts = clipped;
-  }
-
   const W = 600, H = 140, padL = 40, padR = 12, padT = 12, padB = 22;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
-
-  const t0 = new Date(pts[0].computed_at).getTime();
-  const tN = new Date(pts[pts.length - 1].computed_at).getTime();
-  const span = Math.max(tN - t0, 1);
-  const x = (t) => padL + ((new Date(t).getTime() - t0) / span) * innerW;
+  const tms = (p) => new Date(p.computed_at).getTime();
   const y = (p) => padT + (1 - p) * innerH;
+
+  const cutoff = week && week.start ? new Date(week.start + "T00:00:00").getTime() : null;
+  const intervals = (week && week.active_intervals) || [];
+
+  // Build the time→x mapping (`xt`), the visible point set, and divider lines.
+  let xt = null;
+  let dividers = [];
+
+  if (scope === "active" && intervals.length) {
+    // Concatenate each game-day's [start,end] window proportionally to its real
+    // duration, dropping the dead gaps between them. Skip days with no plotted
+    // points (e.g. early days of a week whose history was trimmed) so the axis
+    // doesn't allocate blank space to them.
+    const raw = intervals
+      .map((iv) => ({ s: new Date(iv.start).getTime(), e: new Date(iv.end).getTime(), date: iv.date }))
+      .sort((a, b) => a.s - b.s)
+      .filter((seg) => pts.some((p) => tms(p) >= seg.s && tms(p) <= seg.e));
+    let cum = 0;
+    const segs = raw.map((seg) => {
+      const dur = Math.max(seg.e - seg.s, 1);
+      const withOffset = { ...seg, dur, offset: cum };
+      cum += dur;
+      return withOffset;
+    });
+    const total = Math.max(cum, 1);
+    const keep = pts.filter((p) => segs.some((s) => tms(p) >= s.s && tms(p) <= s.e));
+    if (keep.length >= 2) {
+      pts = keep;
+      xt = (t) => {
+        let seg = segs.find((s) => t >= s.s && t <= s.e);
+        if (!seg) seg = t < segs[0].s ? segs[0] : segs[segs.length - 1];
+        const pos = seg.offset + Math.min(Math.max(t - seg.s, 0), seg.dur);
+        return padL + (pos / total) * innerW;
+      };
+      // A divider at the start of each day after the first.
+      dividers = segs.slice(1).map((s) => ({ x: padL + (s.offset / total) * innerW, label: fmtDay(s.date) }));
+    }
+  } else if (scope === "matchup" && cutoff != null) {
+    const clipped = pts.filter((p) => tms(p) >= cutoff);
+    if (clipped.length >= 2) pts = clipped;
+  }
+
+  // Linear fallback (full, matchup, or active with no usable intervals).
+  if (!xt) {
+    const t0 = tms(pts[0]);
+    const tN = tms(pts[pts.length - 1]);
+    const span = Math.max(tN - t0, 1);
+    xt = (t) => padL + ((t - t0) / span) * innerW;
+    if (scope === "full" && cutoff != null && cutoff > t0 && cutoff < tN) {
+      dividers = [{ x: xt(cutoff), label: "matchup start" }];
+    }
+  }
+
+  const x = (p) => xt(tms(p));
 
   const polyline = (key, cls) => {
     if (pts.length === 1) {
-      // Single point — render a dot
       const p = pts[0];
-      return `<circle cx="${x(p.computed_at)}" cy="${y(p[key])}" r="3" class="dot ${cls}"></circle>`;
+      return `<circle cx="${x(p)}" cy="${y(p[key])}" r="3" class="dot ${cls}"></circle>`;
     }
-    const path = pts.map((p) => `${x(p.computed_at)},${y(p[key])}`).join(" ");
+    const path = pts.map((p) => `${x(p)},${y(p[key])}`).join(" ");
     const last = pts[pts.length - 1];
     return `
       <polyline class="${cls}" points="${path}"></polyline>
-      <circle cx="${x(last.computed_at)}" cy="${y(last[key])}" r="3" class="dot ${cls}"></circle>`;
+      <circle cx="${x(last)}" cy="${y(last[key])}" r="3" class="dot ${cls}"></circle>`;
   };
 
   // Y-axis grid + labels
@@ -80,19 +124,14 @@ function renderChart(history, currentModel, startIso, scope) {
   const gridY = yTicks
     .map((p) => `<line x1="${padL}" y1="${y(p)}" x2="${W - padR}" y2="${y(p)}" class="grid ${p === 0.5 ? "mid" : ""}"></line>`)
     .join("");
-
-  // In full view, mark where the matchup began (only if there's pre-matchup
-  // history to its left). Hidden in "matchup" scope since the chart starts there.
-  let startMarker = "";
-  if (scope !== "matchup" && cutoff != null && cutoff > t0 && cutoff < tN) {
-    const mx = x(cutoff);
-    startMarker =
-      `<line class="matchup-start" x1="${mx}" y1="${padT}" x2="${mx}" y2="${padT + innerH}"></line>` +
-      `<text x="${mx}" y="${padT - 3}" class="axis matchup-start-label" text-anchor="middle">matchup start</text>`;
-  }
   const labelsY = yTicks
     .map((p) => `<text x="${padL - 6}" y="${y(p) + 3}" class="axis">${(p * 100) | 0}%</text>`)
     .join("");
+
+  const dividerSvg = dividers.map((d) =>
+    `<line class="matchup-start" x1="${d.x}" y1="${padT}" x2="${d.x}" y2="${padT + innerH}"></line>` +
+    (d.label ? `<text x="${d.x}" y="${padT - 3}" class="axis matchup-start-label" text-anchor="middle">${d.label}</text>` : "")
+  ).join("");
 
   // X-axis labels: first + last timestamp
   const fmtT = (iso) => {
@@ -104,14 +143,12 @@ function renderChart(history, currentModel, startIso, scope) {
     <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtT(pts[0].computed_at)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtT(pts[pts.length - 1].computed_at)}</text>`;
 
-  // Hover targets — one invisible vertical strip per data point. Each
-  // carries its timestamp + WPs as data-attrs so the binder can pop up
-  // a tooltip without re-doing time→pixel math.
+  // Hover targets — one invisible vertical strip per data point.
   const stripHalfW = pts.length > 1
     ? Math.max(6, (innerW / Math.max(pts.length - 1, 1)) / 2)
     : 30;
   const hoverPoints = pts.map((p) => {
-    const px = x(p.computed_at);
+    const px = x(p);
     return `
       <g class="hover-point"
          data-time="${p.computed_at}"
@@ -129,7 +166,7 @@ function renderChart(history, currentModel, startIso, scope) {
     <div class="wp-chart-wrap">
       <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
         ${gridY}
-        ${startMarker}
+        ${dividerSvg}
         ${polyline("home_wp", "home")}
         ${polyline("away_wp", "away")}
         ${labelsY}
@@ -271,13 +308,13 @@ function renderCategoryWP(d, cats, m) {
     </table>`;
 }
 
-function renderDetails(m, cats, startIso, scope) {
+function renderDetails(m, cats, week, scope) {
   if (!m.details) return "";
   const d = m.details;
   // WP-over-time renders whenever snapshot history exists — for the live week
   // and for past weeks (upcoming weeks have no history yet).
   const chart = m.history && m.history.length > 1
-    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, startIso, scope)}`
+    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope)}`
     : "";
   return `
     <div class="details-inner">
@@ -298,7 +335,7 @@ function renderDetails(m, cats, startIso, scope) {
 }
 
 // ── Per-matchup render ────────────────────────────────────────────────
-function renderMatchup(m, cats, tbId, idx, started, startIso, scope) {
+function renderMatchup(m, cats, tbId, idx, started, week, scope) {
   const home = m.home, away = m.away;
   const homeFav = (home.wp ?? 0.5) > 0.5;
   const awayFav = (away.wp ?? 0.5) > 0.5;
@@ -346,7 +383,7 @@ function renderMatchup(m, cats, tbId, idx, started, startIso, scope) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m, cats, startIso, scope)}
+        ${renderDetails(m, cats, week, scope)}
       </div>
     </section>`;
 }
@@ -359,11 +396,25 @@ function fmtDateRange(startIso, endIso) {
   return `${s} – ${e}`;
 }
 
-// Win-probability chart x-axis scope: "full" (entire history, default) or
-// "matchup" (clipped to the week's start). Toggled globally; `active` holds
-// the currently displayed week so the toggle can re-render in place.
+// Short day label for chart dividers, e.g. "Jun 2". Input is an MLB official
+// date string ("YYYY-MM-DD").
+function fmtDay(dateStr) {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// WP-chart x-axis scope, chosen by the segmented control:
+//   "full"    — entire history (default)
+//   "matchup" — clipped to the week's start
+//   "active"  — dead time between game-days collapsed, day dividers
+// Global; `active` holds the currently displayed week so the control can
+// re-render in place.
 let chartScope = "full";
 const active = { data: null, week: null };
+const CHART_SCOPES = [
+  { id: "full", label: "Full" },
+  { id: "matchup", label: "Matchup" },
+  { id: "active", label: "Active" },
+];
 
 // A week is "started" once any of its games has begun (state set server-side
 // from game statuses). Started weeks show real scores; upcoming weeks are
@@ -394,7 +445,7 @@ function renderWeek(data, week) {
 
   const root = document.getElementById("matchups");
   root.innerHTML = week.matchups
-    .map((m, i) => renderMatchup(m, cats, tb, i, started, week.start, chartScope))
+    .map((m, i) => renderMatchup(m, cats, tb, i, started, week, chartScope))
     .join("");
 
   // Hook up expand toggles (re-bound on every week switch since DOM is fresh).
@@ -425,13 +476,19 @@ function render(data) {
           </option>`).join("")}
       </select>
     </label>`;
+  const scopeControl =
+    `<span class="chart-scope" role="group" aria-label="Graph time axis">` +
+    `<span class="chart-scope-label">Graph</span>` +
+    CHART_SCOPES.map((s) =>
+      `<button class="scope-btn${s.id === chartScope ? " active" : ""}" data-scope="${s.id}">${s.label}</button>`
+    ).join("") +
+    `</span>`;
   document.getElementById("meta").innerHTML =
     `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
     ` · Model <code>${firstModel}</code>` +
     ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
       `<span class="caret">▸</span> How this works</button>` +
-    ` · <button id="chart-scope-toggle" class="about-toggle" title="Toggle whether WP-over-time graphs show the full history or just since the matchup began">` +
-      `Graph: ${chartScope === "matchup" ? "since matchup start" : "full history"}</button>` +
+    ` · ${scopeControl}` +
     ` · ${select}`;
 
   renderWeek(data, defaultWeek);
@@ -442,20 +499,23 @@ function render(data) {
     if (w) renderWeek(data, w);
   });
 
-  // Global graph-scope toggle: flip full ↔ matchup-start and re-render the
-  // current week, preserving which detail panels are expanded.
-  const scopeBtn = document.getElementById("chart-scope-toggle");
-  scopeBtn.addEventListener("click", () => {
-    chartScope = chartScope === "matchup" ? "full" : "matchup";
-    scopeBtn.textContent =
-      "Graph: " + (chartScope === "matchup" ? "since matchup start" : "full history");
-    const openIds = [...document.querySelectorAll('.expand-toggle[aria-expanded="true"]')]
-      .map((b) => b.getAttribute("aria-controls"));
-    if (active.week) renderWeek(active.data, active.week);
-    openIds.forEach((id) => {
-      const panel = document.getElementById(id);
-      const btn = document.querySelector(`.expand-toggle[aria-controls="${id}"]`);
-      if (panel && btn) { panel.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+  // Segmented graph-scope control: switch x-axis mode and re-render the
+  // current week in place, preserving which detail panels are expanded.
+  document.querySelectorAll(".scope-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.scope;
+      if (next === chartScope) return;
+      chartScope = next;
+      document.querySelectorAll(".scope-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.scope === chartScope));
+      const openIds = [...document.querySelectorAll('.expand-toggle[aria-expanded="true"]')]
+        .map((b) => b.getAttribute("aria-controls"));
+      if (active.week) renderWeek(active.data, active.week);
+      openIds.forEach((id) => {
+        const panel = document.getElementById(id);
+        const tog = document.querySelector(`.expand-toggle[aria-controls="${id}"]`);
+        if (panel && tog) { panel.hidden = false; tog.setAttribute("aria-expanded", "true"); }
+      });
     });
   });
 }

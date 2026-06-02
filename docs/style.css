@@ -83,6 +83,36 @@ main {
   vertical-align: baseline;
 }
 .about-toggle:hover { text-decoration: underline; }
+
+/* Segmented control for the WP-chart x-axis (Full / Matchup / Active) */
+.chart-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: .45em;
+  vertical-align: baseline;
+}
+.chart-scope-label { color: var(--muted); }
+.scope-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--accent);
+  font: inherit;
+  font-size: .88em;
+  line-height: 1.6;
+  padding: 0 .6em;
+  cursor: pointer;
+  margin-left: -1px;            /* collapse adjacent borders */
+}
+.scope-btn:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
+.scope-btn:last-of-type  { border-radius: 0 6px 6px 0; }
+.scope-btn:hover { background: var(--bat); }
+.scope-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  cursor: default;
+}
 .about-toggle .caret {
   display: inline-block;
   transition: transform .15s ease;

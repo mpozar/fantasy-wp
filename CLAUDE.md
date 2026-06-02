@@ -36,6 +36,7 @@ scripts/
   fast.sh, medium.sh, daily.sh    # Cron tiers (see "Cron architecture")
   _common.sh                      # Shared: paths, lockfile, read_zshenv_var helper
   analyze_variance.py             # Offline tool: re-measure per-stat VMRs from MLB game logs
+  backfill_game_activity.py       # One-time: estimate game_day_activity for past days
 data.db                           # SQLite, gitignored
 .app.lock                         # Shared lockfile, gitignored
 ```
@@ -273,11 +274,24 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   until the new week's first game goes live, then flips on its own. `state` also
   gates whether team blocks show real scores vs projection dashes (the `started`
   flag through `_matchup_block`/`_team_block`).
-- **WP-over-time graph scope toggle** — one global control, default "full
-  history". "Since matchup start" clips the chart to the week's Monday
-  (`week.start`), dropping the pre-matchup `--future` projection points (they're
-  flat and compress the volatile in-matchup portion); full view draws a faint
-  "matchup start" marker. Pure front-end — the cutoff is just `week.start`.
+- **WP-over-time graph x-axis** — one global segmented control with three modes
+  (`renderChart`):
+  - **Full** (default): linear real time over all history; faint "matchup start"
+    divider where the week began (when there's pre-matchup history to its left).
+  - **Matchup**: clips to the week's Monday (`week.start`), dropping the flat
+    pre-matchup `--future` projection points.
+  - **Active**: collapses the dead time *between game-days* — concatenates each
+    day's observed game window proportionally, with a labeled divider per day.
+    Days with no plotted points (e.g. a week whose early history was trimmed)
+    are skipped so the axis doesn't allocate blank space.
+  Full/Matchup are pure front-end. Active needs the **observed game-day windows**
+  (`week.active_intervals`), which come from the `game_day_activity` table:
+  `refresh-live` stamps `active_start` the first tick it sees a game In Progress
+  and `active_end` once all that day's games are Final; `publish` emits them
+  (an in-progress day stays open-ended at "now"). `scripts/backfill_game_activity.py`
+  did a one-time estimate fill for weeks 9–10's already-elapsed days (earliest
+  first pitch → latest first pitch + ~3h15m) since live tracking only records
+  forward; the COALESCE upsert means empirical values always win over the estimate.
 
 ## Investigating "why did this WP change?"
 

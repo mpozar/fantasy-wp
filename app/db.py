@@ -111,6 +111,19 @@ CREATE TABLE IF NOT EXISTS team_schedule (
 );
 CREATE INDEX IF NOT EXISTS idx_schedule_team
     ON team_schedule (matchup_period_id, pro_team_id);
+
+-- ── Observed game activity per game-day (drives the chart's "Active" x-axis) ──
+-- One row per (period, MLB official date). refresh-live stamps active_start the
+-- first tick it sees a game In Progress and active_end once all that day's games
+-- are Final. The chart collapses the dead time between these intervals.
+CREATE TABLE IF NOT EXISTS game_day_activity (
+    matchup_period_id  INTEGER NOT NULL,
+    game_date          TEXT NOT NULL,   -- MLB official date, YYYY-MM-DD
+    active_start       TEXT,            -- UTC ISO: first game seen In Progress
+    active_end         TEXT,            -- UTC ISO: set once all games Final
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (matchup_period_id, game_date)
+);
 """
 
 
