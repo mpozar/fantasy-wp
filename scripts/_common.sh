@@ -22,6 +22,17 @@ log() {
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tier" "$msg"
 }
 
+# Run a command and log its wall-clock duration (whole seconds), so we can see
+# which step dominates a slow tick. Preserves the command's exit status.
+timed() {
+    local tier="$1" label="$2"; shift 2
+    local start=$SECONDS
+    "$@"
+    local rc=$?
+    log "$tier" "step ${label}: $((SECONDS - start))s"
+    return $rc
+}
+
 # Read `export NAME=...` value from ~/.zshenv (same pattern as espn.py).
 # Cron can't reach the keychain, so secrets live in this file.
 read_zshenv_var() {

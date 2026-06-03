@@ -17,11 +17,12 @@ source "$(dirname "$0")/_common.sh"
 
     log fast "start"
 
-    "$APP" refresh-live
-    "$APP" fetch
-    "$APP" compute
-    "$APP" publish
+    timed fast refresh-live "$APP" refresh-live
+    timed fast fetch        "$APP" fetch
+    timed fast compute      "$APP" compute
+    timed fast publish      "$APP" publish
 
+    git_start=$SECONDS
     # Pull first so a stale local main doesn't block the push
     git fetch --quiet origin main
     if ! git merge --ff-only --quiet origin/main; then
@@ -51,6 +52,7 @@ source "$(dirname "$0")/_common.sh"
         fi
         log fast "pushed update"
     fi
+    log fast "step git: $((SECONDS - git_start))s"
 
     log fast "done"
 } >> "$LOGS/fast.log" 2>&1

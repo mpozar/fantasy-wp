@@ -117,16 +117,28 @@ def fetch() -> None:
         # FastCast WebSocket; the REST endpoint we just polled can be 5-30 min
         # stale during live games. Fall back to REST data silently if the
         # scrape errors or returns nothing (auth wall, profile not set up).
+        # Only scrape when games are actually in progress. With nothing live,
+        # ESPN's REST scores are current and the ~15-60s headless-browser scrape
+        # is pure overhead (and the only place an idle-window runtime spike can
+        # come from). team_schedule status is fresh — refresh-live ran first.
+        in_progress = conn.execute(
+            "SELECT COUNT(*) FROM team_schedule "
+            "WHERE matchup_period_id=? AND game_status='In Progress'",
+            (shape.current_matchup_period,),
+        ).fetchone()[0]
         scraped_count = 0
-        try:
-            from app import espn_scrape
-            abbrev_to_id = {t["abbrev"]: t["id"] for t in teams}
-            scraped = espn_scrape.scrape_live_matchup_scores(
-                shape.current_matchup_period, abbrev_to_id,
-            )
-        except Exception as e:
-            scraped = {}
-            click.echo(f"  (live scrape skipped: {e})", err=True)
+        scraped = {}
+        scrape_skipped_idle = not in_progress
+        if in_progress:
+            try:
+                from app import espn_scrape
+                abbrev_to_id = {t["abbrev"]: t["id"] for t in teams}
+                scraped = espn_scrape.scrape_live_matchup_scores(
+                    shape.current_matchup_period, abbrev_to_id,
+                )
+            except Exception as e:
+                scraped = {}
+                click.echo(f"  (live scrape skipped: {e})", err=True)
 
         if scraped:
             # Re-find the current-period matchups and overlay
@@ -161,6 +173,8 @@ def fetch() -> None:
            f"periods {periods_seen[0]}..{periods_seen[-1]}")
     if scraped_count:
         msg += f", live-scraped {scraped_count} category cells"
+    elif scrape_skipped_idle:
+        msg += ", scrape skipped (no games in progress)"
     click.echo(msg)
 
 
