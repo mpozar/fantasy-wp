@@ -148,7 +148,25 @@ RP_APPEARANCE_RATE = 0.40
 # Cap on per-team-game SP start rate when estimating from ROS projections.
 # Real MLB rotations top out near 1-start-per-5-team-games (20%); slight slack
 # above that to allow for occasional spot starts when other arms are unavailable.
+# Used only by the flat-rate fallback (when the cadence model has no anchor).
 MAX_SP_RATE = 0.21
+
+# Rotation rest-day distribution: P(calendar days between a SP's consecutive
+# starts), used by the cadence model to project a pitcher's remaining turns from
+# his last/announced start. Measured by scripts/analyze_cadence.py from MLB game
+# logs — re-run yearly and paste the result here (like ER_VMR_BY_ROLE). Note the
+# 2026 mix is modal *6* days (mean ~5.8): six-man rotations / load management
+# have all but eliminated 4-day rest, so two-start weeks are correspondingly rare.
+#
+# Auto-generated 2026-06-03: 135 SPs, 1181 gaps, mean rest = 5.79 days.
+REST_DAY_WEIGHTS = {5: 0.340, 6: 0.544, 7: 0.101, 8: 0.014}
+
+# Most extra (un-probabled) starts the cadence model will project into one week.
+# A SP gets at most ~2 starts in a 7-day scoring period.
+MAX_EXTRA_STARTS = 2
+
+# MLB statsapi detailedState values that mean a game is over.
+_GAME_FINISHED = {"Final", "Game Over", "Completed Early"}
 
 # Cap on per-appearance SV+HLD rate. The ROS SVHD value is derived from the
 # player's actual season-to-date rate (with a fallback to ESPN's full-season
@@ -213,6 +231,21 @@ def _poisson(lam: float) -> int:
     return max(0, round(random.gauss(lam, math.sqrt(lam))))
 
 
+def _sample_dist(weights: list[float]) -> int:
+    """Sample an index from a list of non-negative weights (cumulative draw).
+    Used to draw a SP's integer extra-start count from its cadence dist."""
+    total = sum(weights)
+    if total <= 0:
+        return 0
+    r = random.random() * total
+    acc = 0.0
+    for i, w in enumerate(weights):
+        acc += w
+        if r < acc:
+            return i
+    return len(weights) - 1
+
+
 # ── Rate-stat derivation from counters ──
 
 def derive_ops(c: dict[int, float]) -> float:
@@ -269,6 +302,13 @@ class Budget:
     role: str                              # 'HIT' | 'SP' | 'RP'
     units: float                           # games / starts / appearances remaining
     expected: dict[int, float]             # stat_id → expected counter value
+    # SP-only (None otherwise): the stochastic extra-start piece sampled per sim.
+    # `expected` above holds only the *fixed* piece (announced probables + any
+    # live start); the cadence model's uncertain extra starts are drawn from
+    # `extra_dist` (P(k extra starts)) and scaled by `extra_per_start` (per-start
+    # stat rates) so all pitching categories move together with the drawn count.
+    extra_dist: list[float] | None = None
+    extra_per_start: dict[int, float] | None = None
 
 
 # ── In-progress game scaling ──────────────────────────────────────────
@@ -417,6 +457,111 @@ def _open_sp_game_weight(team_id: int,
             continue
         total += _sp_factor(g, sp_exit_inning)
     return total
+
+
+def _cadence_extra_start_dist(player_name: str, team_id: int,
+                              schedule_by_team: dict[int, list[dict]],
+                              last_start_by_pitcher: dict[str, str],
+                              return_date: date | None = None,
+                              ) -> list[float] | None:
+    """Distribution over the number of *extra* (un-probabled, open) starts this
+    pitcher gets in the period, from a rotation-turn projection.
+
+    Returns `[P(0), P(1), ...]`, or `None` when there's no usable anchor (no
+    recorded last start and no announced probable) — the caller then falls back
+    to the flat ROS-share estimate, so behavior never regresses below today's.
+
+    Model: anchor on the later of the pitcher's last recorded start and his
+    latest *announced* probable in this period (an arm slated for Tuesday
+    projects his next turn from Tuesday). From the anchor, project forward turns
+    by sampling rest-days (`REST_DAY_WEIGHTS`), snapping each projected date to
+    this team's next **open** game (no probable announced yet) on/after it.
+    Announced-probable starts are the 'fixed' piece counted by
+    `_probable_starts_for`, so they're never credited here (no double-count) —
+    they only set the rotation phase. Aggregated over all rest-day scenarios
+    into a discrete distribution, capped at `MAX_EXTRA_STARTS`.
+    """
+    target = _norm_name(player_name)
+    if not target:
+        return None
+    sched = [g for g in schedule_by_team.get(team_id, [])
+             if _game_after_return(g, return_date)]
+
+    # Anchor: last recorded start, raised to the latest announced probable for
+    # this pitcher in-period (announced games chain the phase into the open tail).
+    anchor: date | None = None
+    last = last_start_by_pitcher.get(target)
+    if last:
+        try:
+            anchor = date.fromisoformat(last)
+        except ValueError:
+            anchor = None
+    for g in sched:
+        if _norm_name(g.get("probable_pitcher_name")) == target:
+            try:
+                gd = date.fromisoformat(g["game_date"])
+            except (ValueError, KeyError):
+                continue
+            if anchor is None or gd > anchor:
+                anchor = gd
+    if anchor is None:
+        return None  # no usable anchor → caller uses flat-rate fallback
+
+    # Candidate open games: no probable yet, not finished, not in progress
+    # (an in-progress game already has a starter). Future games only.
+    open_dates: list[date] = []
+    for g in sched:
+        if g.get("probable_pitcher_name"):
+            continue
+        if g.get("game_status") in _GAME_FINISHED:
+            continue
+        if g.get("current_inning") is not None:
+            continue
+        try:
+            open_dates.append(date.fromisoformat(g["game_date"]))
+        except (ValueError, KeyError):
+            continue
+    open_dates.sort()
+
+    dist: dict[int, float] = {}
+
+    def walk(cur: date, count: int, prob: float) -> None:
+        if count >= MAX_EXTRA_STARTS:
+            dist[count] = dist.get(count, 0.0) + prob
+            return
+        for r_days, w in REST_DAY_WEIGHTS.items():
+            target_date = cur + timedelta(days=r_days)
+            nxt = next((d for d in open_dates if d >= target_date), None)
+            if nxt is None:
+                dist[count] = dist.get(count, 0.0) + prob * w
+            else:
+                walk(nxt, count + 1, prob * w)
+
+    walk(anchor, 0, 1.0)
+    if not dist:
+        return [1.0]
+    k_max = max(dist)
+    return [dist.get(i, 0.0) for i in range(k_max + 1)]
+
+
+def _split_mean_to_dist(mean: float) -> list[float]:
+    """Split a fractional expected-start count into an integer distribution with
+    the same mean: P(ceil)=frac, P(floor)=1-frac. e.g. 1.6 → [0, 0.4, 0.6].
+
+    The non-cadence SP fallback (far-future weeks, or no anchor) uses this so the
+    start *count* still varies per sim — coupling the pitching categories — even
+    though we drop the rotation-turn placement. Mean is preserved, so the
+    matchup's expected production is unchanged vs. the old deterministic fold."""
+    if mean <= 0:
+        return [1.0]
+    lo = int(math.floor(mean))
+    frac = mean - lo
+    dist = [0.0] * (lo + 2)
+    dist[lo] += 1.0 - frac
+    dist[lo + 1] += frac
+    while len(dist) > 1 and dist[-1] == 0.0:
+        dist.pop()
+    return dist
 
 
 def _has_pitcher_ros(ros: dict) -> bool:
@@ -646,11 +791,31 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
             budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + base_share * gate
 
 
+def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
+    """Per-start stat rates (`ros_v / denom`) for the pitcher counters — the
+    multipliers used to scale a SP's sampled extra starts. Mirrors the `rate`
+    computation in `_make_budget`, including the SVHD ceiling."""
+    rates: dict[int, float] = {}
+    if denom <= 0:
+        return rates
+    for stat_id in PITCHER_COUNTERS:
+        ros_v = ros.get(stat_id)
+        if ros_v is None or ros_v <= 0:
+            continue
+        rate = ros_v / denom
+        if stat_id == STAT_SVHD and rate > MAX_SVHD_RATE:
+            rate = MAX_SVHD_RATE
+        rates[stat_id] = rate
+    return rates
+
+
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
                   team_total_ros_games: dict[int, int] | None = None,
                   lineup_slot_counts: dict[int, int] | None = None,
                   live_by_team: dict[int, dict[str, dict]] | None = None,
+                  last_start_by_pitcher: dict[str, str] | None = None,
+                  use_cadence: bool = True,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
@@ -666,6 +831,7 @@ def build_budgets(roster: list[dict],
     team_total_ros_games = team_total_ros_games or {}
     lineup_slot_counts = lineup_slot_counts or {}
     live_by_team = live_by_team or {}
+    last_start_by_pitcher = last_start_by_pitcher or {}
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts)
     today = date.today()
 
@@ -687,6 +853,8 @@ def build_budgets(roster: list[dict],
         # blocks *announced-probable* start days, not estimated ones. 0 for
         # non-SPs and non-pitchers.
         sp_est_units = 0.0
+        sp_extra_dist: list[float] | None = None     # cadence: P(k extra starts)
+        sp_extra_per_start: dict[int, float] | None = None
         rp_remaining = 0.0   # set in the RP branch; used by the SVHD override
 
         # ── Pitcher budget ─────────────────────────────────────────────
@@ -702,13 +870,14 @@ def build_budgets(roster: list[dict],
                 is_sp = (pos == 1)
 
             if is_sp:
-                # Hybrid SP-start estimate — one path for current and future
-                # weeks: announced probable starts PLUS a ROS-share estimate
-                # over this team's games with no probable posted yet (the part
-                # of the week past MLB's ~3-day probable horizon). No double-
-                # count: open games exclude any with a probable. Future weeks
-                # (no probables) reduce to the pure ROS estimate; late in a week
-                # (all probables posted) it reduces to probables-only.
+                # SP starts split into a FIXED piece (announced probables + any
+                # live start; near-certain count) and a STOCHASTIC EXTRA piece
+                # (the un-probabled tail of the week). The cadence model projects
+                # the extra piece as a distribution over integer starts sampled
+                # per-sim; with no usable anchor we fall back to the old flat
+                # ROS-share smear so behavior never regresses. Either way the
+                # fixed and extra pieces never overlap (probable games are
+                # excluded from the extra piece — no double-count).
                 if gs_ros > 0:
                     avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
                     sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
@@ -717,14 +886,36 @@ def build_budgets(roster: list[dict],
                 probable_units = _probable_starts_for(
                     p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
                 )
-                open_weight = _open_sp_game_weight(
-                    team_id, schedule_by_team, sp_exit_inning, ret,
-                )
-                total_ros = team_total_ros_games.get(team_id, 0)
-                if total_ros > 0 and gs_ros > 0 and open_weight > 0:
-                    rate = min(gs_ros / total_ros, MAX_SP_RATE)
-                    sp_est_units = rate * open_weight
-                units_p = probable_units + sp_est_units
+                # The extra (un-probabled) starts are always the sampled piece;
+                # only *how the distribution is built* depends on the horizon:
+                #   - current week & the next (use_cadence) → rotation-turn dist
+                #     (`_cadence_extra_start_dist`), turn-aware.
+                #   - further out → the flat ROS-share mean split into an integer
+                #     dist (`_split_mean_to_dist`). The turn placement washes out
+                #     under compounding rest-day uncertainty that far ahead, so we
+                #     drop it — but the start *count* still varies per sim.
+                extra_dist = _cadence_extra_start_dist(
+                    p["full_name"], team_id, schedule_by_team,
+                    last_start_by_pitcher, ret,
+                ) if use_cadence else None
+                if extra_dist is None:
+                    open_weight = _open_sp_game_weight(
+                        team_id, schedule_by_team, sp_exit_inning, ret,
+                    )
+                    total_ros = team_total_ros_games.get(team_id, 0)
+                    if total_ros > 0 and gs_ros > 0 and open_weight > 0:
+                        rate = min(gs_ros / total_ros, MAX_SP_RATE)
+                        flat_mean = rate * open_weight
+                        if flat_mean > 0:
+                            extra_dist = _split_mean_to_dist(flat_mean)
+                if extra_dist is not None:
+                    # Probables are the fixed units; the open tail is sampled.
+                    # sp_est_units = E[extra starts], used for the two-way
+                    # subtraction and the displayed start count.
+                    sp_extra_dist = extra_dist
+                    sp_extra_per_start = _per_start_rates(ros, gs_ros)
+                    sp_est_units = sum(i * pk for i, pk in enumerate(extra_dist))
+                units_p = probable_units
                 denom_p = gs_ros
                 role_p = "SP"
             else:
@@ -738,9 +929,23 @@ def build_budgets(roster: list[dict],
                 role_p = "RP"
 
             budget = _make_budget(p, ros, units_p, denom_p, PITCHER_COUNTERS, role_p)
+            if role_p == "SP" and sp_extra_dist is not None:
+                # Future week (no announced probables): the fixed piece is empty
+                # so _make_budget returns None, but the cadence model still
+                # projects extra starts — build a budget with an empty fixed
+                # expected and the stochastic extra piece only.
+                if budget is None and sp_extra_per_start and sp_est_units > 0:
+                    budget = Budget(player_id=p["player_id"], name=p["full_name"],
+                                    role="SP", units=0.0, expected={})
+                if budget is not None:
+                    budget.extra_dist = sp_extra_dist
+                    budget.extra_per_start = sp_extra_per_start
+                    budget.units += sp_est_units   # show total expected starts
             if budget:
                 # In-game override for the threshold/context stats — no-op
                 # unless this pitcher's team has a game in progress right now.
+                # Operates on the fixed `expected` only (a live start is a
+                # probable, hence fixed); the extra piece is never live.
                 if role_p == "SP":
                     _override_sp_qs(budget, p["full_name"], ros, schedule_by_team,
                                     live_by_team, team_id, gs_ros, sp_exit_inning)
@@ -791,6 +996,23 @@ def _make_budget(p: dict, ros: dict, units: float, denom: float,
         units=units,
         expected=expected,
     )
+
+
+def _display_expected(b: Budget) -> dict[int, float]:
+    """Per-stat expected values for reporting: the fixed `expected` plus the
+    mean of the stochastic extra-start piece (E[k] × per-start rate). For
+    non-SP budgets (no extra piece) this is just `expected`. Used by the budget
+    summary so the shown exp_* reflect *total* expected starts; the sim itself
+    samples the two pieces separately."""
+    if not b.extra_dist or not b.extra_per_start:
+        return b.expected
+    e_extra = sum(i * pk for i, pk in enumerate(b.extra_dist))
+    if e_extra <= 0:
+        return b.expected
+    merged = dict(b.expected)
+    for stat_id, rate in b.extra_per_start.items():
+        merged[stat_id] = merged.get(stat_id, 0.0) + rate * e_extra
+    return merged
 
 
 # ── Score a single simulated matchup ──
@@ -844,6 +1066,20 @@ def _simulate_team(current_state: dict[int, float],
             else:
                 draw = _poisson(exp)
             counters[stat_id] = counters.get(stat_id, 0) + draw
+        # SP cadence model: draw this sim's integer count of un-probabled extra
+        # starts, then scale every pitching counter by that shared k so the
+        # categories move together (a two-start week is all-or-nothing, not a
+        # smeared mean). The fixed piece above is already in `expected`.
+        if b.extra_dist:
+            k = _sample_dist(b.extra_dist)
+            if k:
+                for stat_id, rate in (b.extra_per_start or {}).items():
+                    mean = rate * k
+                    if stat_id == STAT_ER:
+                        draw = _neg_binom(mean, ER_VMR_BY_ROLE.get(b.role, 1.0))
+                    else:
+                        draw = _poisson(mean)
+                    counters[stat_id] = counters.get(stat_id, 0) + draw
     return counters
 
 
@@ -864,18 +1100,24 @@ def simulate(inputs: MatchupInputs,
              team_total_ros_games: dict[int, int] | None = None,
              lineup_slot_counts: dict[int, int] | None = None,
              live_by_team: dict[int, dict[str, dict]] | None = None,
+             last_start_by_pitcher: dict[str, str] | None = None,
+             use_cadence: bool = True,
              ) -> tuple[float, float, dict]:
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
         live_by_team=live_by_team,
+        last_start_by_pitcher=last_start_by_pitcher,
+        use_cadence=use_cadence,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
         team_total_ros_games=team_total_ros_games,
         lineup_slot_counts=lineup_slot_counts,
         live_by_team=live_by_team,
+        last_start_by_pitcher=last_start_by_pitcher,
+        use_cadence=use_cadence,
     )
 
     home_wins = 0
@@ -914,6 +1156,10 @@ def simulate(inputs: MatchupInputs,
     def budget_summary(bs: list[Budget]) -> list[dict]:
         out = []
         for b in bs:
+            # exp folds the stochastic extra-start piece into the fixed means
+            # so the displayed exp_* reflect total expected starts (no-op for
+            # non-SP budgets).
+            exp = _display_expected(b)
             rec = {
                 "player_id": b.player_id,
                 "name": b.name,
@@ -921,29 +1167,29 @@ def simulate(inputs: MatchupInputs,
                 "units": round(b.units, 2),
             }
             if b.role == "HIT":
-                exp_ab = b.expected.get(STAT_AB, 0)
+                exp_ab = exp.get(STAT_AB, 0)
                 rec.update({
-                    "exp_h":   round(b.expected.get(STAT_H, 0), 1),
-                    "exp_hr":  round(b.expected.get(STAT_HR, 0), 2),
-                    "exp_r":   round(b.expected.get(STAT_R, 0), 1),
-                    "exp_sb":  round(b.expected.get(STAT_SB, 0), 2),
+                    "exp_h":   round(exp.get(STAT_H, 0), 1),
+                    "exp_hr":  round(exp.get(STAT_HR, 0), 2),
+                    "exp_r":   round(exp.get(STAT_R, 0), 1),
+                    "exp_sb":  round(exp.get(STAT_SB, 0), 2),
                     # Per-batter OPS only meaningful with a real AB budget;
                     # null otherwise so the UI can hide it.
-                    "exp_ops": round(derive_ops(b.expected), 3) if exp_ab >= 1 else None,
+                    "exp_ops": round(derive_ops(exp), 3) if exp_ab >= 1 else None,
                 })
             else:  # SP or RP
-                exp_outs = b.expected.get(STAT_OUTS, 0)
+                exp_outs = exp.get(STAT_OUTS, 0)
                 rec.update({
-                    "exp_k":    round(b.expected.get(STAT_K, 0), 1),
+                    "exp_k":    round(exp.get(STAT_K, 0), 1),
                     "exp_outs": round(exp_outs, 1),
-                    "exp_qs":   round(b.expected.get(STAT_QS, 0), 2),
-                    "exp_svhd": round(b.expected.get(STAT_SVHD, 0), 2),
+                    "exp_qs":   round(exp.get(STAT_QS, 0), 2),
+                    "exp_svhd": round(exp.get(STAT_SVHD, 0), 2),
                 })
                 # ERA/WHIP need at least 0.5 IP of expected production to be
                 # informative — otherwise it's noise from a tiny projection.
                 if exp_outs >= 1.5:
-                    rec["exp_era"]  = round(derive_era(b.expected), 2)
-                    rec["exp_whip"] = round(derive_whip(b.expected), 2)
+                    rec["exp_era"]  = round(derive_era(exp), 2)
+                    rec["exp_whip"] = round(derive_whip(exp), 2)
                 else:
                     rec["exp_era"]  = None
                     rec["exp_whip"] = None
@@ -1074,6 +1320,26 @@ def load_live_pitchers(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
     out: dict[int, dict[str, dict]] = {}
     for r in rows:
         out.setdefault(r["pro_team_id"], {})[_norm_name(r["name"])] = dict(r)
+    return out
+
+
+def load_last_starts(conn: sqlite3.Connection) -> dict[str, str]:
+    """Most recent start date per pitcher (normalized name → 'YYYY-MM-DD') from
+    `pitcher_starts`. Anchor for the rotation-cadence SP model. Empty when no
+    history has been recorded — build_budgets then falls back to the flat
+    ROS-share estimate, so behavior never regresses below today's."""
+    rows = conn.execute(
+        "SELECT pitcher_name, MAX(game_date) AS last_date "
+        "FROM pitcher_starts GROUP BY pitcher_name"
+    ).fetchall()
+    out: dict[str, str] = {}
+    for r in rows:
+        nm = _norm_name(r["pitcher_name"])
+        if not nm or not r["last_date"]:
+            continue
+        # ISO dates sort lexicographically; keep the latest on name collision.
+        if nm not in out or r["last_date"] > out[nm]:
+            out[nm] = r["last_date"]
     return out
 
 

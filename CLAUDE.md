@@ -18,7 +18,7 @@ ESPN/MLB APIs  ──(refresh-rosters, refresh-schedule, refresh-live, fetch)─
 ```
 app/
   cli.py        # Click commands: init-db, fetch, refresh-rosters, refresh-schedule,
-                # refresh-live, compute [--future], publish
+                # backfill-starts, refresh-live, compute [--future], publish
   espn.py       # ESPN fantasy API client. fetch_league_shape, fetch_teams,
                 # fetch_all_matchups, fetch_rosters_and_projections
   mlb.py        # MLB statsapi client + calendar-absolute period windows.
@@ -36,6 +36,7 @@ scripts/
   fast.sh, medium.sh, daily.sh    # Cron tiers (see "Cron architecture")
   _common.sh                      # Shared: paths, lockfile, read_zshenv_var helper
   analyze_variance.py             # Offline tool: re-measure per-stat VMRs from MLB game logs
+  analyze_cadence.py              # Offline tool: re-measure REST_DAY_WEIGHTS (SP rotation gaps) from MLB game logs
   backfill_game_activity.py       # One-time: estimate game_day_activity for past days
 data.db                           # SQLite, gitignored
 .app.lock                         # Shared lockfile, gitignored
@@ -57,6 +58,7 @@ Each `Budget` has:
 - `role` (SP/RP/HIT)
 - `units` — expected weekly contributions: starts for SP, appearances for RP, days-in-lineup for HIT
 - `expected[stat_id]` — projected counter values for the week, computed as `(ros_v / denom) * units`
+- `extra_dist` / `extra_per_start` (SP only, else `None`) — the stochastic extra-start piece: `extra_dist` is `[P(0 extra starts), P(1), …]` and `extra_per_start[stat_id]` is the per-start rate. `_simulate_team` samples `k ~ extra_dist` per sim and adds `Poisson(extra_per_start·k)` to each pitching counter (NB for ER). See "SP start estimation". For these budgets `expected` holds only the *fixed* piece; `_display_expected` merges in `E[k]·rate` for reporting.
 
 Rate stats (OPS, ERA, WHIP) are *never* sampled directly — they're derived from the underlying counter sums (AB, H, BB, HBP, SF, HR, 2B, 3B for OPS; ER, OUTS for ERA; P_H, P_BB, OUTS for WHIP). See `derive_ops`, `derive_era`, `derive_whip` in `sim.py`. The category decision and the "average per category" in publish use `_cat_value` which routes to these derivations.
 
@@ -68,17 +70,75 @@ ESPN's `default_position_id` is wrong for some players. We classify pitchers by 
 
 This catches RP-eligible swingmen (e.g. Wrobleski, pos=11 but usage ≈ SP), and also catches the two-way case below.
 
-### SP start estimation (hybrid — current & future weeks share one path)
+### SP start estimation (rotation cadence + per-sim start-count sampling)
 
-A rostered SP's expected starts for the week =
-**announced probable starts** (`_probable_starts_for`, weighted by `_sp_factor` so an in-progress start gets partial credit) **+ a ROS-share estimate** over that pitcher's team-games that have **no probable announced yet** (`_open_sp_game_weight` × `min(ros_gs / total_ros_games, MAX_SP_RATE)`).
+A rostered SP's starts for the week split into two pieces that **never overlap**
+(a game with any probable announced is excluded from the cadence piece):
 
-The two pieces never overlap: a game with *any* probable announced is excluded from the open-game weight (that start is already counted, by whoever's named). So:
-- **Future weeks** (MLB posts no probables that far out) → pure ROS estimate, full rotation.
-- **Early in the current week** → first ~3 days are announced, the rest is estimated. Avoids the old bug where the back half of a not-yet-fully-announced week scored 0 starts (a 6-man rotation showed only 1–2 starts on Monday).
-- **Late in a week** (every game has a probable) → reduces to probables-only.
+1. **Fixed piece** — announced probable starts (`_probable_starts_for`, weighted
+   by `_sp_factor` so an in-progress start gets partial credit) **+ any live
+   start**. Near-certain *count*; lands in `Budget.expected` as means and is
+   drawn per-stat exactly as every other budget.
+2. **Stochastic extra piece** — the un-probabled tail of the week, modeled by the
+   **rotation-cadence model** (`_cadence_extra_start_dist`) as a *distribution*
+   over integer extra starts `[P(0), P(1), …]`, stored on the budget as
+   `extra_dist` + per-start rates `extra_per_start`. `_simulate_team` draws an
+   integer `k` from `extra_dist` **once per sim** and scales every pitching
+   counter by that shared `k`, so the categories move together (a two-start week
+   is all-or-nothing — the bimodal variance the old smeared mean dropped).
 
-Before this, `compute` switched hard between a probables-only path (current week) and a ROS-estimate path (`--future`); the gap was the un-announced tail of the current week. There's no `estimate_sp_starts` flag anymore — the data (probable present or not) drives it.
+**How the cadence dist is built** (`_cadence_extra_start_dist`): anchor on the
+later of the pitcher's last recorded start (`pitcher_starts` table, matched by
+`_norm_name`) and his latest *announced* probable this period (an arm slated for
+Tuesday projects his next turn from Tuesday — and announced games, being the
+fixed piece, also retain their probable on Final rows so they anchor the phase
+even without `pitcher_starts`). From the anchor, project forward turns by
+enumerating rest-day scenarios (`REST_DAY_WEIGHTS`, modal 5), snapping each
+projected date to this team's next **open** game (no probable yet), capped at
+`MAX_EXTRA_STARTS`. Aggregated over all scenarios into the discrete dist.
+
+`E[k] = sum(i·P(i))` is reused for the displayed start count (`Budget.units` =
+fixed + E[k]) and the two-way hitter-day subtraction; `_display_expected` folds
+`E[k]·rate` back into the per-stat means for the budget summary in `data.json`.
+
+**Scope — turn-awareness only for the current week and the next.** `compute`
+passes `use_cadence=(period_id <= current + 1)`. The extra-start count is *always*
+sampled (so it varies per sim); only *how the distribution is built* depends on
+the horizon:
+- **current week & next** → the turn-aware cadence dist.
+- **weeks ≥ current+2** → the flat ROS-share mean (`rate × open_weight`) split
+  into an integer dist by its fractional part (`_split_mean_to_dist`, e.g.
+  1.6 → `[0, 0.4, 0.6]`, mean preserved). We drop only the rotation-turn
+  *placement* — false precision 2+ weeks out, where the anchor washes out under
+  compounding rest-day uncertainty — not the count variance. This also keeps the
+  slow `compute --future` path (78 matchups × 10k) lean.
+
+The flag threads `compute → simulate → build_budgets`.
+
+**Degenerate cases** collapse cleanly: future weeks (no probables) → empty fixed
+piece, pure cadence (a full week ≈ `[0, 0.27, 0.73]` → ~1.7 starts); late in a
+week (all probables posted) → no open games → `extra_dist = [1.0]`, probables
+only. **No-anchor guard:** if there's no recorded start *and* no announced
+probable, `_cadence_extra_start_dist` returns `None` and the SP branch uses the
+same flat-ROS-share-split fallback as far-future weeks (`_open_sp_game_weight` ×
+`min(ros_gs/total_ros, MAX_SP_RATE)`, then `_split_mean_to_dist`) — so the count
+still varies; we only lose the turn placement, never regressing below the
+pre-cadence model.
+
+**Anchor data:** `pitcher_starts` is populated forward by `refresh-schedule`
+(every Final game's probable IS its starter) and seeded once by
+`app backfill-starts [--days 21]` (the regular fetch window only spans the
+current period forward, so first-start-of-week anchors need a lookback). The
+rest-day distribution is measured by `scripts/analyze_cadence.py` (pulls MLB
+game logs, prints `REST_DAY_WEIGHTS = {...}` to paste into `sim.py`, like
+`analyze_variance.py`).
+
+Historical note: before this, `compute` used a *deterministic* hybrid — announced
+probables + a flat ROS-share float — collapsed straight into per-stat means. That
+got the count's center roughly right but carried **zero start-count variance** and
+**decorrelated** the pitching categories, and a flat per-game rate couldn't
+distinguish a one- from a two-start week. The cadence model fixes the point
+estimate (turn order → two-start weeks) and the sampling fixes the variance.
 
 ### Two-way players (Ohtani)
 
@@ -403,6 +463,18 @@ trap 'rm -f .app.lock' EXIT
 ```
 Pulls fresh MLB game logs, prints a `VMR = {...}` dict. Paste into `sim.py`. Re-run yearly or when the model seems off.
 
+### Re-measuring rotation cadence
+
+```sh
+.venv/bin/python scripts/analyze_cadence.py
+```
+Pulls fresh MLB pitching game logs, prints a `REST_DAY_WEIGHTS = {...}` dict (the
+distribution of calendar-day gaps between a SP's consecutive starts). Paste into
+`sim.py`. Drives the SP cadence model's turn projection — re-run yearly or if the
+rest-day mix drifts (e.g. league-wide six-man rotations). Self-contained; needs
+no local DB. Seed anchors once with `app backfill-starts` (then `refresh-schedule`
+keeps `pitcher_starts` current going forward).
+
 ### Tests
 
 ```sh
@@ -454,7 +526,9 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 
 - Roster moves you make later this week aren't reflected until the next medium.sh
 - Lineup changes — same
-- SP variance: per-start blowups aren't weighted heavily enough (mc-v1's Poisson approximation undersells tail risk for OUTS; ER does get NB now)
+- SP start *count* now carries variance (cadence `extra_dist` sampled per sim), but per-start blowups still lean on Poisson for OUTS/K (only ER gets NB); within-start tail risk is undersold
+- Cadence over-count: two rostered SPs from the *same* MLB team can each project the same open game as their turn (per-player independence, same as the old flat model). Rare on a real roster; not corrected
+- Cadence anchor uses name matching (no ESPN↔MLBAM player-id crosswalk) — same rare-miss risk as probable matching
 - Teammate correlation: each player's stats are independent in the sim, but real-world teammates share weather/pitcher/etc. Slightly over-spreads the outcome distribution.
 - Reliever leverage: an RP appearance in a save spot counts the same as one in a blowout
 - Off-days, platoon splits, weather, lineup card details — assumed away

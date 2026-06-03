@@ -15,6 +15,36 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _record_starts(conn, games: list[dict], now: str) -> int:
+    """Upsert Final games' starters into `pitcher_starts` — the probable
+    pitcher IS the actual starter once a game is complete. Anchor data for the
+    rotation-cadence SP model. Idempotent via the (mlbam_id, game_pk) PK, so
+    re-recording the same Final game is a no-op. Returns rows written."""
+    n = 0
+    for g in games:
+        if g.get("game_status") not in _FINAL_GAME_STATES:
+            continue
+        pid = g.get("probable_pitcher_mlbam_id")
+        if not pid:
+            continue
+        conn.execute(
+            """
+            INSERT INTO pitcher_starts
+                (mlbam_id, pitcher_name, game_pk, game_date, pro_team_id, fetched_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(mlbam_id, game_pk) DO UPDATE SET
+                pitcher_name=excluded.pitcher_name,
+                game_date=excluded.game_date,
+                pro_team_id=excluded.pro_team_id,
+                fetched_at=excluded.fetched_at
+            """,
+            (pid, g.get("probable_pitcher_name"), g["game_pk"], g["game_date"],
+             g["espn_team_id"], now),
+        )
+        n += 1
+    return n
+
+
 @click.group()
 def cli() -> None:
     """fantasy-wp commands."""
@@ -269,6 +299,7 @@ def refresh_schedule() -> None:
     now = _now_iso()
 
     total_games = 0
+    total_starts = 0
     conn = db.connect()
     try:
         for period_id in range(current, last + 1):
@@ -305,13 +336,50 @@ def refresh_schedule() -> None:
                          g["game_status"], g.get("current_inning"), g.get("inning_state"),
                          now),
                     )
+                # Record any Final games' starters as anchor history.
+                total_starts += _record_starts(conn, games, now)
             total_games += len(games)
     finally:
         conn.close()
 
     click.echo(
         f"Refreshed schedule: periods {current}..{last}, "
-        f"team_game_rows={total_games}"
+        f"team_game_rows={total_games}, starts_recorded={total_starts}"
+    )
+
+
+@cli.command("backfill-starts")
+@click.option("--days", type=int, default=21, show_default=True,
+              help="Days before the current period start to scan for Final-game starters.")
+def backfill_starts(days: int) -> None:
+    """Seed `pitcher_starts` with recent Final games — anchor history for the
+    rotation-cadence SP model.
+
+    The regular `refresh-schedule` window only spans the current period forward,
+    so on first run there's no history for a pitcher's first start of the week.
+    This scans the `days` before the current period start and records the
+    starters. Also feeds `scripts/analyze_cadence.py`. Idempotent.
+    """
+    from datetime import date, timedelta
+
+    conn = db.connect()
+    try:
+        current = _current_matchup_period(conn)
+        if current is None:
+            raise click.ClickException("Missing period metadata. Run `app fetch` first.")
+        period_start, _ = mlb.matchup_period_window(current)
+        end = period_start - timedelta(days=1)
+        start = period_start - timedelta(days=days)
+        games = mlb.fetch_schedule(start, end)
+        now = _now_iso()
+        with conn:
+            n = _record_starts(conn, games, now)
+    finally:
+        conn.close()
+
+    click.echo(
+        f"Backfilled starts: {start.isoformat()}..{end.isoformat()}, "
+        f"games={len(games)}, starts_recorded={n}"
     )
 
 
@@ -496,6 +564,13 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             sim.load_live_pitchers(conn) if model_name == "mc-v1" else {}
         )
 
+        # Anchor history for the rotation-cadence SP model (last start per
+        # pitcher). Empty until pitcher_starts is populated, in which case the
+        # SP estimate falls back to the flat ROS-share.
+        last_start_by_pitcher = (
+            sim.load_last_starts(conn) if model_name == "mc-v1" else {}
+        )
+
         # League lineup-slot configuration for the hitter optimizer.
         lineup_slot_counts: dict[int, int] = {}
         if ss["lineup_slots_json"]:
@@ -544,6 +619,11 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         team_total_ros_games=team_total_ros_games,
                         lineup_slot_counts=lineup_slot_counts,
                         live_by_team=live_by_team,
+                        last_start_by_pitcher=last_start_by_pitcher,
+                        # Rotation-cadence start projection only for the current
+                        # week and the next; further-out weeks fall back to the
+                        # flat ROS-share (the anchor is too stale to be useful).
+                        use_cadence=(period_id <= current + 1),
                     )
                     version = sim.MODEL_VERSION
                 else:

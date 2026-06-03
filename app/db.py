@@ -145,6 +145,24 @@ CREATE TABLE IF NOT EXISTS live_pitchers (
 );
 CREATE INDEX IF NOT EXISTS idx_live_pitchers_team
     ON live_pitchers (pro_team_id);
+
+-- ── Per-pitcher start history (anchor for the rotation-cadence SP model) ──
+-- One row per (pitcher, game) that the pitcher started, derived from Final
+-- games' probable pitcher (the probable IS the actual starter once a game is
+-- complete). Populated forward by refresh-schedule and seeded by
+-- `app backfill-starts`. Matched to rostered players by normalized name
+-- (there's no ESPN↔MLBAM player-id crosswalk), so pitcher_name is stored too.
+CREATE TABLE IF NOT EXISTS pitcher_starts (
+    mlbam_id     INTEGER NOT NULL,
+    pitcher_name TEXT,
+    game_pk      INTEGER NOT NULL,
+    game_date    TEXT NOT NULL,        -- YYYY-MM-DD
+    pro_team_id  INTEGER,              -- ESPN proTeamId
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (mlbam_id, game_pk)
+);
+CREATE INDEX IF NOT EXISTS idx_pitcher_starts_name
+    ON pitcher_starts (pitcher_name, game_date);
 """
 
 
