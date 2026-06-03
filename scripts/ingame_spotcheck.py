@@ -2,20 +2,23 @@
 
 Read-only (safe to run anytime, even while cron is writing — WAL). For every
 rostered pitcher currently in a live game, prints their live line, the game
-context, and what the model is projecting right now (QS for starters, SVHD for
-relievers) so you can eyeball whether it's sane.
+context, and the model's *in-game* projection for THIS appearance — i.e. what
+`ingame.project_qs` / `project_svhd` returns for their current state (not the
+week total, which also includes other starts and obscures the in-game value).
 
     .venv/bin/python scripts/ingame_spotcheck.py
 """
 
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import db
-from app.sim import _norm_name
+from app import db, ingame
+from app.sim import (
+    _norm_name, STAT_GS, STAT_PITCH_GP, STAT_OUTS, STAT_ER, STAT_QS, STAT_SVHD,
+    load_team_roster, MAX_SVHD_RATE,
+)
 
 
 def _ip(outs: int) -> str:
@@ -36,67 +39,71 @@ def main() -> None:
             print("No games in progress right now — nothing to spot-check.")
             return
 
-        # game_pk -> live game context (score/inning), current period.
         games = {}
         for g in conn.execute(
             "SELECT game_pk, current_inning, inning_state, team_runs, opponent_runs "
             "FROM team_schedule WHERE matchup_period_id=? AND game_status='In Progress'",
             (period,),
         ).fetchall():
-            games[g["game_pk"]] = g
+            games[g["game_pk"]] = dict(g)
 
-        # normalized name -> {fantasy team, role, exp_qs, exp_svhd} from the
-        # latest snapshot's budgets (these carry the in-game-overridden values).
         teams = {t["id"]: t["name"] for t in conn.execute("SELECT id, name FROM teams")}
-        proj, snap_at = {}, None
+        team_ids = set()
         for m in conn.execute(
-            "SELECT * FROM matchups WHERE matchup_period_id=?", (period,)
+            "SELECT home_team_id, away_team_id FROM matchups WHERE matchup_period_id=?",
+            (period,),
         ).fetchall():
-            s = conn.execute(
-                "SELECT computed_at, details_json FROM wp_snapshots "
-                "WHERE matchup_id=? ORDER BY computed_at DESC LIMIT 1",
-                (m["id"],),
-            ).fetchone()
-            if not s or not s["details_json"]:
-                continue
-            snap_at = max(snap_at or s["computed_at"], s["computed_at"])
-            d = json.loads(s["details_json"])
-            for side, team_id in (("home_budgets", m["home_team_id"]),
-                                  ("away_budgets", m["away_team_id"])):
-                for b in d.get(side, []):
-                    proj[_norm_name(b["name"])] = {
-                        "team": teams.get(team_id), "role": b["role"],
-                        "exp_qs": b.get("exp_qs"), "exp_svhd": b.get("exp_svhd"),
-                    }
+            team_ids.add(m["home_team_id"]); team_ids.add(m["away_team_id"])
+
+        # norm name -> (fantasy team name, player dict w/ ros_stats)
+        roster_by_name = {}
+        for tid in team_ids:
+            for p in load_team_roster(conn, period, tid):
+                roster_by_name[_norm_name(p["full_name"])] = (teams.get(tid), p)
     finally:
         conn.close()
 
-    rows = []
-    for lp in live:
-        p = proj.get(_norm_name(lp["name"]))
-        if not p:
-            continue  # pitcher not on any roster — skip
-        g = games.get(lp["game_pk"], {})
+    def project(lp, g):
+        team, p = roster_by_name[_norm_name(lp["name"])]
+        ros = p["ros_stats"]
+        gs = ros.get(STAT_GS) or 0
+        gp = ros.get(STAT_PITCH_GP) or 0
+        is_sp = (gs / gp > 0.5) if gp else (p.get("default_position_id") == 1)
         margin = (g.get("team_runs") or 0) - (g.get("opponent_runs") or 0)
-        rows.append((p["team"], lp["name"], p["role"], lp,
-                     g.get("current_inning"), g.get("inning_state"), margin, p))
+        if is_sp and gs > 0:
+            outs_tot = ros.get(STAT_OUTS) or 0
+            state = ingame.StarterState(
+                game_status="In Progress", appeared=True, exited=not lp["is_last"],
+                outs=lp["outs"], er=lp["er"],
+                exp_outs_per_start=outs_tot / gs if gs else 18.0,
+                er_per_out=(ros.get(STAT_ER) or 0) / outs_tot if outs_tot else 0.13,
+                pregame_qs_rate=(ros.get(STAT_QS) or 0) / gs,
+            )
+            return team, "SP", f"QS {ingame.project_qs(state):.2f}", margin
+        svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp, MAX_SVHD_RATE) if gp else 0.0
+        state = ingame.RelieverState(
+            game_status="In Progress", appeared=True, exited=not lp["is_last"],
+            entered_save_situation=1 <= margin <= 3, lead_intact=margin > 0,
+            recorded_out=lp["outs"] >= 1, svhd_rate=svhd_rate,
+        )
+        return team, "RP", f"SVHD {ingame.project_svhd(state):.2f}", margin
 
-    print(f"\n=== Live in-game pitcher projections (period {period}, "
-          f"as of {snap_at}) ===")
-    print(f"{len(live)} pitchers in live games, {len(rows)} rostered:\n")
+    rows = [(lp, games.get(lp["game_pk"], {})) for lp in live
+            if _norm_name(lp["name"]) in roster_by_name]
+
+    print(f"\n=== Live in-game pitcher projections (period {period}) ===")
+    print(f"{len(live)} pitchers in live games, {len(rows)} rostered. "
+          f"'proj' = the model's projection for THIS appearance.\n")
     if not rows:
         print("  (no rostered pitchers currently in a live game)")
         return
-    for team, name, role, lp, inning, state, margin, p in sorted(rows, key=lambda r: r[0] or ""):
+    for lp, g in sorted(rows, key=lambda r: project(r[0], r[1])[0] or ""):
+        team, role, metric, margin = project(lp, g)
         status = "IN " if lp["is_last"] else "OUT"
-        ctx = f"inn {inning} {state or ''}, margin {margin:+d}"
         line = f"{_ip(lp['outs'])} IP, {lp['er']} ER, {lp['k']} K"
-        if role == "SP":
-            metric = f"proj QS {p['exp_qs']}"
-        else:
-            metric = f"proj SVHD {p['exp_svhd']}"
-        print(f"  [{team:<18}] {name:<22} {role} {status}  {line:<20} | "
-              f"{ctx:<26} | {metric}")
+        ctx = f"inn {g.get('current_inning')} {g.get('inning_state') or ''}, margin {margin:+d}"
+        print(f"  [{team:<20}] {lp['name']:<22} {role} {status}  "
+              f"{line:<20} | {ctx:<24} | proj {metric}")
     print()
 
 
