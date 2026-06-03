@@ -149,9 +149,14 @@ CREATE INDEX IF NOT EXISTS idx_live_pitchers_team
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Multiple cron tiers touch this DB. WAL lets readers (publish) run while a
+    # writer (fetch/compute) holds the lock, and busy_timeout makes a contending
+    # writer wait rather than erroring out with "database is locked".
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 

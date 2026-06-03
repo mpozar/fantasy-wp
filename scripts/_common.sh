@@ -37,15 +37,22 @@ LOCKFILE="$REPO/.app.lock"
 
 # Try to acquire the lock. Returns 0 on success, 1 if held by a live process.
 acquire_lock() {
+    # Clear a stale lockfile left by a dead process (best-effort).
     if [ -e "$LOCKFILE" ]; then
         local pid
         pid=$(cat "$LOCKFILE" 2>/dev/null || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             return 1
         fi
+        rm -f "$LOCKFILE"
     fi
-    echo $$ > "$LOCKFILE"
-    return 0
+    # Atomic create — noclobber makes the redirect fail if another process
+    # created the file first, closing the check-then-write race that let two
+    # tiers run (and write the DB) concurrently.
+    if ( set -o noclobber; echo $$ > "$LOCKFILE" ) 2>/dev/null; then
+        return 0
+    fi
+    return 1
 }
 
 # Block until the lock can be acquired.
