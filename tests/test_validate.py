@@ -5,6 +5,9 @@ functions missed — most notably the "rate components vanished → ERA projects
 absurdly low" bug, encoded here as a permanent regression guard.
 """
 
+import json
+import sqlite3
+
 from app import sim
 from app import validate as v
 
@@ -116,3 +119,191 @@ def test_clean_view_no_findings():
     view = _view(home_state=dict(_FULL_STATE), away_state=dict(_FULL_STATE),
                  cat_avg={48: (31.0, 31.0), sim.STAT_ERA: (4.5, 4.6)})
     assert v.check_view(view) == []
+
+
+# ── banked totals can't shrink ──
+
+def test_banked_regressed_flagged():
+    # H banked halved (64 → 33) — the exact incident shape
+    view = _view(home_state={1: 33}, home_state_prev={1: 64})
+    assert any(x.code == "INV_BANKED_REGRESSED" for x in v.check_banked_not_regressed(view))
+
+def test_banked_regressed_ignores_small_correction():
+    # a routine ESPN -1 stat correction must NOT cry wolf
+    view = _view(home_state={1: 63}, home_state_prev={1: 64})
+    assert v.check_banked_not_regressed(view) == []
+
+def test_banked_regressed_quiet_when_growing():
+    view = _view(home_state={1: 70}, home_state_prev={1: 64})
+    assert v.check_banked_not_regressed(view) == []
+
+
+# ── rate sanity bounds ──
+
+def test_rate_range_flagged():
+    view = _view(home_state={47: 412.0})   # ERA 412 = div-by-zero/derivation blowup
+    assert any(x.code == "INV_RATE_RANGE" for x in v.check_rate_ranges(view))
+
+def test_rate_range_ok():
+    view = _view(home_state={47: 3.9, 41: 1.2, 18: 0.78})
+    assert v.check_rate_ranges(view) == []
+
+
+# ── sim accounting ──
+
+def test_cat_sim_count_mismatch():
+    view = _view(n_sims=10000, tally=(4000, 5000, 1000),
+                 cat_counts=[{"stat_id": 1, "home_wins": 4000, "away_wins": 3000, "ties": 2000}])
+    assert any(x.code == "INV_CAT_SIM_COUNT" for x in v.check_category_sim_counts(view))
+
+def test_cat_sim_count_ok():
+    view = _view(n_sims=10000, tally=(4000, 5000, 1000),
+                 cat_counts=[{"stat_id": 1, "home_wins": 4000, "away_wins": 4000, "ties": 2000}])
+    assert v.check_category_sim_counts(view) == []
+
+def test_cat_sim_count_skipped_without_n():
+    assert v.check_category_sim_counts(_view()) == []
+
+
+# ── empty budgets (roster/projection fetch failed) ──
+
+def test_empty_budgets_flagged():
+    view = _view(home_budget_n=0, away_budget_n=12, home_state={1: 5})
+    assert any(x.code == "INV_EMPTY_BUDGETS" for x in v.check_empty_budgets(view))
+
+def test_empty_budgets_skipped_before_any_data():
+    assert v.check_empty_budgets(_view(home_budget_n=0, away_budget_n=0)) == []
+
+def test_empty_budgets_skipped_without_counts():
+    assert v.check_empty_budgets(_view(home_state={1: 5})) == []
+
+def test_empty_budgets_skipped_for_decided_week():
+    # a completed week legitimately has no budgets — must NOT flag
+    view = _view(home_budget_n=0, away_budget_n=0, home_state={1: 30}, winner="HOME")
+    assert v.check_empty_budgets(view) == []
+
+
+# ── league-level: correlated swing (the systemic fingerprint) ──
+
+def test_correlated_swing_flagged():
+    views = [_view(matchup_id=i, prev_home_wp=0.40, home_wp=0.70) for i in (1, 2, 3)]
+    f = v.check_correlated_swing(views)
+    assert len(f) == 1 and f[0].code == "ANOM_CORRELATED_SWING" and f[0].severity == "error"
+    assert f[0].matchup_id is None  # league-wide
+
+def test_correlated_swing_quiet_below_threshold():
+    views = [_view(matchup_id=1, prev_home_wp=0.40, home_wp=0.70),
+             _view(matchup_id=2, prev_home_wp=0.50, home_wp=0.52)]  # only 1 swung
+    assert v.check_correlated_swing(views) == []
+
+def test_correlated_swing_ignores_decided_weeks():
+    # 3 completed matchups whose final snapshot snapped to 100/0 must NOT re-fire
+    views = [_view(matchup_id=i, prev_home_wp=0.70, home_wp=1.0, winner="HOME")
+             for i in (1, 2, 3)]
+    assert v.check_correlated_swing(views) == []
+
+
+# ── pipeline freshness + published site (the output the user sees) ──
+
+def _mem_db():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE category_state (matchup_id INT, team_id INT, stat_id INT, "
+                 "score REAL, result TEXT, fetched_at TEXT, "
+                 "PRIMARY KEY (matchup_id, team_id, stat_id, fetched_at))")
+    conn.execute("CREATE TABLE wp_snapshots (matchup_id INT, computed_at TEXT, home_wp REAL, "
+                 "away_wp REAL, model_version TEXT, details_json TEXT, "
+                 "PRIMARY KEY (matchup_id, computed_at))")
+    return conn
+
+def _put_state(conn, mid, tid, stats, at):
+    for sid, sc in stats.items():
+        conn.execute("INSERT INTO category_state VALUES (?,?,?,?,?,?)", (mid, tid, sid, sc, None, at))
+    conn.commit()
+
+def test_pipeline_freshness_flags_stale():
+    conn = _mem_db()
+    conn.execute("INSERT INTO wp_snapshots VALUES (1,?,0.5,0.5,'mc-v1','{}')",
+                 ("2026-06-04T21:00:00+00:00",))
+    _put_state(conn, 1, 20, {1: 30}, "2026-06-04T21:00:00+00:00")
+    f = v.check_pipeline_freshness(conn, "2026-06-04T21:30:00+00:00")  # 30 min later
+    assert {x.code for x in f} == {"ANOM_STALE_SNAPSHOTS", "ANOM_STALE_FETCH"}
+
+def test_pipeline_freshness_quiet_when_fresh():
+    conn = _mem_db()
+    conn.execute("INSERT INTO wp_snapshots VALUES (1,?,0.5,0.5,'mc-v1','{}')",
+                 ("2026-06-04T21:28:00+00:00",))
+    _put_state(conn, 1, 20, {1: 30}, "2026-06-04T21:29:00+00:00")
+    assert v.check_pipeline_freshness(conn, "2026-06-04T21:30:00+00:00") == []
+
+def test_pipeline_freshness_skipped_without_now():
+    assert v.check_pipeline_freshness(_mem_db(), None) == []
+
+
+_FULL_BAT = [{"stat_id": s, "score": 1.0} for s in (1, 5, 20, 23, 18)]
+_FULL_PIT = [{"stat_id": s, "score": 1.0} for s in (48, 63, 47, 41, 83)]
+_FULL_BLK = {"batting": _FULL_BAT, "pitching": _FULL_PIT}
+
+def _write_site(tmp_path, weeks, generated_at="2026-06-04T21:30:00+00:00"):
+    p = tmp_path / "data.json"
+    p.write_text(json.dumps({"generated_at": generated_at, "weeks": weeks}))
+    return str(p)
+
+def test_site_missing_scores_flagged(tmp_path):
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _FULL_BLK, "away": _FULL_BLK},
+        {"matchup_id": 2, "home": {"batting": [], "pitching": []},
+                          "away": {"batting": [], "pitching": []}},
+    ]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    miss = [x for x in f if x.code == "INV_SITE_MISSING_SCORES"]
+    assert miss and all(x.matchup_id == 2 for x in miss)  # only the empty one flags
+
+def test_site_ok_full(tmp_path):
+    weeks = [{"matchup_period_id": 10, "state": "live",
+              "matchups": [{"matchup_id": 1, "home": _FULL_BLK, "away": _FULL_BLK}]}]
+    assert v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00") == []
+
+def test_site_upcoming_week_not_flagged(tmp_path):
+    weeks = [{"matchup_period_id": 11, "state": "upcoming", "matchups": [
+        {"matchup_id": 9, "home": {"batting": [], "pitching": []},
+                          "away": {"batting": [], "pitching": []}}]}]
+    assert v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00") == []
+
+def test_site_stale_generated_at(tmp_path):
+    path = _write_site(tmp_path, [], generated_at="2026-06-04T20:00:00+00:00")
+    f = v.check_published_site(path, "2026-06-04T21:00:00+00:00")  # 60 min old
+    assert any(x.code == "ANOM_SITE_STALE" for x in f)
+
+def test_site_missing_file(tmp_path):
+    f = v.check_published_site(str(tmp_path / "nope.json"), "2026-06-04T21:00:00+00:00")
+    assert any(x.code == "INV_SITE_MISSING" for x in f)
+
+def test_site_skipped_without_path():
+    assert v.check_published_site(None, "2026-06-04T21:00:00+00:00") == []
+
+
+# ── read-fix regression guard: an idle partial write must NOT drop banked cats ──
+
+def test_read_survives_idle_partial_write():
+    """The 2026-06-04 evening bug: an idle fetch wrote only components at a fresh
+    timestamp, and a single-MAX read dropped all scored cats. load_latest_state now
+    reads per-stat, so the scored cats persist from the last full (scrape) tick."""
+    conn = _mem_db()
+    scored = {1: 30, 5: 5, 20: 18, 23: 4, 48: 30, 63: 2, 83: 3, 18: 0.75, 47: 4.2, 41: 1.25}
+    components = {sim.STAT_ER: 14, sim.STAT_OUTS: 90, sim.STAT_P_H: 80, sim.STAT_AB: 200}
+    _put_state(conn, 1, 20, {**scored, **components}, "2026-06-04T21:30:00+00:00")  # live scrape
+    _put_state(conn, 1, 20, components, "2026-06-04T21:35:00+00:00")                # idle fetch
+    state = sim.load_latest_state(conn, 1, 20)
+    for sid in scored:
+        assert sid in state, f"scored cat {sid} dropped by the read"
+    assert state[1] == 30 and state[sim.STAT_OUTS] == 90  # banked values intact
+    # and the guard check sees a complete state → silent
+    assert v.check_current_cats_present(_view(home_state=state, away_state={})) == []
+
+def test_load_state_prev_per_stat():
+    conn = _mem_db()
+    _put_state(conn, 1, 20, {1: 30, 48: 20, sim.STAT_OUTS: 60}, "2026-06-04T21:30:00+00:00")
+    _put_state(conn, 1, 20, {1: 33, 48: 22, sim.STAT_OUTS: 66}, "2026-06-04T21:35:00+00:00")
+    prev = v._load_state_prev(conn, 1, 20)
+    assert prev == {1: 30, 48: 20, sim.STAT_OUTS: 60}

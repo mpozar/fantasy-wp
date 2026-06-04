@@ -839,9 +839,10 @@ def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
         else:
             periods = [cur]
 
-        findings = _v.run(conn, periods)
         now = _now_iso()
         today = now[:10]
+        data_json_path = str(Path(__file__).resolve().parent.parent / "docs" / "data.json")
+        findings = _v.run(conn, periods, now=now, data_json_path=data_json_path)
         with conn:
             for f in findings:
                 mid = f.matchup_id if f.matchup_id is not None else -1

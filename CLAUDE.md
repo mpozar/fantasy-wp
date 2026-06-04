@@ -617,9 +617,8 @@ sampling (`test_cadence.py`), the category_state monotonicity guard
 
 ### Validation / anomaly flags (`app validate`) — what it is
 
-`app/validate.py` runs cheap **invariant + anomaly checks over the computed
-snapshots** (reads stored snapshots + category_state, no sims). Why it exists:
-nearly every bug in this repo has been *emergent* — a fetch/plumbing change
+`app/validate.py` runs cheap **invariant + anomaly checks** (no sims). Why it
+exists: nearly every bug in this repo has been *emergent* — a fetch/plumbing change
 breaks what the sim consumes, so per-function unit tests still pass while the
 end-to-end output goes wrong (the dropped rate-components → an 8.37 ERA projecting
 3.76 failed *no* test; a human just eyeballed it). These checks assert
@@ -627,8 +626,26 @@ output-level properties at exactly that layer, and `fast.sh` runs `app validate`
 every 5-min tick (cheap, non-fatal), upserting findings into `validation_flags`
 (deduped per `code + matchup_id + flag_date`, with an `occurrences` count).
 
+**Four scopes of check** (the 2026-06-04 incidents — see `INCIDENTS.md` — drove the
+last three):
+- **per-matchup** — properties of one matchup's latest snapshot + current_state.
+- **league-level** (`_LEAGUE_CHECKS`, over *all* matchups in one tick) — a
+  *correlated* swing across many matchups is a systemic-data fingerprint, which no
+  per-matchup check can see. Scoped to active (`UNDECIDED`) weeks.
+- **pipeline freshness** — newest snapshot/fetch too old ⇒ a cron died silently and
+  the site is serving stale data. Needs `now`.
+- **published site** — reads the actual `docs/data.json` the site renders; a
+  started week with no scored-cat values = "no stats showing on the site". Needs the
+  data.json path. Both wired from `validate_cmd`.
+
 Two severities: **error** = an invariant that must never hold (almost certainly a
 bug); **warn** = an anomaly that's unusual but may be legit (eyeball it).
+
+**Design rule (learned the hard way):** a check's "should I fire?" gate must not
+depend on the data that can go missing — gate on something orthogonal (e.g. OUTS, a
+component a partial fetch still writes), or the check goes silent exactly when
+needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
+"no stats on site" is systemic corruption, never "probably benign."
 
 ### Triage runbook (safe to do from a cold start)
 
@@ -662,11 +679,21 @@ bug); **warn** = an anomaly that's unusual but may be legit (eyeball it).
 | `INV_WP_RANGE` / `INV_WP_SUM` | error | WP ∈ [0,1]; home+away ≤ 1 | always — arithmetic/derive bug. |
 | `INV_SP_UNITS_CAP` | error | SP starts ≤ ~2.3 per 7 days (scaled by period length) | bug *if* a normal 7-day week; **legit for long periods** (All-Star = 14 days → ~2.3 real). The cap is already period-aware. |
 | `INV_NEG_UNITS` | error | no negative budget units | always. |
-| `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, or games going live. Bug only if no such cause (diff the budgets/state across the tick). |
+| `INV_BANKED_REGRESSED` | error | a banked counting cat can only go up within a week | banked totals were lost (a dropped scrape line, a stale source the write-guard couldn't un-regress, a partial-write read artifact). Ignores ±1-type ESPN corrections; fires on real loss (the incident halved totals). |
+| `INV_RATE_RANGE` | error | derived ERA/WHIP/OPS (current or projected) within physical bounds | always — a derivation blowup (div-by-zero, missing components). Coarse backstop; the 3.76 bug stayed *in* range, so this won't catch that — `ANOM_RATE_DIVERGENCE` does. |
+| `INV_CAT_SIM_COUNT` | error | each category's & the matchup's home+away+ties == n_sims | always — the sim's win-counting is broken; every WP off it is suspect. |
+| `INV_EMPTY_BUDGETS` | error | an active matchup's side has ≥1 player budget | always — roster/projection fetch produced nothing → WP degenerates. Scoped to active (`UNDECIDED`) weeks; a finished week legitimately has none. |
+| `ANOM_CORRELATED_SWING` | error | <`MIN_CORRELATED` (3) active matchups swing ≥10pp in one compute | **almost always systemic** (banked-loss, partial fetch, read collapse) — both 2026-06-04 incidents. Detail reports how many moved toward 50/50 (the collapse signature). Rare false trigger only if a busy live slate genuinely moves many at once — check whether the moves are gradual/real vs a single wholesale jump. |
+| `ANOM_STALE_SNAPSHOTS` / `ANOM_STALE_FETCH` | warn | newest wp_snapshot / category_state fetch < `STALE_MINUTES` (20) old | a cron stalled (wedged lock, exception, macOS FDA revoked) — site serves stale data. Legit briefly while `medium.sh` holds the lock (≤5 min). |
+| `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |
+| `INV_SITE_MISSING` / `INV_SITE_UNREADABLE` | error | `data.json` exists and parses | publish never ran / wrote garbage. |
+| `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
+| `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, or games going live. Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
 | `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within 40% of current once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`); legit if the current sample is small/noisy. |
 
 Thresholds live as constants at the top of `app/validate.py`
-(`WP_SWING`, `RATE_DIVERGENCE`, `MAX_SP_UNITS_PER_WEEK`, …).
+(`WP_SWING`, `RATE_DIVERGENCE`, `MAX_SP_UNITS_PER_WEEK`, `BANKED_REGRESS_ABS/FRAC`,
+`RATE_BOUNDS`, `CORRELATED_SWING_EACH`, `MIN_CORRELATED`, `STALE_MINUTES`, …).
 
 ### Adding a new check
 
