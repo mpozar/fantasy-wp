@@ -577,9 +577,34 @@ keeps `pitcher_starts` current going forward).
 .venv/bin/pip install -e '.[dev]'   # once: installs pytest
 .venv/bin/python -m pytest -q
 ```
-Currently covers `app/ingame.py` (the in-progress QS/SVHD model — see "In-progress
-QS & SVHD" under the Sim model section for the design). `scripts/ingame_scenarios.py`
-prints projections for hand-built in-progress states for eyeballing/tuning.
+Covers `app/ingame.py` (in-progress QS/SVHD), `app/sim.py` cadence + extra-start
+sampling (`test_cadence.py`), the category_state monotonicity guard
+(`test_category_guard.py`), and the validation checks (`test_validate.py`).
+`scripts/ingame_scenarios.py` prints projections for hand-built in-progress states.
+
+### Validation / anomaly flags (`app validate`)
+
+`app/validate.py` runs cheap **invariant + anomaly checks over the computed
+snapshots** (no sims), because most bugs here have been *emergent* — a fetch/plumbing
+change breaks what the sim consumes, so per-function unit tests pass while the
+end-to-end output goes wrong (e.g. the dropped rate-components → an 8.37 ERA
+projecting 3.76; nothing failed, a human just eyeballed it). These checks assert
+output-level properties at exactly that layer.
+
+- **errors** (invariants that must never hold): rate components present in
+  current_state once a week is underway; projected counting totals ≥ current;
+  WP ∈ [0,1]; SP units ≤ ~2.3/7-days (scaled by period length — the All-Star
+  break is a 14-day period); no negative units.
+- **warns** (anomalies to eyeball): WP swing ≥15pp vs prior compute; projected
+  rate >40% off current once a real sample is banked.
+
+`fast.sh` runs `app validate` every tick (cheap, non-fatal) and upserts findings
+into `validation_flags` (deduped per code+matchup+day, with occurrences). Triage
+loop: `app validate --list` shows open flags; bring them here and ask me to
+investigate whether each is a real bug or legit (e.g. the All-Star 14-day period
+tripped the SP-units cap → not a bug → tightened the check to be period-aware).
+`app validate --all` sweeps every period on demand. When adding a new failure
+mode, add both a check here and a unit test in `test_validate.py`.
 
 ### wp_snapshot history retention
 

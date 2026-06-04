@@ -782,6 +782,76 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         conn.close()
 
 
+@cli.command("validate")
+@click.option("--all", "all_periods", is_flag=True,
+              help="Check every regular-season period (default: current only).")
+@click.option("--future", "future_periods", is_flag=True,
+              help="Check current + future periods.")
+@click.option("--list", "list_only", is_flag=True,
+              help="List open (unresolved) flags and exit.")
+def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool) -> None:
+    """Run invariant + anomaly checks over the latest WP snapshots and record
+    findings in `validation_flags`. Cheap (no sims) — safe to run every fast tick.
+    Review open flags with `--list`, then investigate in Claude Code."""
+    from app import validate as _v
+
+    conn = db.connect()
+    try:
+        if list_only:
+            rows = conn.execute(
+                "SELECT code, matchup_id, severity, detail, occurrences, first_seen "
+                "FROM validation_flags WHERE resolved=0 "
+                "ORDER BY severity, last_seen DESC").fetchall()
+            if not rows:
+                click.echo("No open validation flags.")
+                return
+            click.echo(f"{len(rows)} open flag(s):")
+            for r in rows:
+                mid = "" if r["matchup_id"] in (None, -1) else f" m{r['matchup_id']}"
+                click.echo(f"  [{r['severity']:<5}] {r['code']}{mid}  ×{r['occurrences']}  "
+                           f"{r['detail']}  (since {r['first_seen'][:16]})")
+            return
+
+        cur = _current_matchup_period(conn)
+        last = _last_regular_season_period(conn)
+        if cur is None or last is None:
+            raise click.ClickException("Missing period metadata. Run `app fetch` first.")
+        if all_periods:
+            periods = list(range(1, last + 1))
+        elif future_periods:
+            periods = list(range(cur, last + 1))
+        else:
+            periods = [cur]
+
+        findings = _v.run(conn, periods)
+        now = _now_iso()
+        today = now[:10]
+        with conn:
+            for f in findings:
+                mid = f.matchup_id if f.matchup_id is not None else -1
+                conn.execute(
+                    """
+                    INSERT INTO validation_flags
+                        (code, matchup_id, flag_date, severity, detail,
+                         first_seen, last_seen, occurrences, resolved)
+                    VALUES (?,?,?,?,?,?,?,1,0)
+                    ON CONFLICT(code, matchup_id, flag_date) DO UPDATE SET
+                        last_seen=excluded.last_seen,
+                        occurrences=validation_flags.occurrences+1,
+                        detail=excluded.detail
+                    """,
+                    (f.code, mid, today, f.severity, f.detail, now, now),
+                )
+        errs = sum(1 for f in findings if f.severity == "error")
+        click.echo(f"Validation periods {periods[0]}..{periods[-1]}: "
+                   f"{errs} error(s), {len(findings) - errs} warning(s).")
+        for f in findings:
+            mid = "" if f.matchup_id is None else f" m{f.matchup_id}"
+            click.echo(f"  [{f.severity:<5}] {f.code}{mid}: {f.detail}")
+    finally:
+        conn.close()
+
+
 def _current_matchup_period(conn) -> int | None:
     """Use the rosters table as the source-of-truth: refresh-rosters writes
     only for the current period. Falls back to the smallest period with

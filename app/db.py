@@ -175,6 +175,26 @@ CREATE TABLE IF NOT EXISTS player_injuries (
     return_date  TEXT,            -- YYYY-MM-DD, ESPN's estimated return
     fetched_at   TEXT NOT NULL
 );
+
+-- ── Validation / anomaly flags (app/validate.py) ──
+-- Invariant violations ('error') and anomalies ('warn') from the cheap
+-- post-compute checks. Deduped per (code, matchup_id, flag_date) so a recurring
+-- condition bumps occurrences/last_seen rather than spamming a row every tick.
+-- Review with `app validate --list`; investigate open flags in Claude Code.
+CREATE TABLE IF NOT EXISTS validation_flags (
+    code         TEXT NOT NULL,     -- e.g. INV_RATE_COMPONENTS_MISSING, ANOM_WP_SWING
+    matchup_id   INTEGER,           -- NULL for league-wide
+    flag_date    TEXT NOT NULL,     -- YYYY-MM-DD (dedup window)
+    severity     TEXT NOT NULL,     -- 'error' | 'warn'
+    detail       TEXT,
+    first_seen   TEXT NOT NULL,
+    last_seen    TEXT NOT NULL,
+    occurrences  INTEGER NOT NULL DEFAULT 1,
+    resolved     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (code, matchup_id, flag_date)
+);
+CREATE INDEX IF NOT EXISTS idx_validation_open
+    ON validation_flags (resolved, last_seen DESC);
 """
 
 

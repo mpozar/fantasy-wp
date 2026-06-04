@@ -54,5 +54,10 @@ source "$(dirname "$0")/_common.sh"
     fi
     log fast "step git: $((SECONDS - git_start))s"
 
+    # Invariant + anomaly checks over the just-computed current-period snapshots
+    # (cheap, no sims). Records flags in validation_flags for later review via
+    # `app validate --list`. Non-fatal: never let a check hiccup break the tick.
+    timed fast validate "$APP" validate || log fast "validate step errored (non-fatal)"
+
     log fast "done"
 } >> "$LOGS/fast.log" 2>&1
