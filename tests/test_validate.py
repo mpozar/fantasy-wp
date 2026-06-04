@@ -115,6 +115,30 @@ def test_wp_swing_warn():
     assert v.check_wp_swing(_view(prev_home_wp=0.50, home_wp=0.55)) == []
 
 
+# ── flapping: WP oscillating back-and-forth (flaky source), not a one-way swing ──
+
+def test_flapping_flagged():
+    view = _view(wp_history=[0.30, 0.50, 0.30, 0.50])  # up, down, up = 2 reversals
+    assert any(x.code == "ANOM_WP_FLAPPING" for x in v.check_wp_flapping(view))
+
+def test_flapping_quiet_on_single_swing():
+    view = _view(wp_history=[0.30, 0.30, 0.70, 0.72])  # one big move, then steady
+    assert v.check_wp_flapping(view) == []
+
+def test_flapping_quiet_on_swing_then_recover():
+    # the incident shape: jump up, hold, drop back = 1 reversal, below threshold
+    view = _view(wp_history=[0.04, 0.44, 0.44, 0.44, 0.04])
+    assert v.check_wp_flapping(view) == []
+
+def test_flapping_quiet_on_mc_noise():
+    view = _view(wp_history=[0.500, 0.503, 0.498, 0.501, 0.499])  # jitter < 8pp
+    assert v.check_wp_flapping(view) == []
+
+def test_flapping_skipped_for_decided_week():
+    view = _view(wp_history=[0.30, 0.50, 0.30, 0.50], winner="HOME")
+    assert v.check_wp_flapping(view) == []
+
+
 def test_clean_view_no_findings():
     view = _view(home_state=dict(_FULL_STATE), away_state=dict(_FULL_STATE),
                  cat_avg={48: (31.0, 31.0), sim.STAT_ERA: (4.5, 4.6)})

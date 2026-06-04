@@ -78,6 +78,11 @@ WP_DETAILS_TOL = 0.005         # home_wp column vs details_json tally; they're t
                                # sim (column = wins/n_sims) so any real gap is a bug —
                                # hand-edited (edited=1) rows are skipped, not toleranced.
 
+FLAP_WINDOW = 6                # snapshots of WP history to scan for oscillation
+FLAP_LEG = 0.08               # a move ≥8pp counts as "significant" (filters MC jitter)
+FLAP_MIN_REVERSALS = 2         # this many direction flips among significant moves = flapping
+                               # (distinct from a one-way swing or a swing-then-recover)
+
 
 @dataclass
 class Finding:
@@ -208,6 +213,27 @@ def check_wp_swing(view) -> list[Finding]:
     return []
 
 
+def check_wp_flapping(view) -> list[Finding]:
+    """home_wp oscillating back-and-forth across recent ticks (up, down, up …) — as
+    opposed to one swing, or a swing that recovers — points at a stat that keeps
+    being written then dropped then rewritten (a flaky scrape/source regressing a
+    counting cat, e.g. K 26→20→26). A single per-tick swing can't reveal this;
+    `ANOM_WP_SWING` would just fire repeatedly without naming the pattern."""
+    if not _active(view):
+        return []
+    h = [x for x in (view.get("wp_history") or []) if x is not None]
+    if len(h) < 3:
+        return []
+    signs = [1 if (b - a) > 0 else -1 for a, b in zip(h, h[1:]) if abs(b - a) >= FLAP_LEG]
+    reversals = sum(1 for x, y in zip(signs, signs[1:]) if x != y)
+    if reversals >= FLAP_MIN_REVERSALS:
+        return [Finding("ANOM_WP_FLAPPING", "warn", view["matchup_id"],
+                        f"home_wp oscillated ({reversals} reversals ≥{FLAP_LEG * 100:.0f}pp) "
+                        f"over the last {len(h)} ticks {[round(x, 2) for x in h]} — a stat may "
+                        f"be flapping (flaky scrape/source writing then dropping a cat)")]
+    return []
+
+
 def check_rate_divergence(view) -> list[Finding]:
     """A projected rate far from the current one, once a real sample is banked,
     is the '8.37 ERA projecting 3.76' smell."""
@@ -335,7 +361,7 @@ def check_empty_budgets(view) -> list[Finding]:
 _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
            check_banked_not_regressed, check_rate_ranges, check_category_sim_counts,
            check_wp_details_consistency, check_empty_budgets, check_proj_vs_current,
-           check_units, check_wp_swing, check_rate_divergence]
+           check_units, check_wp_swing, check_wp_flapping, check_rate_divergence]
 
 # League-level checks operate on *all* views at once (cross-matchup correlations).
 _LEAGUE_CHECKS = []  # populated below (after the functions are defined)
@@ -551,7 +577,8 @@ def load_view(conn, matchup_id: int) -> dict | None:
         (matchup_id,)).fetchone()
     snaps = conn.execute(
         "SELECT home_wp, away_wp, details_json, edited FROM wp_snapshots "
-        "WHERE matchup_id=? ORDER BY computed_at DESC LIMIT 2", (matchup_id,)).fetchall()
+        "WHERE matchup_id=? ORDER BY computed_at DESC LIMIT ?",
+        (matchup_id, FLAP_WINDOW)).fetchall()
     if not m or not snaps:
         return None
     import json
@@ -568,6 +595,7 @@ def load_view(conn, matchup_id: int) -> dict | None:
         "home_wp": snaps[0]["home_wp"],
         "away_wp": snaps[0]["away_wp"],
         "prev_home_wp": snaps[1]["home_wp"] if len(snaps) > 1 else None,
+        "wp_history": [s["home_wp"] for s in reversed(snaps)],  # chronological (oldest→newest)
         "cat_avg": {c["stat_id"]: (c.get("home_avg"), c.get("away_avg")) for c in cat_wp},
         "budgets": (d.get("home_budgets", []) + d.get("away_budgets", [])),
         "home_budget_n": len(d.get("home_budgets", [])),
