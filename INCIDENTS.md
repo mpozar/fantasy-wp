@@ -5,6 +5,43 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-06-04 (evening) — idle-fetch dropped scored cats; WP collapsed toward 50/50
+
+**TL;DR.** When the last live game of the slate went Final (~21:35 UTC), the next
+`fetch` took the idle path (`scrape skipped (no games in progress)`). Current-period
+`category_state` is split-sourced — the live DOM scrape owns the 10 *scored display
+cats*; REST writes only the raw rate components — so the idle fetch wrote **only
+components**, at a fresh `fetched_at`. All three readers loaded current state by a
+single `MAX(fetched_at)`, so they saw only that components-only tick and **dropped
+all 10 scored cats**, making the sim project from ≈zero banked → every WP collapsed
+toward 50/50. It self-recovered at 22:00 and was fully fixed at 22:07.
+
+This is a *different mechanism* from the morning incident below (that dropped the
+rate **components**; this dropped the scored **display cats** via the read), but the
+same family: a partial current-period write that a single-timestamp read mistook for
+the complete state.
+
+**Root cause fixed in code** (commit `38b4959`): `load_latest_state` (sim.py) and
+`_latest_scores` / `_latest_score_rows` (cli.py) now read the latest value **per
+(matchup, team, stat)**, mirroring the `last_good` guard loader, so a partial tick
+can't hide earlier stats. Added `INV_CURRENT_CATS_MISSING` (validate.py) — an error
+flag if any scored cat is absent once a side has pitched (gated on OUTS, which
+survives the drop). The old checks stayed quiet because ER/OUTS were still present
+and the move only tripped the soft `ANOM_WP_SWING` warn.
+
+### Hand-edited snapshots
+
+**Period 10 (week of 2026-06-01), matchups 55–60**, the **5 snapshots** at
+`computed_at` ∈ {21:35:15, 21:40:14, 21:45:15, 21:50:14, 21:55:14} UTC (2026-06-04;
+≈ 23:35–23:55 CEST) had `home_wp`/`away_wp` **linearly interpolated** between the
+last good snapshot (`21:30:28`) and the first recovered one (`22:00:15`). 30 rows
+total. `details_json` was **not** touched — it still holds the original *collapsed*
+computed WP (`home_wins / n_sims` ≈ 50/50 for that window), so column ≠ details_json
+there, same caveat as the morning entry. Everywhere outside those 5 ticks the columns
+are genuine model output.
+
+---
+
 ## 2026-06-04 — corrupted ERA/WHIP projections + manually smoothed WP snapshots
 
 **TL;DR.** A fetch fix shipped earlier in the day accidentally dropped the raw
