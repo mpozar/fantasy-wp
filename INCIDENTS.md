@@ -21,6 +21,22 @@ rate **components**; this dropped the scored **display cats** via the read), but
 same family: a partial current-period write that a single-timestamp read mistook for
 the complete state.
 
+**Confirmed distinct (verified against the `category_state` write log, not assumed).**
+The two have *opposite* signatures for the same matchups (e.g. m57 home):
+
+| window | scored cats (1,5,20,23,48,63,83,18,47,41) | rate components (ER,OUTS,P_H,…) |
+|---|---|---|
+| 06:00 (pre-bug) | 10/10 ✓ | 10/10 ✓ |
+| **morning** 06:16–20:02 | **10/10 ✓** | **0/10 ✗** ← components not written |
+| 20:02–21:30 (healthy gap) | 10/10 ✓ | 10/10 ✓ |
+| **evening** 21:35–21:55 | **0/10 ✗** ← scored cats dropped by the read | **10/10 ✓** |
+
+So the morning was a *fetch-write* regression (current-period REST writes skipped the
+rate components — the "over-broad first cut" noted in CLAUDE.md's "Live data
+freshness"), and the evening was a *read* bug (split-source write + single-MAX read).
+Opposite halves of the split missing, opposite layers at fault — not the same bug, so
+the two entries stay separate.
+
 **Root cause fixed in code** (commit `38b4959`): `load_latest_state` (sim.py) and
 `_latest_scores` / `_latest_score_rows` (cli.py) now read the latest value **per
 (matchup, team, stat)**, mirroring the `last_good` guard loader, so a partial tick
