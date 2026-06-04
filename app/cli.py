@@ -15,6 +15,32 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Rate categories (OPS/ERA/WHIP) — derived ratios that legitimately move either
+# direction, so they're never monotonicity-guarded.
+_RATE_STAT_IDS = frozenset({sim.STAT_OPS, sim.STAT_ERA, sim.STAT_WHIP})
+
+
+def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
+                          score, result, now: str) -> bool:
+    """Upsert one current-period category_state cell with a monotonicity guard.
+
+    Counting stats (everything except the rate cats) are cumulative within a
+    scoring period, so a value *below* the last-good stored one is a stale or
+    partial read (laggy REST, a mid-render scrape, a two-way line dropped, …) —
+    reject it and keep the higher last-good. Rates are written as-is. Returns
+    True if a row was written."""
+    if sid not in _RATE_STAT_IDS and score is not None:
+        lg = last_good.get((mid, tid, sid))
+        if lg is not None and score < lg:
+            return False
+    conn.execute(
+        "INSERT OR REPLACE INTO category_state "
+        "(matchup_id, team_id, stat_id, score, result, fetched_at) VALUES (?,?,?,?,?,?)",
+        (mid, tid, sid, score, result, now),
+    )
+    return True
+
+
 def _overlay_espn_probables(games: list[dict], start, end) -> int:
     """Fill `probable_pitcher_name` from ESPN's public feed for games where MLB
     hasn't posted one yet — ESPN's feed leads MLB statsapi by a day or two.
@@ -135,14 +161,21 @@ def fetch() -> None:
         last_reg = shape.last_regular_season_period
         current_period = shape.current_matchup_period
 
-        # The DOM scrape (below) is the source of truth for the CURRENT period:
-        # ESPN's REST scoreByStat lags badly and does NOT reliably catch up even
-        # when no games are live (observed hours-stale after a slate finalized).
-        # So once a current-period matchup has any stored scores, never let a
-        # REST write overwrite them — otherwise an idle tick (scrape skipped, no
-        # games in progress) regresses good live-scraped scores back to stale
-        # REST values. We still seed from REST the first time (no rows yet), and
-        # the next in-progress scrape takes over. Past/future periods: REST only.
+        # CURRENT-period category_state comes from two sources, by stat_id:
+        #   - The DOM scrape owns the league's *display* categories (the scored
+        #     cats incl. ERA/WHIP/OPS as rates). REST lags badly and doesn't
+        #     reliably catch up when idle (seen hours-stale after a slate), so we
+        #     must NOT let REST overwrite these — the original clobber bug.
+        #   - REST writes only the raw rate *components* (ER, OUTS, P_H, P_BB,
+        #     AB, 2B, …) that the scrape can't see but the sim needs to derive
+        #     projected ERA/WHIP/OPS. (Skipping these entirely — the over-broad
+        #     first cut — made rate projections ignore the current week's innings.)
+        # On the FIRST fetch of a matchup (no rows yet) we seed everything from
+        # REST so it isn't empty before the first scrape. A monotonicity guard
+        # (`_write_category_score`) rejects any counting-stat read below last-good
+        # so a stale/partial source can't regress it. Past/future periods: REST
+        # only, no scrape, no guard.
+        display_cats = {c.stat_id for c in shape.categories}
         seeded_current = {
             r["matchup_id"] for r in conn.execute(
                 "SELECT DISTINCT cs.matchup_id FROM category_state cs "
@@ -150,6 +183,21 @@ def fetch() -> None:
                 "WHERE m.matchup_period_id = ?", (current_period,),
             ).fetchall()
         }
+        # Last-good current-period scores, for the monotonicity guard — latest
+        # value *per (matchup, team, stat)* (a stat not written every tick, like
+        # the just-restored ER/OUTS, must compare against its own last value, not
+        # the matchup's overall latest fetch).
+        last_good: dict = {}
+        for r in conn.execute(
+            "SELECT cs.matchup_id, cs.team_id, cs.stat_id, cs.score "
+            "FROM category_state cs JOIN matchups m ON m.id = cs.matchup_id "
+            "WHERE m.matchup_period_id = ? AND cs.fetched_at = "
+            "(SELECT MAX(fetched_at) FROM category_state c2 WHERE c2.matchup_id = cs.matchup_id "
+            " AND c2.team_id = cs.team_id AND c2.stat_id = cs.stat_id)",
+            (current_period,),
+        ).fetchall():
+            last_good[(r["matchup_id"], r["team_id"], r["stat_id"])] = r["score"]
+
         for m in matchups:
             if m["matchup_period_id"] > last_reg:
                 continue
@@ -168,21 +216,25 @@ def fetch() -> None:
                 (m["matchup_id"], m["matchup_period_id"],
                  m["home_team_id"], m["away_team_id"], m["winner"], now),
             )
-            # Skip REST scores for an already-seeded current-period matchup —
-            # the scrape owns it (see above).
-            if (m["matchup_period_id"] == current_period
-                    and m["matchup_id"] in seeded_current):
-                continue
+            cur_p = m["matchup_period_id"] == current_period
+            seeded = m["matchup_id"] in seeded_current
             for s in m["scores"]:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO category_state
-                        (matchup_id, team_id, stat_id, score, result, fetched_at)
-                    VALUES (?,?,?,?,?,?)
-                    """,
-                    (m["matchup_id"], s["team_id"], s["stat_id"],
-                     s["score"], s["result"], now),
-                )
+                if cur_p and seeded and s["stat_id"] in display_cats:
+                    continue  # scrape owns display cats; REST only fills components
+                if cur_p:
+                    _write_category_score(conn, last_good, m["matchup_id"],
+                                          s["team_id"], s["stat_id"],
+                                          s["score"], s["result"], now)
+                else:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO category_state
+                            (matchup_id, team_id, stat_id, score, result, fetched_at)
+                        VALUES (?,?,?,?,?,?)
+                        """,
+                        (m["matchup_id"], s["team_id"], s["stat_id"],
+                         s["score"], s["result"], now),
+                    )
         conn.commit()
 
         # Override the (lagging) REST scoreByStat for the CURRENT period with
@@ -225,16 +277,13 @@ def fetch() -> None:
                     for s in rows:
                         if s["score"] is None:
                             continue
-                        conn.execute(
-                            """
-                            INSERT OR REPLACE INTO category_state
-                                (matchup_id, team_id, stat_id, score, result, fetched_at)
-                            VALUES (?,?,?,?,?,?)
-                            """,
-                            (m["matchup_id"], team_id, s["stat_id"],
-                             s["score"], s["result"], now),
-                        )
-                        scraped_count += 1
+                        # Same monotonicity guard: a scrape that drops a two-way
+                        # player's line or reads mid-render can regress a counting
+                        # cat (e.g. K 26→20) — reject it, keep last-good.
+                        if _write_category_score(conn, last_good, m["matchup_id"],
+                                                 team_id, s["stat_id"],
+                                                 s["score"], s["result"], now):
+                            scraped_count += 1
             conn.commit()
     finally:
         conn.close()
