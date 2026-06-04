@@ -307,3 +307,28 @@ def test_load_state_prev_per_stat():
     _put_state(conn, 1, 20, {1: 33, 48: 22, sim.STAT_OUTS: 66}, "2026-06-04T21:35:00+00:00")
     prev = v._load_state_prev(conn, 1, 20)
     assert prev == {1: 30, 48: 20, sim.STAT_OUTS: 60}
+
+
+# ── fetch-time scrape health (the silent live-scrape failure) ──
+
+def test_scrape_health_flags_empty_during_live_games():
+    f = v.check_scrape_health(in_progress=3, scraped_cells=0)
+    assert len(f) == 1 and f[0].code == "ANOM_SCRAPE_EMPTY" and f[0].severity == "warn"
+
+def test_scrape_health_ok_when_scrape_produced_cells():
+    assert v.check_scrape_health(in_progress=3, scraped_cells=120) == []
+
+def test_scrape_health_quiet_when_idle():
+    assert v.check_scrape_health(in_progress=0, scraped_cells=0) == []
+
+
+def test_persist_upserts_and_dedups():
+    conn = _mem_db()
+    conn.execute("CREATE TABLE validation_flags (code TEXT, matchup_id INT, flag_date TEXT, "
+                 "severity TEXT, detail TEXT, first_seen TEXT, last_seen TEXT, "
+                 "occurrences INT, resolved INT, PRIMARY KEY (code, matchup_id, flag_date))")
+    finding = v.Finding("ANOM_SCRAPE_EMPTY", "warn", None, "scrape empty")
+    v.persist(conn, [finding], "2026-06-04T21:00:00+00:00")
+    v.persist(conn, [finding], "2026-06-04T21:05:00+00:00")  # same day → bump occurrences
+    row = conn.execute("SELECT matchup_id, occurrences, resolved FROM validation_flags").fetchone()
+    assert row["matchup_id"] == -1 and row["occurrences"] == 2 and row["resolved"] == 0

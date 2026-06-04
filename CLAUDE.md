@@ -638,6 +638,11 @@ last three):
   started week with no scored-cat values = "no stats showing on the site". Needs the
   data.json path. Both wired from `validate_cmd`.
 
+Plus one **fetch-time** check (`check_scrape_health`, called from `fetch`, not `run`,
+and persisted via the shared `validate.persist`): a live-games scrape that silently
+returned nothing → `ANOM_SCRAPE_EMPTY`. It lives at fetch because only `fetch` knows
+a scrape was attempted; `run` can't infer it after the fact.
+
 Two severities: **error** = an invariant that must never hold (almost certainly a
 bug); **warn** = an anomaly that's unusual but may be legit (eyeball it).
 
@@ -688,6 +693,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |
 | `INV_SITE_MISSING` / `INV_SITE_UNREADABLE` | error | `data.json` exists and parses | publish never ran / wrote garbage. |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
+| `ANOM_SCRAPE_EMPTY` | warn | games in progress ⇒ the live scrape returns >0 cells | the DOM scrape silently failed (auth wall, expired `.playwright_profile`, selector drift) and `fetch` fell back to laggy REST — display cats rot *while games are live*. Raised at **fetch** time (not `run`), since only `fetch` knows a scrape was attempted. Fix: re-run `scripts/espn_auth_setup.py`. ×N occurrences/day = persistent vs a one-off hiccup. |
 | `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, or games going live. Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
 | `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within 40% of current once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`); legit if the current sample is small/noisy. |
 

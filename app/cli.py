@@ -285,6 +285,17 @@ def fetch() -> None:
                                                  s["score"], s["result"], now):
                             scraped_count += 1
             conn.commit()
+
+        # Fetch-time health: a live scrape that silently produced nothing rots the
+        # display cats while games are live. Flag it here (recorded into
+        # validation_flags so it shows in `app validate --list`) — `validate` itself
+        # can't see whether a scrape was attempted.
+        from app import validate as _v
+        health = _v.check_scrape_health(in_progress, scraped_count)
+        if health:
+            _v.persist(conn, health, now)
+            for f in health:
+                click.echo(f"  [{f.severity}] {f.code}: {f.detail}", err=True)
     finally:
         conn.close()
 
@@ -840,25 +851,9 @@ def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
             periods = [cur]
 
         now = _now_iso()
-        today = now[:10]
         data_json_path = str(Path(__file__).resolve().parent.parent / "docs" / "data.json")
         findings = _v.run(conn, periods, now=now, data_json_path=data_json_path)
-        with conn:
-            for f in findings:
-                mid = f.matchup_id if f.matchup_id is not None else -1
-                conn.execute(
-                    """
-                    INSERT INTO validation_flags
-                        (code, matchup_id, flag_date, severity, detail,
-                         first_seen, last_seen, occurrences, resolved)
-                    VALUES (?,?,?,?,?,?,?,1,0)
-                    ON CONFLICT(code, matchup_id, flag_date) DO UPDATE SET
-                        last_seen=excluded.last_seen,
-                        occurrences=validation_flags.occurrences+1,
-                        detail=excluded.detail
-                    """,
-                    (f.code, mid, today, f.severity, f.detail, now, now),
-                )
+        _v.persist(conn, findings, now)
         errs = sum(1 for f in findings if f.severity == "error")
         click.echo(f"Validation periods {periods[0]}..{periods[-1]}: "
                    f"{errs} error(s), {len(findings) - errs} warning(s).")

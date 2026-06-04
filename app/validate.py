@@ -383,6 +383,44 @@ def check_pipeline_freshness(conn, now_iso: str | None) -> list[Finding]:
     return out
 
 
+def check_scrape_health(in_progress: int, scraped_cells: int) -> list[Finding]:
+    """Fetch-time guard (called from `fetch`, not `run`). During live games the DOM
+    scrape is the only fresh source for the display cats — REST lags 5-30 min. If it
+    produced nothing (auth wall, expired Playwright profile, selector drift), `fetch`
+    silently falls back to stale REST and the display cats quietly rot *while games
+    are live*, exactly when freshness matters most. `run`'s checks can't see this —
+    they don't know a scrape was even attempted — so we flag it at the source."""
+    if in_progress and scraped_cells == 0:
+        return [Finding("ANOM_SCRAPE_EMPTY", "warn", None,
+                        f"{in_progress} game(s) in progress but the live scrape returned "
+                        f"0 cells — display cats falling back to laggy REST; check ESPN "
+                        f"auth / .playwright_profile (re-run scripts/espn_auth_setup.py)")]
+    return []
+
+
+def persist(conn, findings: list[Finding], now: str) -> None:
+    """Upsert findings into `validation_flags`, deduped per code+matchup+day (a
+    recurrence the same day bumps `occurrences`/`last_seen`). Shared by `validate_cmd`
+    and the fetch-time `check_scrape_health` so flags are written one way."""
+    today = now[:10]
+    with conn:
+        for f in findings:
+            mid = f.matchup_id if f.matchup_id is not None else -1
+            conn.execute(
+                """
+                INSERT INTO validation_flags
+                    (code, matchup_id, flag_date, severity, detail,
+                     first_seen, last_seen, occurrences, resolved)
+                VALUES (?,?,?,?,?,?,?,1,0)
+                ON CONFLICT(code, matchup_id, flag_date) DO UPDATE SET
+                    last_seen=excluded.last_seen,
+                    occurrences=validation_flags.occurrences+1,
+                    detail=excluded.detail
+                """,
+                (f.code, mid, today, f.severity, f.detail, now, now),
+            )
+
+
 def check_published_site(data_json_path: str | None, now_iso: str | None) -> list[Finding]:
     """Validate the *actual published artifact* the site renders. Catches the
     user-visible failure directly: a started week whose matchup blocks have no
