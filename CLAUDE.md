@@ -243,6 +243,16 @@ misjudged; the accurate version tracks entry score across ticks. Also still wort
 a one-time confirm that ESPN's live totals exclude in-progress QS/SVHD (the
 "banked at Final" assumption); if they don't, exited-while-live would double-count.
 
+Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
+save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
+in-game QS path on two live starters (a cruising 0-ER start projected ~0.82 and
+fell as runs scored). One latent quirk surfaced: `game_script_gate(margin, inning)`
+returned **1.0 for a −5 margin** (a 5-run *deficit*). It's harmless today because a
+reliever who has *entered* with no lead short-circuits to 0 before the gate — but
+on the *not-yet-entered* path the gate apparently doesn't damp large deficits, so a
+rostered reliever projected into a blowout-loss game he hasn't entered could get
+undeserved SVHD credit. Worth a look when revisiting the SVHD model.
+
 ### Variance / overdispersion
 
 We Poisson-sample most counters, but ER is the one stat with measurable overdispersion in real MLB data. Per-(stat, role) VMRs are empirically measured by `scripts/analyze_variance.py` from ~14k hitter games and ~5.4k pitcher appearances in this season's MLB statsapi game logs. Result table is in the script and the key bits are baked into `sim.py`:
@@ -322,6 +332,8 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 `_probable_starts_for` matches by normalized name (`_norm_name`: strip diacritics → lowercase → alphanumeric only). Diacritic stripping matters — MLB's probable feed accents names ("Cristopher Sánchez") while ESPN's rosters often don't ("Sanchez"); without normalization they miss and the SP loses credit for a confirmed start (and with the hybrid estimate, the announced game is *also* excluded from the open-game weight, so the start vanishes entirely). Remaining mismatch risk is genuinely different spellings (nicknames, Jr./Sr., punctuation) — rare. The reverse, two names colliding after normalization, is also possible but rare.
 
 When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
+
+**Source lag — ESPN leads MLB statsapi.** We source probables from MLB statsapi (`mlb.fetch_schedule`), but ESPN's fantasy UI surfaces expected probables a day or two earlier than MLB officially posts them. So a start that's already showing on ESPN can still be un-probabled in our data — it then appears as a *cadence prediction* (the rotation model projecting that turn) rather than a confirmed probable, and hardens to a fixed start once MLB posts it. Observed 2026-06-03: ESPN listed Roupp (Sat) and Gausman (Sun) while MLB still had those games open; the cadence model had already projected both (~0.88 and ~0.34). Not a bug — but if matching ESPN's UI exactly matters, the follow-up is to also source probables from the ESPN scrape (we already run it for live scores).
 
 ## Cron architecture
 
