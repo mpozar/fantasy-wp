@@ -544,6 +544,12 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 >   collapsed to 50/50); 5 ticks linearly interpolated between the 21:30 and 22:00
 >   anchors. Root cause fixed in code (`38b4959`) — see the read-side note under
 >   "Live data freshness" and `INV_CURRENT_CATS_MISSING`.
+>
+> All 210 hand-edited rows are now marked **`wp_snapshots.edited=1`** (machine-readable,
+> so you don't have to eyeball date ranges):
+> `SELECT computed_at, matchup_id FROM wp_snapshots WHERE edited=1`. The
+> `INV_WP_DETAILS_MISMATCH` check skips them; any *un*marked row whose `home_wp`
+> column disagrees with its `details_json` tally is a real bug.
 
 Common case: user notices a sudden WP shift and asks why. Method:
 
@@ -688,6 +694,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `INV_RATE_RANGE` | error | derived ERA/WHIP/OPS (current or projected) within physical bounds | always — a derivation blowup (div-by-zero, missing components). Coarse backstop; the 3.76 bug stayed *in* range, so this won't catch that — `ANOM_RATE_DIVERGENCE` does. |
 | `INV_CAT_SIM_COUNT` | error | each category's & the matchup's home+away+ties == n_sims | always — the sim's win-counting is broken; every WP off it is suspect. |
 | `INV_EMPTY_BUDGETS` | error | an active matchup's side has ≥1 player budget | always — roster/projection fetch produced nothing → WP degenerates. Scoped to active (`UNDECIDED`) weeks; a finished week legitimately has none. |
+| `INV_WP_DETAILS_MISMATCH` | error | `home_wp`/`away_wp` column == `details_json` tally (`wins/n_sims`) | always — they're the same sim; a gap means a publish/compute bug or an **unlogged** hand-edit. Hand-smoothed rows are marked `wp_snapshots.edited=1` and skipped (their divergence is intentional — see INCIDENTS.md). |
 | `ANOM_CORRELATED_SWING` | error | <`MIN_CORRELATED` (3) active matchups swing ≥10pp in one compute | **almost always systemic** (banked-loss, partial fetch, read collapse) — both 2026-06-04 incidents. Detail reports how many moved toward 50/50 (the collapse signature). Rare false trigger only if a busy live slate genuinely moves many at once — check whether the moves are gradual/real vs a single wholesale jump. |
 | `ANOM_STALE_SNAPSHOTS` / `ANOM_STALE_FETCH` | warn | newest wp_snapshot / category_state fetch < `STALE_MINUTES` (20) old | a cron stalled (wedged lock, exception, macOS FDA revoked) — site serves stale data. Legit briefly while `medium.sh` holds the lock (≤5 min). |
 | `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |

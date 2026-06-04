@@ -74,6 +74,10 @@ MIN_CORRELATED = 3             # this many swinging in one tick = systemic
 STALE_MINUTES = 20             # snapshot/fetch/site older than this ⇒ pipeline stalled
                                # (~4 missed 5-min fast ticks; medium.sh lock is ≤5 min)
 
+WP_DETAILS_TOL = 0.005         # home_wp column vs details_json tally; they're the same
+                               # sim (column = wins/n_sims) so any real gap is a bug —
+                               # hand-edited (edited=1) rows are skipped, not toleranced.
+
 
 @dataclass
 class Finding:
@@ -285,6 +289,30 @@ def check_category_sim_counts(view) -> list[Finding]:
     return out
 
 
+def check_wp_details_consistency(view) -> list[Finding]:
+    """The `home_wp`/`away_wp` columns and `details_json`'s win tally are the same
+    sim in two forms (column == wins/n_sims), so they must agree. A divergence means
+    something wrote one without the other — a publish/compute bug, or an *unlogged*
+    hand-edit. Rows hand-smoothed over a logged incident are marked `edited=1` and
+    skipped (their divergence is intentional — see INCIDENTS.md)."""
+    if view.get("edited"):
+        return []
+    n, t = view.get("n_sims"), view.get("tally")
+    if not n or not t or None in t:
+        return []
+    out = []
+    for who, wp, wins in (("home", view["home_wp"], t[0]), ("away", view["away_wp"], t[1])):
+        if wp is None:
+            continue
+        derived = wins / n
+        if abs(wp - derived) > WP_DETAILS_TOL:
+            out.append(Finding("INV_WP_DETAILS_MISMATCH", "error", view["matchup_id"],
+                               f"{who}_wp column {wp:.3f} ≠ details tally {derived:.3f} "
+                               f"({wins}/{n}) — column/details_json disagree "
+                               f"(unlogged edit or publish/compute bug)"))
+    return out
+
+
 def check_empty_budgets(view) -> list[Finding]:
     """A side with no player budgets while the matchup has any banked state means
     the roster/projection fetch produced nothing — WP degenerates to a coin flip.
@@ -306,8 +334,8 @@ def check_empty_budgets(view) -> list[Finding]:
 
 _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
            check_banked_not_regressed, check_rate_ranges, check_category_sim_counts,
-           check_empty_budgets, check_proj_vs_current, check_units, check_wp_swing,
-           check_rate_divergence]
+           check_wp_details_consistency, check_empty_budgets, check_proj_vs_current,
+           check_units, check_wp_swing, check_rate_divergence]
 
 # League-level checks operate on *all* views at once (cross-matchup correlations).
 _LEAGUE_CHECKS = []  # populated below (after the functions are defined)
@@ -484,7 +512,7 @@ def load_view(conn, matchup_id: int) -> dict | None:
         "SELECT home_team_id, away_team_id, matchup_period_id, winner FROM matchups WHERE id=?",
         (matchup_id,)).fetchone()
     snaps = conn.execute(
-        "SELECT home_wp, away_wp, details_json FROM wp_snapshots "
+        "SELECT home_wp, away_wp, details_json, edited FROM wp_snapshots "
         "WHERE matchup_id=? ORDER BY computed_at DESC LIMIT 2", (matchup_id,)).fetchall()
     if not m or not snaps:
         return None
@@ -497,6 +525,7 @@ def load_view(conn, matchup_id: int) -> dict | None:
     return {
         "matchup_id": matchup_id,
         "winner": m["winner"],
+        "edited": snaps[0]["edited"],
         "period_days": (we - ws).days + 1,
         "home_wp": snaps[0]["home_wp"],
         "away_wp": snaps[0]["away_wp"],

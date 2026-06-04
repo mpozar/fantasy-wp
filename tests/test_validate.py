@@ -165,6 +165,27 @@ def test_cat_sim_count_skipped_without_n():
     assert v.check_category_sim_counts(_view()) == []
 
 
+# ── home_wp column vs details_json tally consistency ──
+
+def test_wp_details_mismatch_flagged():
+    # column says 0.30 but the tally (5000/10000) says 0.50 — they must agree
+    view = _view(home_wp=0.30, away_wp=0.50, n_sims=10000, tally=(5000, 4000, 1000))
+    f = v.check_wp_details_consistency(view)
+    assert any(x.code == "INV_WP_DETAILS_MISMATCH" and "home" in x.detail for x in f)
+
+def test_wp_details_consistency_ok():
+    view = _view(home_wp=0.50, away_wp=0.40, n_sims=10000, tally=(5000, 4000, 1000))
+    assert v.check_wp_details_consistency(view) == []
+
+def test_wp_details_skips_edited_rows():
+    # a hand-smoothed row diverges on purpose — edited=1 must suppress the check
+    view = _view(home_wp=0.04, away_wp=0.95, n_sims=10000, tally=(4400, 5500, 100), edited=1)
+    assert v.check_wp_details_consistency(view) == []
+
+def test_wp_details_skipped_without_details():
+    assert v.check_wp_details_consistency(_view(home_wp=0.5)) == []
+
+
 # ── empty budgets (roster/projection fetch failed) ──
 
 def test_empty_budgets_flagged():

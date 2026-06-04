@@ -56,6 +56,10 @@ CREATE TABLE IF NOT EXISTS wp_snapshots (
     away_wp        REAL NOT NULL,
     model_version  TEXT NOT NULL,
     details_json   TEXT,
+    -- 1 = home_wp/away_wp were hand-edited (cosmetic graph smoothing over a data
+    -- incident) and intentionally diverge from details_json's computed tally. Lets
+    -- the WP↔details consistency check skip them instead of hardcoding date windows.
+    edited         INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (matchup_id, computed_at)
 );
 
@@ -221,6 +225,7 @@ def init() -> None:
             ("team_schedule", "team_runs", "INTEGER"),
             ("team_schedule", "opponent_runs", "INTEGER"),
             ("scoring_settings", "lineup_slots_json", "TEXT"),
+            ("wp_snapshots", "edited", "INTEGER NOT NULL DEFAULT 0"),
         ):
             table, col, type_ = column_def
             try:
