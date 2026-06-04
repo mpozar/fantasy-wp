@@ -587,6 +587,16 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Reliever leverage: an RP appearance in a save spot counts the same as one in a blowout
 - Off-days, platoon splits, weather, lineup card details — assumed away
 - Probable-pitcher matching is by name (rare misses on spelling variations)
+- **Spot starts by reliever-classified pitchers are missed.** SP-vs-RP is decided
+  by season ROS ratio (`GS/GP`), and only the SP branch reads probables — so a
+  reliever/swingman who draws a spot start (e.g. Kai-Wei Teng, GS 1 / GP 33,
+  probable on 2026-06-04) is modeled as relief appearances, not a start. The
+  probable IS in the data (the ESPN overlay catches it); the role gate just
+  ignores it. Can't be fixed by flipping him to SP — his per-start rates would be
+  `season_total / GS` (e.g. 70 K / 1 GS). Proper fix: honor announced probables
+  for any pitcher and estimate the start from per-out rates × a spot-start length
+  (~12-15 outs). Impact is modest (under-counts that day's outs/K, over-counts
+  SVHD, ~no QS either way); deferred until spot-starts come up often enough to matter.
 
 ## When the user asks about a WP swing
 
