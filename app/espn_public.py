@@ -10,10 +10,30 @@ earlier or cleaner than our other sources:
     a start showing on ESPN but not yet posted by MLB can be filled in early.
   - **Injuries with real return dates** — vs our fixed-days IL heuristic.
 
-ESPN's MLB `team.id` in this API equals our fantasy `proTeamId` (verified:
-12=SEA, 26=SF, 14=TOR, …), so games map straight to `pro_team_id` — no
-abbreviation/name table needed. The API is unofficial/undocumented but stable
-and widely used (same risk class as MLB statsapi, far less brittle than scraping).
+Load-bearing assumptions (the things to re-check if this ever misbehaves):
+
+  1. **`site.api team.id` == our fantasy `proTeamId`.** This is the whole join —
+     it's why `fetch_probables` can key by `int(team["id"])` and the caller can
+     match on `pro_team_id` with no abbreviation/name table. Verified 2026-06:
+     12=SEA, 26=SF, 14=TOR, …. If ESPN ever renumbers, the failure mode is
+     *graceful, not corrupting*: the overlay only fills `team_schedule`, and the
+     downstream `_probable_starts_for` re-matches the probable to a rostered SP
+     **by name, scoped to that SP's own team's games** — so a mis-mapped id
+     yields a name that doesn't match → no credit → the cadence model takes over,
+     rather than a wrong pitcher being credited. You'd lose the early-fill benefit
+     silently, not get bad data.
+     Re-verify with:
+       curl -s 'https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=YYYYMMDD' \
+         | jq '.events[].competitions[0].competitors[] | {id:.team.id, abbr:.team.abbreviation}'
+     and cross-check a known team against app/teams.py (e.g. Kirby's SEA == 12).
+
+  2. **Scoreboard date keying.** `fetch_probables` keys by the *queried* calendar
+     date (`dates=YYYYMMDD`), which aligns with MLB's official `game_date` (and
+     thus our `team_schedule.game_date`). Verified — a late game's UTC event time
+     can roll to the next day, but the queried "baseball date" matches MLB's.
+
+The API is unofficial/undocumented but stable and widely used (same risk class as
+MLB statsapi, far less brittle than the DOM scrape).
 """
 
 from __future__ import annotations
