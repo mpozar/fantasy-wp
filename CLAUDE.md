@@ -125,6 +125,33 @@ pitcher's announced/expected current-week starts) — deferred; flat is correct
 on average. Far-out weeks were always flat anyway (anchor washes out, and it
 keeps the slow `compute --future` path lean).
 
+**Deferred: proper next-week turn-awareness (and why it's harder than it looks).**
+Cadence *could* identify next week's genuine two-start pitchers — "current place
+in the rotation" is knowable (last start + this week's announced/expected starts).
+It doesn't today because of two implementation gaps, plus one irreducible limit:
+  - *Gap 1 — stale anchor.* `_cadence_extra_start_dist` anchors on the last
+    *recorded* (Final) start in `pitcher_starts`. For next week that's ~a week
+    stale; this week's upcoming starts aren't recorded yet, and the announced
+    ones aren't seen (see Gap 2).
+  - *Gap 2 — per-period isolation.* `compute` runs each period with only *that
+    period's* schedule, so the walk can't "consume" the intervening (this-week)
+    turns. From a stale anchor it snaps the first projected turn onto day 1 of
+    the future week and fits a phantom second → the ~1.9 over-projection.
+  - *Fix shape:* anchor on the latest *known* start before the target week
+    (recorded starts **plus** this week's announced probables / projected turns),
+    and walk a **continuous timeline** (this week + next week), counting only
+    starts that land in the target week. Then a real two-turns-in-the-window
+    pitcher projects 2, and a one-turn pitcher projects 1.
+  - *Irreducible limit:* even done right, next week is genuinely fuzzier than the
+    current week — rest-day variance compounds over the 1–2 intervening turns
+    (±2–3 days of phase uncertainty, enough to flip whether a 2nd start lands
+    inside Mon–Sun), rotations churn over a 10–14 day horizon (skips, rainouts,
+    IL, spot 6th starters), and there are no announced probables that far out. So
+    the *correct* output is a soft dist like `[0.1, 0.55, 0.35]`, never the bogus
+    `[0, 0.11, 0.88]`. Bottom line: a proper version beats flat for next week, but
+    only modestly and with wide error bars — which is why flat was the safe
+    interim, and why a *broken* cadence (inventing 2nd starts) is worse than flat.
+
 The flag threads `compute → simulate → build_budgets`.
 
 **Degenerate cases** collapse cleanly: future weeks (no probables) → empty fixed
