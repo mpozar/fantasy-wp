@@ -104,17 +104,26 @@ projected date to this team's next **open** game (no probable yet), capped at
 fixed + E[k]) and the two-way hitter-day subtraction; `_display_expected` folds
 `E[k]·rate` back into the per-stat means for the budget summary in `data.json`.
 
-**Scope — turn-awareness only for the current week and the next.** `compute`
-passes `use_cadence=(period_id <= current + 1)`. The extra-start count is *always*
-sampled (so it varies per sim); only *how the distribution is built* depends on
-the horizon:
-- **current week & next** → the turn-aware cadence dist.
-- **weeks ≥ current+2** → the flat ROS-share mean (`rate × open_weight`) split
-  into an integer dist by its fractional part (`_split_mean_to_dist`, e.g.
+**Scope — turn-awareness only for the CURRENT week.** `compute` passes
+`use_cadence=(period_id == current)`. The extra-start count is *always* sampled
+(so it varies per sim); only *how the distribution is built* depends on the horizon:
+- **current week** → the turn-aware cadence dist.
+- **any future week** → the flat ROS-share mean (`rate × open_weight`) split into
+  an integer dist by its fractional part (`_split_mean_to_dist`, e.g.
   1.6 → `[0, 0.4, 0.6]`, mean preserved). We drop only the rotation-turn
-  *placement* — false precision 2+ weeks out, where the anchor washes out under
-  compounding rest-day uncertainty — not the count variance. This also keeps the
-  slow `compute --future` path (78 matchups × 10k) lean.
+  *placement*, not the count variance.
+
+Why current-week-only (this was briefly `<= current + 1`): the cadence anchor is
+the pitcher's last *recorded* start. For any future week that anchor is already
+~a week stale — he'll start again *this* week first, and those turns aren't
+recorded yet — so the walk (which only sees the future week's games) snaps his
+first turn to day 1 of that week and invents a second, badly over-projecting
+(observed Week-11 mean ~1.5 with ~40% of SPs at 1.8–1.9, vs a realistic ~1.3).
+Flat tier-B avoids that (Week-11 mean ~1.2). A *proper* way to keep next-week
+turn-awareness would be to advance the anchor through the gap (account for the
+pitcher's announced/expected current-week starts) — deferred; flat is correct
+on average. Far-out weeks were always flat anyway (anchor washes out, and it
+keeps the slow `compute --future` path lean).
 
 The flag threads `compute → simulate → build_budgets`.
 

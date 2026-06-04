@@ -696,10 +696,15 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         lineup_slot_counts=lineup_slot_counts,
                         live_by_team=live_by_team,
                         last_start_by_pitcher=last_start_by_pitcher,
-                        # Rotation-cadence start projection only for the current
-                        # week and the next; further-out weeks fall back to the
-                        # flat ROS-share (the anchor is too stale to be useful).
-                        use_cadence=(period_id <= current + 1),
+                        # Rotation-cadence start projection ONLY for the current
+                        # week. For any future week the anchor (last recorded
+                        # start) is already a week-plus stale — the pitcher will
+                        # start again *this* week first, and those turns aren't
+                        # recorded yet — so the cadence walk snaps the first turn
+                        # to day 1 of the future week and invents a 2nd, badly
+                        # over-projecting (~1.9 vs a realistic ~1.3). Future weeks
+                        # use the flat ROS-share split (tier B) instead.
+                        use_cadence=(period_id == current),
                     )
                     version = sim.MODEL_VERSION
                 else:

@@ -901,12 +901,14 @@ def build_budgets(roster: list[dict],
                 )
                 # The extra (un-probabled) starts are always the sampled piece;
                 # only *how the distribution is built* depends on the horizon:
-                #   - current week & the next (use_cadence) → rotation-turn dist
+                #   - current week (use_cadence) → rotation-turn dist
                 #     (`_cadence_extra_start_dist`), turn-aware.
-                #   - further out → the flat ROS-share mean split into an integer
-                #     dist (`_split_mean_to_dist`). The turn placement washes out
-                #     under compounding rest-day uncertainty that far ahead, so we
-                #     drop it — but the start *count* still varies per sim.
+                #   - any future week → the flat ROS-share mean split into an
+                #     integer dist (`_split_mean_to_dist`). Cadence is current-week
+                #     only because a future week's anchor is ~a week stale (the
+                #     pitcher starts again this week first, unrecorded), which makes
+                #     the walk snap the first turn to day 1 and over-project. The
+                #     start *count* still varies per sim either way.
                 extra_dist = _cadence_extra_start_dist(
                     p["full_name"], team_id, schedule_by_team,
                     last_start_by_pitcher, ret,
