@@ -280,10 +280,42 @@ If the user complains that a category WP "feels too lopsided," it's almost alway
 
 ## Matchup periods & the Monday rollover
 
-Matchup periods are weekly (Mon→Sun). Their date windows are **calendar-absolute**,
-anchored on `SEASON_ANCHOR_MONDAY` in `mlb.py`: period N = anchor + (N−1)×7.
-`matchup_period_window(period)` and `period_for_date(date)` are inverses and
-depend on nothing but the calendar — not on "today", not on ESPN.
+Matchup periods are weekly (Mon→Sun) **except** the All-Star break, which ESPN
+keeps as one 2-week `matchupPeriodId`. Their date windows are **calendar-absolute**,
+anchored on `SEASON_ANCHOR_MONDAY` in `mlb.py`. `matchup_period_window(period)`
+and `period_for_date(date)` are exact inverses and depend on nothing but the
+calendar — not on "today", not on ESPN.
+
+### Multi-week matchups (the All-Star break)
+
+`LONG_MATCHUPS = {period_id: num_weeks}` in `mlb.py` lists periods that span more
+than one week (2026: `{15: 2}` = July 6–19). The window calc sums one week per
+earlier period **plus** the extra weeks any earlier long matchup adds, so every
+period after the break is pushed one week later and the anchor stays exact for the
+whole back half of the season. `period_for_date` walks the same per-period spans
+to invert it, so both weeks of the break attribute to matchup 15 (not leaking into
+16). `tests/test_calendar.py` locks period 9 = May 25–31, period 15 = July 6–19,
+period 16 = July 20–26, and full round-trip consistency.
+
+**Why a hand-maintained constant, not read from ESPN:** ESPN's
+`scheduleSettings.matchupPeriods` map is identity here (matchupPeriodLength=1) and
+carries no length/date info. The only field that reveals a matchup's true daily
+span is each side's `pointsByScoringPeriod` (daily scoring-period IDs, 1…187) —
+but ESPN populates it **only up to the latest played scoring period**. The break is
+in the future, so ESPN won't expose its 2-week span until we reach it, yet
+`compute --future` projects it *now*. So it's set once per season alongside
+`SEASON_ANCHOR_MONDAY`. To validate after the fact, the daily-SPID dates of any
+*played* period give ground truth (SPID 62 = Mon 2026-05-25, then linear).
+
+**Why this matters (the bug it fixes):** the sim is entirely schedule-driven —
+`load_schedule_by_team` filters team_schedule by `matchup_period_id` only (no date
+cap) and the hitter optimizer iterates the actual game dates — so a correct 14-day
+window flows through to budgets/units/cadence automatically. Before the fix, a flat
+7-day stride gave matchup 15 only its first week of games (WP computed on half the
+schedule, collapsing toward 100/0 in week 2 while ESPN's live cat totals kept
+climbing), and shifted **every** post-break matchup one calendar week early (each
+simulated against the wrong week's games), with the true final week never
+simulated at all.
 
 **Do not trust ESPN's `status.currentMatchupPeriod` for date math.** It lags the
 calendar by several hours around the Monday rollover (it flips near US midnight =
@@ -302,6 +334,8 @@ Consequences:
   "Front-end behavior".
 - `SEASON_ANCHOR_MONDAY` is a dated constant: **update it once per season**
   (verify against a known period→week mapping, e.g. period 9 = May 25–31 in 2026).
+- `LONG_MATCHUPS` (the All-Star break span): **also update once per season** — see
+  "Multi-week matchups" above.
 
 ## ESPN API quirks (the gotchas)
 

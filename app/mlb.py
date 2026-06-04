@@ -24,31 +24,79 @@ BASE_URL = "https://statsapi.mlb.com/api/v1"
 # Update once per season.
 SEASON_ANCHOR_MONDAY = date(2026, 3, 30)
 
+# Matchup periods that span MORE than one Mon→Sun week. ESPN keeps the
+# All-Star break as a single `matchupPeriodId` covering two calendar weeks
+# (every team is idle for several days, so a one-week matchup would be mostly
+# empty) — its scoreByStat accumulates across both weeks. Maps that
+# matchupPeriodId to its length in weeks; every period AFTER a long one is
+# pushed later by the extra weeks, so the anchor stays exact for the whole
+# back half of the season.
+#
+# Why this is a hand-maintained constant rather than read from ESPN:
+# ESPN's `scheduleSettings.matchupPeriods` map is identity here
+# (matchupPeriodLength=1), so it carries no length/date info, and the only
+# field that *would* reveal the span — each side's `pointsByScoringPeriod`
+# (daily scoring-period IDs) — is populated only up to the latest *played*
+# scoring period. The break is in the future, so ESPN won't expose its
+# 2-week span until we reach it, yet `compute --future` projects it now.
+# Hence: configure once per season, same cadence as SEASON_ANCHOR_MONDAY.
+# Verify against ESPN once the break is known (2026: period 15 = July 6–19).
+LONG_MATCHUPS: dict[int, int] = {15: 2}
+
 
 def monday_of(d: date) -> date:
     """Monday of the Mon→Sun week containing `d`."""
     return d - timedelta(days=d.weekday())
 
 
-def matchup_period_window(period_id: int) -> tuple[date, date]:
-    """Mon→Sun for a matchup period, anchored absolutely on the season start.
+def _period_length_weeks(period_id: int) -> int:
+    """How many Mon→Sun weeks `period_id` spans (1 unless it's a long matchup)."""
+    return LONG_MATCHUPS.get(period_id, 1)
 
-    Assumes weekly matchup periods (matchupPeriodLength=1 in ESPN settings),
-    which is what this league uses. Independent of the current date and of
-    ESPN's reported current period — see SEASON_ANCHOR_MONDAY.
+
+def _weeks_before(period_id: int) -> int:
+    """Whole weeks between SEASON_ANCHOR_MONDAY and `period_id`'s Monday.
+
+    One week per earlier period, plus the extra weeks any earlier *long*
+    matchup contributes (a 2-week matchup adds 1 extra week to everything
+    after it).
     """
-    monday = SEASON_ANCHOR_MONDAY + timedelta(days=(period_id - 1) * 7)
-    return monday, monday + timedelta(days=6)
+    extra = sum(n - 1 for p, n in LONG_MATCHUPS.items() if p < period_id)
+    return (period_id - 1) + extra
+
+
+def matchup_period_window(period_id: int) -> tuple[date, date]:
+    """[start_monday, end_sunday] for a matchup period, anchored absolutely.
+
+    Periods are weekly (matchupPeriodLength=1) except the few in LONG_MATCHUPS
+    (the All-Star break), which span multiple weeks. Independent of the current
+    date and of ESPN's reported current period — see SEASON_ANCHOR_MONDAY.
+    """
+    monday = SEASON_ANCHOR_MONDAY + timedelta(days=_weeks_before(period_id) * 7)
+    length = _period_length_weeks(period_id)
+    return monday, monday + timedelta(days=length * 7 - 1)
 
 
 def period_for_date(d: date) -> int:
     """Which matchup period a calendar date falls in, by the season anchor.
 
-    Inverse of `matchup_period_window`. Used to attribute live MLB games to
-    the correct period by their game date rather than by whatever period
-    ESPN currently reports as 'current'.
+    Exact inverse of `matchup_period_window`, including the multi-week
+    LONG_MATCHUPS. Used to attribute live MLB games to the correct period by
+    the game's own date rather than by whatever period ESPN reports as
+    'current'. Dates before the anchor clamp to period 1.
     """
-    return (monday_of(d) - SEASON_ANCHOR_MONDAY).days // 7 + 1
+    week_idx = (monday_of(d) - SEASON_ANCHOR_MONDAY).days // 7
+    if week_idx < 0:
+        return 1
+    # Walk periods, consuming each one's week-span, until week_idx lands inside.
+    consumed = 0
+    period_id = 1
+    while True:
+        length = _period_length_weeks(period_id)
+        if week_idx < consumed + length:
+            return period_id
+        consumed += length
+        period_id += 1
 
 
 def fetch_schedule(start: date, end: date) -> list[dict]:
