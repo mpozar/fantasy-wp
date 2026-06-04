@@ -19,8 +19,11 @@ ESPN/MLB APIs  ──(refresh-rosters, refresh-schedule, refresh-live, fetch)─
 app/
   cli.py        # Click commands: init-db, fetch, refresh-rosters, refresh-schedule,
                 # backfill-starts, refresh-live, compute [--future], publish
-  espn.py       # ESPN fantasy API client. fetch_league_shape, fetch_teams,
+  espn.py       # ESPN fantasy API client (authed v3). fetch_league_shape, fetch_teams,
                 # fetch_all_matchups, fetch_rosters_and_projections
+  espn_public.py# ESPN public site.api client (no auth). fetch_probables (overlay
+                # MLB's), fetch_injuries (real IL return dates). team.id == proTeamId
+  espn_scrape.py# Playwright DOM scrape of live matchup cat totals (REST lags)
   mlb.py        # MLB statsapi client + calendar-absolute period windows.
                 # matchup_period_window / period_for_date (SEASON_ANCHOR_MONDAY),
                 # monday_of, fetch_schedule
@@ -161,14 +164,17 @@ Greedy is good enough at ~10-12 hitters × ~10 slots — exact Hungarian matchin
 
 ### IL handling
 
-`_est_return_date(p, today)`:
-- `TEN_DAY_IL/DL` → today + 7
+`_est_return_date(p, today)` — in priority order:
+- **`injury_return_override`** (ESPN's real estimated return date) → used as-is, when present. This is the accurate path (see below).
+- `TEN_DAY_IL/DL` → today + 7  *(fallback heuristic)*
 - `FIFTEEN_DAY_IL/DL` → today + 10
 - `SIXTY_DAY_IL/DL` → today + 30
 - `OUT`, `INJURY_RESERVE`, unknown → None (indefinite, excluded entirely)
 - `ACTIVE`, `NORMAL`, `DAY_TO_DAY`, `QUESTIONABLE`, `PROBABLE`, null → today (playable now)
 
-The estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_hitter_remaining_units`, `_rp_remaining_units`, and the hitter optimizer.
+**Real return dates from ESPN.** `refresh-rosters` pulls ESPN's public injuries feed (`espn_public.fetch_injuries`, excludes Day-To-Day) into the `player_injuries` table; `load_team_roster` attaches each rostered player's `return_date` as `injury_return_override`. That overrides the fixed-days heuristic above with an actual estimated activation date — and also catches IL moves/activations the fantasy `injury_status` hasn't reflected yet (e.g. status `ACTIVE` but ESPN has them out until tomorrow → benched until then). The heuristic remains the fallback when ESPN has no entry. Far-future return dates (e.g. a 60-day IL returning in September) naturally exclude the player from the current week.
+
+The fallback estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_hitter_remaining_units`, `_rp_remaining_units`, and the hitter optimizer.
 
 IL slot (17) is also a hard filter — manager-stashed players in IL slot stay excluded even if their status is "ACTIVE". BE slot (16) is included for pitchers (managers cycle SPs and RPs through bench day-to-day); hitters in BE go through the optimizer.
 
@@ -333,7 +339,7 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 
 When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
 
-**Source lag — ESPN leads MLB statsapi.** We source probables from MLB statsapi (`mlb.fetch_schedule`), but ESPN's fantasy UI surfaces expected probables a day or two earlier than MLB officially posts them. So a start that's already showing on ESPN can still be un-probabled in our data — it then appears as a *cadence prediction* (the rotation model projecting that turn) rather than a confirmed probable, and hardens to a fixed start once MLB posts it. Observed 2026-06-03: ESPN listed Roupp (Sat) and Gausman (Sun) while MLB still had those games open; the cadence model had already projected both (~0.88 and ~0.34). Not a bug — but if matching ESPN's UI exactly matters, the follow-up is to also source probables from the ESPN scrape (we already run it for live scores).
+**Source lag — ESPN leads MLB statsapi, so we overlay it.** Primary probable source is MLB statsapi (`mlb.fetch_schedule`), but ESPN's feed surfaces expected probables a day or two earlier. So `fetch_schedule`'s results get a **fill-only overlay** from ESPN's public API (`espn_public.fetch_probables` → `_overlay_espn_probables` in cli.py): for any game where MLB has *no* probable yet, we fill in ESPN's. MLB always wins once it posts (we never overwrite an existing probable), so ESPN is just an early stand-in for the un-announced tail; the cadence model only kicks in for games neither source has named. Wired into `refresh-schedule` (current period only — ESPN has nothing useful for future weeks) and `refresh-live` (its 4-day window, every tick). Observed 2026-06-03: ESPN had Roupp (Sat) and Gausman (Sun) while MLB's feed still showed those games open; the overlay now fills them so both project a confirmed 1.0 start instead of a ~0.88/0.34 cadence estimate. **Caveat:** ESPN's early probables are tentative and can change — but since we only fill where MLB is blank and MLB overrides on post, the blast radius is just the few-day tail.
 
 ## Cron architecture
 

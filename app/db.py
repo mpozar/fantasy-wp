@@ -163,6 +163,18 @@ CREATE TABLE IF NOT EXISTS pitcher_starts (
 );
 CREATE INDEX IF NOT EXISTS idx_pitcher_starts_name
     ON pitcher_starts (pitcher_name, game_date);
+
+-- ── Injury return dates (from ESPN's public injuries feed) ──
+-- Real estimated activation dates per player, matched to rostered players by
+-- normalized name. Overrides the fixed-days IL heuristic in sim._est_return_date.
+-- Excludes Day-To-Day (those usually still play). Replaced wholesale each
+-- refresh-rosters run.
+CREATE TABLE IF NOT EXISTS player_injuries (
+    norm_name    TEXT PRIMARY KEY,
+    full_name    TEXT,
+    return_date  TEXT,            -- YYYY-MM-DD, ESPN's estimated return
+    fetched_at   TEXT NOT NULL
+);
 """
 
 

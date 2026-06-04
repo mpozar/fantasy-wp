@@ -8,11 +8,32 @@ from pathlib import Path
 
 import click
 
-from app import LEAGUE_ID, SEASON_ID, db, espn, mlb, model, sim, stats
+from app import LEAGUE_ID, SEASON_ID, db, espn, espn_public, mlb, model, sim, stats
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _overlay_espn_probables(games: list[dict], start, end) -> int:
+    """Fill `probable_pitcher_name` from ESPN's public feed for games where MLB
+    hasn't posted one yet — ESPN's feed leads MLB statsapi by a day or two.
+    Fill-only: MLB wins once it posts (we never overwrite an existing probable),
+    so the tentative ESPN listing is just an early stand-in. Best-effort: a feed
+    error leaves the MLB data untouched. Returns the number of games filled."""
+    try:
+        esp = espn_public.fetch_probables(start, end)
+    except Exception:  # noqa: BLE001 — best effort; fall back to MLB-only
+        return 0
+    n = 0
+    for g in games:
+        if g.get("probable_pitcher_name"):
+            continue
+        name = esp.get((g["game_date"], g["espn_team_id"]))
+        if name:
+            g["probable_pitcher_name"] = name
+            n += 1
+    return n
 
 
 def _record_starts(conn, games: list[dict], now: str) -> int:
@@ -238,6 +259,12 @@ def refresh_rosters() -> None:
     succeeds. Safe to run every few hours via cron.
     """
     snap = espn.fetch_rosters_and_projections()
+    # ESPN public injuries feed → real IL return dates (best-effort; on failure
+    # we leave the last-good table rather than wiping it).
+    try:
+        injuries = espn_public.fetch_injuries()
+    except Exception:  # noqa: BLE001
+        injuries = {}
     now = _now_iso()
     period_id = snap["matchup_period_id"]
 
@@ -294,6 +321,18 @@ def refresh_rosters() -> None:
                     (pr["player_id"], pr["stat_id"], pr["value"],
                      pr["split_id"], pr["season_id"], now),
                 )
+
+            # Replace injury return dates wholesale (skip on a failed fetch so
+            # we keep the last-good set rather than wiping it).
+            if injuries:
+                conn.execute("DELETE FROM player_injuries")
+                for nm, (full, rd) in injuries.items():
+                    conn.execute(
+                        "INSERT INTO player_injuries "
+                        "(norm_name, full_name, return_date, fetched_at) "
+                        "VALUES (?,?,?,?)",
+                        (nm, full, rd.isoformat(), now),
+                    )
     finally:
         conn.close()
 
@@ -301,7 +340,8 @@ def refresh_rosters() -> None:
         f"Refreshed rosters: period={period_id}, "
         f"players={len(snap['players'])}, "
         f"roster_entries={len(snap['roster_entries'])}, "
-        f"projections={len(snap['projections'])}"
+        f"projections={len(snap['projections'])}, "
+        f"injuries={len(injuries)}"
     )
 
 
@@ -322,11 +362,17 @@ def refresh_schedule() -> None:
 
     total_games = 0
     total_starts = 0
+    total_espn_pp = 0
     conn = db.connect()
     try:
         for period_id in range(current, last + 1):
             start, end = mlb.matchup_period_window(period_id)
             games = mlb.fetch_schedule(start, end)
+            # ESPN only lists probables ~5 days out, so only the current week is
+            # worth overlaying here (future weeks would be ~90 wasted calls).
+            # refresh-live's 4-day window keeps the near-term fresh every tick.
+            if period_id == current:
+                total_espn_pp += _overlay_espn_probables(games, start, end)
             with conn:
                 conn.execute(
                     "DELETE FROM team_schedule WHERE matchup_period_id=?",
@@ -366,7 +412,8 @@ def refresh_schedule() -> None:
 
     click.echo(
         f"Refreshed schedule: periods {current}..{last}, "
-        f"team_game_rows={total_games}, starts_recorded={total_starts}"
+        f"team_game_rows={total_games}, starts_recorded={total_starts}, "
+        f"espn_probables_filled={total_espn_pp}"
     )
 
 
@@ -428,6 +475,7 @@ def refresh_live() -> None:
     yesterday = today - timedelta(days=1)
     end = today + timedelta(days=2)
     games = mlb.fetch_schedule(yesterday, end)
+    espn_pp = _overlay_espn_probables(games, yesterday, end)
     now = _now_iso()
 
     # Per game-date: distinct game statuses, for the activity tracker below.
@@ -532,7 +580,7 @@ def refresh_live() -> None:
     click.echo(
         f"Refreshed live game state: {yesterday.isoformat()}..{end.isoformat()}, "
         f"team_game_rows={len(games)}, in_progress={len(in_progress_pks)}, "
-        f"live_pitcher_rows={len(live_rows)}"
+        f"live_pitcher_rows={len(live_rows)}, espn_probables_filled={espn_pp}"
     )
 
 

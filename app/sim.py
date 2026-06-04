@@ -114,7 +114,15 @@ def _est_return_date(p: dict, today: date) -> date | None:
       - today (or earlier) → playable now
       - future date → returning from an IL stint
       - None → indefinitely out (e.g. OUT, INJURY_RESERVE, unknown status)
+
+    ESPN's real return date (`injury_return_override`, from the public injuries
+    feed) wins over the fixed-days heuristic when present — it's an actual
+    estimated activation date rather than a floor guess, and it also catches IL
+    moves/activations the fantasy `injury_status` hasn't reflected yet.
     """
+    override = p.get("injury_return_override")
+    if override is not None:
+        return override
     inj = (p.get("injury_status") or "").upper()
     if inj in PLAYABLE_INJURY_STATUSES:
         return today
@@ -1239,6 +1247,19 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
         (matchup_period_id, fantasy_team_id),
     ).fetchall()
 
+    # ESPN-sourced real return dates (norm_name → date), used by
+    # _est_return_date to override the fixed-days IL heuristic. Empty until
+    # refresh-rosters has populated player_injuries.
+    injuries: dict[str, date] = {}
+    try:
+        for ir in conn.execute("SELECT norm_name, return_date FROM player_injuries"):
+            try:
+                injuries[ir["norm_name"]] = date.fromisoformat(ir["return_date"])
+            except (ValueError, TypeError):
+                continue
+    except sqlite3.OperationalError:
+        pass  # table not created yet (pre-migration DB)
+
     roster = []
     for r in rows:
         ros = conn.execute(
@@ -1265,6 +1286,7 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
             "default_position_id": r["default_position_id"],
             "eligible_slots": eligible,
             "injury_status": r["injury_status"],
+            "injury_return_override": injuries.get(_norm_name(r["full_name"])),
             "ros_stats": {row["stat_id"]: row["value"] for row in ros},
         })
     return roster
