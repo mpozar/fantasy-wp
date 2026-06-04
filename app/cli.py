@@ -407,13 +407,18 @@ def backfill_starts(days: int) -> None:
 
 @cli.command("refresh-live")
 def refresh_live() -> None:
-    """Upsert today's MLB games' status + inning state into team_schedule.
+    """Upsert recent + near-future MLB games' status + inning state into
+    team_schedule.
 
-    Fetches a 2-day window (yesterday + today in local time) so we don't
-    miss in-progress games from the previous MLB calendar day — important
-    for any timezone east of US Pacific, where local "today" rolls over
-    while West Coast night games are still being played and dated to the
-    previous day in MLB's schedule.
+    Window = yesterday … today+2 (4 days). Yesterday covers in-progress games
+    from the previous MLB calendar day (any timezone east of US Pacific rolls
+    over local "today" while West Coast night games are still being played and
+    dated to the prior day). The +2-day forward reach refreshes the back half of
+    the current week's *probable pitchers* every fast tick — otherwise those
+    games only update at the daily `refresh-schedule`, so a newly-posted probable
+    (MLB posts ~24-48h out) could lag up to a day. Only one MLB statsapi call
+    either way; in-progress boxscore fetches are unaffected (no live games 2 days
+    out), so the runtime cost is negligible.
 
     No DELETE, just upserts on the existing rows.
     """
@@ -421,7 +426,8 @@ def refresh_live() -> None:
 
     today = date.today()
     yesterday = today - timedelta(days=1)
-    games = mlb.fetch_schedule(yesterday, today)
+    end = today + timedelta(days=2)
+    games = mlb.fetch_schedule(yesterday, end)
     now = _now_iso()
 
     # Per game-date: distinct game statuses, for the activity tracker below.
@@ -524,7 +530,7 @@ def refresh_live() -> None:
         conn.close()
 
     click.echo(
-        f"Refreshed live game state: {yesterday.isoformat()}..{today.isoformat()}, "
+        f"Refreshed live game state: {yesterday.isoformat()}..{end.isoformat()}, "
         f"team_game_rows={len(games)}, in_progress={len(in_progress_pks)}, "
         f"live_pitcher_rows={len(live_rows)}"
     )
