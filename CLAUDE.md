@@ -516,7 +516,11 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 > historical snapshots**) are logged there. In particular: period-10 matchups
 > (id 55–60) for **2026-06-04 ~17:05–20:02 UTC** had their `wp_snapshots.home_wp`/
 > `away_wp` *manually smoothed* over corrupted data — those columns don't match
-> `details_json` for that window. Don't chase that as a live bug.
+> `details_json` for that window. Don't chase that as a live bug. **Caveat:** the
+> hand-edited window is 17:05–20:02, but the underlying **data corruption ran
+> ~06:16–20:02** — so for that whole morning span `details_json` is *also*
+> corrupted (genuine model output on missing rate components), not a clean
+> reference. See the m59 worked example in `INCIDENTS.md`.
 
 Common case: user notices a sudden WP shift and asks why. Method:
 
