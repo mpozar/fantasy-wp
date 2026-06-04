@@ -112,6 +112,23 @@ def fetch() -> None:
 
         # Persist matchups + category state (regular season only)
         last_reg = shape.last_regular_season_period
+        current_period = shape.current_matchup_period
+
+        # The DOM scrape (below) is the source of truth for the CURRENT period:
+        # ESPN's REST scoreByStat lags badly and does NOT reliably catch up even
+        # when no games are live (observed hours-stale after a slate finalized).
+        # So once a current-period matchup has any stored scores, never let a
+        # REST write overwrite them — otherwise an idle tick (scrape skipped, no
+        # games in progress) regresses good live-scraped scores back to stale
+        # REST values. We still seed from REST the first time (no rows yet), and
+        # the next in-progress scrape takes over. Past/future periods: REST only.
+        seeded_current = {
+            r["matchup_id"] for r in conn.execute(
+                "SELECT DISTINCT cs.matchup_id FROM category_state cs "
+                "JOIN matchups m ON m.id = cs.matchup_id "
+                "WHERE m.matchup_period_id = ?", (current_period,),
+            ).fetchall()
+        }
         for m in matchups:
             if m["matchup_period_id"] > last_reg:
                 continue
@@ -130,6 +147,11 @@ def fetch() -> None:
                 (m["matchup_id"], m["matchup_period_id"],
                  m["home_team_id"], m["away_team_id"], m["winner"], now),
             )
+            # Skip REST scores for an already-seeded current-period matchup —
+            # the scrape owns it (see above).
+            if (m["matchup_period_id"] == current_period
+                    and m["matchup_id"] in seeded_current):
+                continue
             for s in m["scores"]:
                 conn.execute(
                     """

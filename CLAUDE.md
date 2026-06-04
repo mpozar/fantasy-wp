@@ -369,6 +369,8 @@ ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. The
 
 We work around this by **scraping the rendered DOM** with headless Chromium via Playwright. `app/espn_scrape.py` opens `fantasy.espn.com/baseball/league/scoreboard`, waits for tables + WebSocket settle, then reads cat-by-cat values straight from the matchup tables. `cli.fetch` overrides the REST `cumulativeScore.scoreByStat` values with the scraped ones for the current period. Falls back to REST data silently if the scrape errors.
 
+**The scrape is the source of truth for the current period — REST never overwrites it once seeded.** `fetch` only scrapes when games are in progress (the headless browser is pure overhead otherwise). But REST does **not** reliably catch up when idle — it's been observed hours-stale after a slate finalized (e.g. a team's H stuck at 11 while the UI/scrape showed 19). So `fetch` seeds a current-period matchup's `category_state` from REST only the *first* time (no rows yet); after that, only the scrape writes current-period scores. Without this guard, an idle tick (scrape skipped, no games live) regressed good live-scraped scores back to stale REST — which once flipped a matchup's WP ~20pp the wrong way until the next live scrape. Past/future periods are REST-only (no scrape, all-zero or settled).
+
 ### Auth (the tricky part)
 
 ESPN's web UI requires more than the `SWID`/`espn_s2` cookies we use for REST — it also needs MyDisney session cookies (`ESPN-ONESITE.WEB-PROD.token`, `dtcAuth`, `espnAuth`) that are httpOnly and only get set through the full MyDisney login flow.
