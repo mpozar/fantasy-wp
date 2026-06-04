@@ -40,6 +40,33 @@ def test_rate_components_not_started_skipped():
     assert v.check_rate_components(_view()) == []   # nothing banked yet
 
 
+# ── the idle-fetch drop: scored cats vanish from a partial-write read ──
+
+# A complete underway state: all 10 scored cats + the raw rate components.
+_FULL_STATE = {1: 30, 5: 5, 20: 18, 23: 4, 48: 30, 63: 2, 83: 3,
+               18: 0.75, 47: 4.2, 41: 1.25, sim.STAT_ER: 14, sim.STAT_OUTS: 90}
+
+
+def test_current_cats_missing_flagged():
+    # OUTS banked (week underway) but the scored display cats were dropped —
+    # only the raw rate components survive (the idle-fetch / single-MAX read bug).
+    components_only = {sim.STAT_ER: 14, sim.STAT_OUTS: 90}
+    view = _view(home_state=dict(components_only), away_state=dict(components_only))
+    f = v.check_current_cats_present(view)
+    assert {x.code for x in f} == {"INV_CURRENT_CATS_MISSING"}
+    assert all(x.severity == "error" for x in f)
+    assert len(f) == 2  # both sides
+
+def test_current_cats_present_ok():
+    view = _view(home_state=dict(_FULL_STATE), away_state=dict(_FULL_STATE))
+    assert v.check_current_cats_present(view) == []
+
+def test_current_cats_skipped_before_pitching():
+    # no OUTS yet → not underway on the pitching side → nothing to expect
+    assert v.check_current_cats_present(_view()) == []
+    assert v.check_current_cats_present(_view(home_state={1: 5}, away_state={1: 3})) == []
+
+
 def test_rate_divergence_catches_low_era():
     # the literal 8.37→3.76 smell, with a real sample banked
     view = _view(cat_avg={sim.STAT_ERA: (3.76, 4.0)},
@@ -86,7 +113,6 @@ def test_wp_swing_warn():
 
 
 def test_clean_view_no_findings():
-    view = _view(home_state={48: 20, sim.STAT_ER: 5, sim.STAT_OUTS: 60},
-                 away_state={48: 18, sim.STAT_ER: 4, sim.STAT_OUTS: 55},
-                 cat_avg={48: (30.0, 28.0), sim.STAT_ERA: (4.5, 4.6)})
+    view = _view(home_state=dict(_FULL_STATE), away_state=dict(_FULL_STATE),
+                 cat_avg={48: (31.0, 31.0), sim.STAT_ERA: (4.5, 4.6)})
     assert v.check_view(view) == []

@@ -1374,16 +1374,24 @@ def load_last_starts(conn: sqlite3.Connection) -> dict[str, str]:
 
 def load_latest_state(conn: sqlite3.Connection, matchup_id: int,
                       team_id: int) -> dict[int, float]:
+    # Latest value *per (matchup, team, stat)*, not by the matchup's single
+    # overall MAX(fetched_at): current-period category_state is split-sourced
+    # and partially written per tick (the scrape owns display cats; an idle
+    # fetch writes only REST components at a fresh timestamp). Keying on one
+    # global latest timestamp would drop any stat not written that tick — e.g.
+    # the scored display cats vanish on the first idle fetch after a slate,
+    # collapsing every WP toward 50/50. Mirrors the `last_good` loader in cli.py.
     rows = conn.execute(
         """
-        SELECT stat_id, score
-        FROM category_state
-        WHERE matchup_id=? AND team_id=?
-          AND fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state
-              WHERE matchup_id=? AND team_id=?
+        SELECT cs.stat_id, cs.score
+        FROM category_state cs
+        WHERE cs.matchup_id=? AND cs.team_id=?
+          AND cs.fetched_at = (
+              SELECT MAX(fetched_at) FROM category_state c2
+              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
+                AND c2.stat_id=cs.stat_id
           )
         """,
-        (matchup_id, team_id, matchup_id, team_id),
+        (matchup_id, team_id),
     ).fetchall()
     return {r["stat_id"]: r["score"] for r in rows}

@@ -895,17 +895,20 @@ def _last_regular_season_period(conn) -> int | None:
 
 
 def _latest_scores(conn, matchup_id: int, team_id: int) -> dict[int, float]:
+    # Per (matchup, team, stat) latest — see load_latest_state in sim.py for why
+    # a single MAX(fetched_at) drops partially-written stats (idle-fetch bug).
     rows = conn.execute(
         """
-        SELECT stat_id, score
-        FROM category_state
-        WHERE matchup_id=? AND team_id=?
-          AND fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state
-              WHERE matchup_id=? AND team_id=?
+        SELECT cs.stat_id, cs.score
+        FROM category_state cs
+        WHERE cs.matchup_id=? AND cs.team_id=?
+          AND cs.fetched_at = (
+              SELECT MAX(fetched_at) FROM category_state c2
+              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
+                AND c2.stat_id=cs.stat_id
           )
         """,
-        (matchup_id, team_id, matchup_id, team_id),
+        (matchup_id, team_id),
     ).fetchall()
     return {r["stat_id"]: r["score"] for r in rows}
 
@@ -1173,17 +1176,20 @@ def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
 
 def _latest_score_rows(conn, matchup_id: int, team_id: int) -> dict[int, dict]:
     """Latest score+result keyed by stat_id."""
+    # Per (matchup, team, stat) latest — see load_latest_state in sim.py for why
+    # a single MAX(fetched_at) drops partially-written stats (idle-fetch bug).
     rows = conn.execute(
         """
-        SELECT stat_id, score, result
-        FROM category_state
-        WHERE matchup_id=? AND team_id=?
-          AND fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state
-              WHERE matchup_id=? AND team_id=?
+        SELECT cs.stat_id, cs.score, cs.result
+        FROM category_state cs
+        WHERE cs.matchup_id=? AND cs.team_id=?
+          AND cs.fetched_at = (
+              SELECT MAX(fetched_at) FROM category_state c2
+              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
+                AND c2.stat_id=cs.stat_id
           )
         """,
-        (matchup_id, team_id, matchup_id, team_id),
+        (matchup_id, team_id),
     ).fetchall()
     return {r["stat_id"]: {"score": r["score"], "result": r["result"]} for r in rows}
 

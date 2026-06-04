@@ -89,6 +89,31 @@ def check_rate_components(view) -> list[Finding]:
     return out
 
 
+def check_current_cats_present(view) -> list[Finding]:
+    """Once a side has pitched (OUTS banked), current_state must carry every
+    *scored* category. The current-period fetch is split-sourced — the live DOM
+    scrape owns the 10 display cats, REST writes only the raw rate components —
+    and a read keyed on a single MAX(fetched_at) once dropped all 10 scored cats
+    on the first *idle* fetch after a slate (only components got a fresh
+    timestamp), collapsing every WP toward 50/50. INV_RATE_COMPONENTS_MISSING
+    stayed quiet there (ER/OUTS were still present), so nothing flagged.
+
+    Gate on OUTS — a component REST writes every tick, so it survives the very
+    drop we're detecting; gating on the counting cats would inherit the same
+    blind spot that let this through."""
+    out = []
+    for who, st in (("home", view["home_state"]), ("away", view["away_state"])):
+        if (st.get(sim.STAT_OUTS) or 0) <= 0:
+            continue  # this side hasn't pitched yet — nothing banked to expect
+        missing = [NAME[sid] for sid in (_COUNTING + _RATES) if sid not in st]
+        if missing:
+            out.append(Finding("INV_CURRENT_CATS_MISSING", "error", view["matchup_id"],
+                               f"{who} current_state missing scored cat(s) "
+                               f"{','.join(missing)} — fetch wrote a partial row-set "
+                               f"(idle-fetch drop?); WP collapses toward 50/50"))
+    return out
+
+
 def check_proj_vs_current(view) -> list[Finding]:
     """Projected end-of-week counting totals can't be below what's already
     banked (you don't lose K/H/R). A projection under current means the sim isn't
@@ -154,8 +179,8 @@ def check_rate_divergence(view) -> list[Finding]:
     return out
 
 
-_CHECKS = [check_wp_range, check_rate_components, check_proj_vs_current,
-           check_units, check_wp_swing, check_rate_divergence]
+_CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
+           check_proj_vs_current, check_units, check_wp_swing, check_rate_divergence]
 
 
 def check_view(view) -> list[Finding]:
