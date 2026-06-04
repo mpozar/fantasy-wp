@@ -465,6 +465,27 @@ We work around this by **scraping the rendered DOM** with headless Chromium via 
 
 Past/future periods are REST-only (no scrape, no guard — all-zero or settled).
 
+**The split-source write implies a per-stat read — don't read by a single
+`MAX(fetched_at)`.** Because the scrape and REST write *different* stat_ids, and
+the scrape only runs when games are live, **a given fetch tick writes only a
+*subset* of a matchup's stats.** In particular the first *idle* fetch after a
+slate (`scrape skipped (no games in progress)`) writes **only the REST components**
+at a fresh `fetched_at` — the scored display cats keep their older (last-scrape)
+timestamp. So any reader that loads "the latest state" as *all rows at the single
+latest `fetched_at`* will see only that idle tick's components and **drop all 10
+scored cats**, making the sim project from ≈zero banked → every WP collapses toward
+50/50, and `publish` emits empty current-week scores (blank site). This bit us on
+2026-06-04 evening (see `INCIDENTS.md`); the morning corruption that day was the
+same family (a partial current-period state mistaken for complete).
+
+The three readers therefore load the latest value **per `(matchup, team, stat)`**,
+not by a global `MAX(fetched_at)` — `sim.load_latest_state`, and `_latest_scores` /
+`_latest_score_rows` in `cli.py`. This mirrors the `last_good` loader the
+monotonicity guard already uses (cli.py, with the same rationale in its comment).
+If you add another current-state reader, use the same per-stat pattern. The
+`INV_CURRENT_CATS_MISSING` validation check (below) guards against a regression:
+once a side has pitched, every scored cat must be present in current_state.
+
 ### Auth (the tricky part)
 
 ESPN's web UI requires more than the `SWID`/`espn_s2` cookies we use for REST — it also needs MyDisney session cookies (`ESPN-ONESITE.WEB-PROD.token`, `dtcAuth`, `espnAuth`) that are httpOnly and only get set through the full MyDisney login flow.
@@ -513,14 +534,16 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 ## Investigating "why did this WP change?"
 
 > **Check `INCIDENTS.md` first.** Known data incidents (and any **hand-edited
-> historical snapshots**) are logged there. In particular: period-10 matchups
-> (id 55–60) for **2026-06-04 ~17:05–20:02 UTC** had their `wp_snapshots.home_wp`/
-> `away_wp` *manually smoothed* over corrupted data — those columns don't match
-> `details_json` for that window. Don't chase that as a live bug. **Caveat:** the
-> hand-edited window is 17:05–20:02, but the underlying **data corruption ran
-> ~06:16–20:02** — so for that whole morning span `details_json` is *also*
-> corrupted (genuine model output on missing rate components), not a clean
-> reference. See the m59 worked example in `INCIDENTS.md`.
+> historical snapshots**) are logged there. Period-10 matchups (id 55–60) on
+> **2026-06-04** have *two* hand-edited windows that day — those `home_wp`/`away_wp`
+> columns are smoothed and don't match `details_json`; don't chase them as live bugs:
+> - **~17:05–20:02 UTC** (morning corruption) — dropped rate *components*; `details_json`
+>   is *also* corrupted across the broader **~06:16–20:02** span (model output on
+>   missing components). See the m59 worked example in `INCIDENTS.md`.
+> - **21:35–21:55 UTC** (evening) — the idle-fetch dropped the *scored cats* (WP
+>   collapsed to 50/50); 5 ticks linearly interpolated between the 21:30 and 22:00
+>   anchors. Root cause fixed in code (`38b4959`) — see the read-side note under
+>   "Live data freshness" and `INV_CURRENT_CATS_MISSING`.
 
 Common case: user notices a sudden WP shift and asks why. Method:
 
@@ -634,6 +657,7 @@ bug); **warn** = an anomaly that's unusual but may be legit (eyeball it).
 | Code | Sev | Asserts | Likely a bug when… |
 |---|---|---|---|
 | `INV_RATE_COMPONENTS_MISSING` | error | current_state has ER+OUTS once a week's underway | almost always — the sim can't blend current innings into ERA/WHIP (the 3.76 bug). Check `fetch`'s current-period write split. |
+| `INV_CURRENT_CATS_MISSING` | error | once a side has pitched (OUTS banked), all 10 *scored* cats present in current_state | almost always — a partial current-period write read as complete (the 2026-06-04 evening idle-fetch drop → WP collapses to 50/50, blank site). Check the per-`(matchup,team,stat)` read in `load_latest_state` / `_latest_score*`. Gated on OUTS (survives the drop) not the counting cats (which don't). |
 | `INV_PROJ_LT_CURRENT` | error | projected end counting total ≥ current banked | always — the sim isn't seeding current_state. |
 | `INV_WP_RANGE` / `INV_WP_SUM` | error | WP ∈ [0,1]; home+away ≤ 1 | always — arithmetic/derive bug. |
 | `INV_SP_UNITS_CAP` | error | SP starts ≤ ~2.3 per 7 days (scaled by period length) | bug *if* a normal 7-day week; **legit for long periods** (All-Star = 14 days → ~2.3 real). The cap is already period-aware. |
