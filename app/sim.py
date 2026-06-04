@@ -835,6 +835,11 @@ def build_budgets(roster: list[dict],
         from the ROS-rate estimator.
       - Hitters → run through the per-day lineup optimizer; their units
         are the sum of days they win a slot.
+
+    GOTCHA: pass `lineup_slot_counts` (the league's slot capacities, from
+    scoring_settings.lineup_slots_json — see cli.compute) or the optimizer has
+    no slots to fill and **every hitter silently comes back with 0 days / no
+    budget**. Easy to miss in ad-hoc analysis scripts; pitchers are unaffected.
     """
     team_total_ros_games = team_total_ros_games or {}
     lineup_slot_counts = lineup_slot_counts or {}
