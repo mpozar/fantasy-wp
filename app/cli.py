@@ -789,14 +789,30 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
               help="Check current + future periods.")
 @click.option("--list", "list_only", is_flag=True,
               help="List open (unresolved) flags and exit.")
-def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool) -> None:
+@click.option("--resolve", "resolve_code", default=None, metavar="CODE",
+              help="Mark open flags with this CODE (or 'all') resolved, and exit.")
+def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
+                 resolve_code: str | None) -> None:
     """Run invariant + anomaly checks over the latest WP snapshots and record
     findings in `validation_flags`. Cheap (no sims) — safe to run every fast tick.
-    Review open flags with `--list`, then investigate in Claude Code."""
+    Review open flags with `--list`, dismiss triaged-legit ones with
+    `--resolve CODE`, and investigate the rest in Claude Code."""
     from app import validate as _v
 
     conn = db.connect()
     try:
+        if resolve_code:
+            with conn:
+                if resolve_code == "all":
+                    n = conn.execute(
+                        "UPDATE validation_flags SET resolved=1 WHERE resolved=0").rowcount
+                else:
+                    n = conn.execute(
+                        "UPDATE validation_flags SET resolved=1 WHERE resolved=0 AND code=?",
+                        (resolve_code,)).rowcount
+            click.echo(f"Resolved {n} flag(s)"
+                       + ("" if resolve_code == "all" else f" with code {resolve_code}") + ".")
+            return
         if list_only:
             rows = conn.execute(
                 "SELECT code, matchup_id, severity, detail, occurrences, first_seen "

@@ -582,29 +582,65 @@ sampling (`test_cadence.py`), the category_state monotonicity guard
 (`test_category_guard.py`), and the validation checks (`test_validate.py`).
 `scripts/ingame_scenarios.py` prints projections for hand-built in-progress states.
 
-### Validation / anomaly flags (`app validate`)
+### Validation / anomaly flags (`app validate`) — what it is
 
 `app/validate.py` runs cheap **invariant + anomaly checks over the computed
-snapshots** (no sims), because most bugs here have been *emergent* — a fetch/plumbing
-change breaks what the sim consumes, so per-function unit tests pass while the
-end-to-end output goes wrong (e.g. the dropped rate-components → an 8.37 ERA
-projecting 3.76; nothing failed, a human just eyeballed it). These checks assert
-output-level properties at exactly that layer.
+snapshots** (reads stored snapshots + category_state, no sims). Why it exists:
+nearly every bug in this repo has been *emergent* — a fetch/plumbing change
+breaks what the sim consumes, so per-function unit tests still pass while the
+end-to-end output goes wrong (the dropped rate-components → an 8.37 ERA projecting
+3.76 failed *no* test; a human just eyeballed it). These checks assert
+output-level properties at exactly that layer, and `fast.sh` runs `app validate`
+every 5-min tick (cheap, non-fatal), upserting findings into `validation_flags`
+(deduped per `code + matchup_id + flag_date`, with an `occurrences` count).
 
-- **errors** (invariants that must never hold): rate components present in
-  current_state once a week is underway; projected counting totals ≥ current;
-  WP ∈ [0,1]; SP units ≤ ~2.3/7-days (scaled by period length — the All-Star
-  break is a 14-day period); no negative units.
-- **warns** (anomalies to eyeball): WP swing ≥15pp vs prior compute; projected
-  rate >40% off current once a real sample is banked.
+Two severities: **error** = an invariant that must never hold (almost certainly a
+bug); **warn** = an anomaly that's unusual but may be legit (eyeball it).
 
-`fast.sh` runs `app validate` every tick (cheap, non-fatal) and upserts findings
-into `validation_flags` (deduped per code+matchup+day, with occurrences). Triage
-loop: `app validate --list` shows open flags; bring them here and ask me to
-investigate whether each is a real bug or legit (e.g. the All-Star 14-day period
-tripped the SP-units cap → not a bug → tightened the check to be period-aware).
-`app validate --all` sweeps every period on demand. When adding a new failure
-mode, add both a check here and a unit test in `test_validate.py`.
+### Triage runbook (safe to do from a cold start)
+
+1. **See what's open:** `app validate --list` → lists unresolved flags
+   (`[severity] CODE mNN ×occurrences  detail  (since …)`).
+2. **Investigate each flag** using the table below — figure out *bug vs legit*.
+   The general method is the WP-change investigation under "Investigating WP
+   changes": pull the matchup's snapshots, diff budgets / category_state /
+   probables across the relevant tick. For data shape, recall `category_state`
+   for the **current period** is split-sourced (scrape owns the display cats;
+   REST fills raw components ER/OUTS/AB/…) — see "Live data freshness".
+3. **Resolve the outcome:**
+   - *Real bug* → fix it, add a regression test in `tests/test_validate.py`, then
+     the next compute clears the flag (or `--resolve` it).
+   - *Legit one-off* (e.g. a genuine 18pp WP swing from a real roster move) →
+     `app validate --resolve CODE` to dismiss the open instances.
+   - *Legit recurring* (the check is too strict, like the All-Star period below)
+     → **tune the check** in `app/validate.py` (raise a threshold / add an
+     exception) and update its test; don't just keep resolving it daily.
+   - `app validate --resolve all` clears everything (use sparingly).
+4. **On-demand sweep:** `app validate --all` re-runs every period (not just the
+   current one) — good for a full audit or after a model change.
+
+### Flag reference (code → meaning → how to read it)
+
+| Code | Sev | Asserts | Likely a bug when… |
+|---|---|---|---|
+| `INV_RATE_COMPONENTS_MISSING` | error | current_state has ER+OUTS once a week's underway | almost always — the sim can't blend current innings into ERA/WHIP (the 3.76 bug). Check `fetch`'s current-period write split. |
+| `INV_PROJ_LT_CURRENT` | error | projected end counting total ≥ current banked | always — the sim isn't seeding current_state. |
+| `INV_WP_RANGE` / `INV_WP_SUM` | error | WP ∈ [0,1]; home+away ≤ 1 | always — arithmetic/derive bug. |
+| `INV_SP_UNITS_CAP` | error | SP starts ≤ ~2.3 per 7 days (scaled by period length) | bug *if* a normal 7-day week; **legit for long periods** (All-Star = 14 days → ~2.3 real). The cap is already period-aware. |
+| `INV_NEG_UNITS` | error | no negative budget units | always. |
+| `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, or games going live. Bug only if no such cause (diff the budgets/state across the tick). |
+| `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within 40% of current once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`); legit if the current sample is small/noisy. |
+
+Thresholds live as constants at the top of `app/validate.py`
+(`WP_SWING`, `RATE_DIVERGENCE`, `MAX_SP_UNITS_PER_WEEK`, …).
+
+### Adding a new check
+
+When a new failure mode surfaces: add a pure `check_*(view) -> list[Finding]`
+in `app/validate.py` (operate on the `view` dict so it's unit-testable), append
+it to `_CHECKS`, add a row to the reference table above, and add a test to
+`tests/test_validate.py` (ideally encoding the actual incident as a regression
+guard — that's how `INV_RATE_COMPONENTS_MISSING` and the guard tests were born).
 
 ### wp_snapshot history retention
 
