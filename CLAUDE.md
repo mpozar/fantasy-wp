@@ -512,6 +512,12 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 
 ## Investigating "why did this WP change?"
 
+> **Check `INCIDENTS.md` first.** Known data incidents (and any **hand-edited
+> historical snapshots**) are logged there. In particular: period-10 matchups
+> (id 55–60) for **2026-06-04 ~17:05–20:02 UTC** had their `wp_snapshots.home_wp`/
+> `away_wp` *manually smoothed* over corrupted data — those columns don't match
+> `details_json` for that window. Don't chase that as a live bug.
+
 Common case: user notices a sudden WP shift and asks why. Method:
 
 1. **Pull the snapshot history** for the matchup:
@@ -645,7 +651,11 @@ guard — that's how `INV_RATE_COMPONENTS_MISSING` and the guard tests were born
 ### wp_snapshot history retention
 
 **Policy: never delete snapshots.** The DB keeps every snapshot so every week —
-including completed past weeks — keeps its full WP-over-time graph. Payload size
+including completed past weeks — keeps its full WP-over-time graph. (One-time
+exception 2026-06-04: a corrupted window of period-10 snapshots had its `home_wp`/
+`away_wp` *overwritten* — not deleted — to smooth the graphs; `details_json` still
+holds the original computed values. See `INCIDENTS.md`. Overwriting computed WP
+is otherwise not something to do lightly.) Payload size
 is handled at *publish* time instead: `_downsample_history` thins each matchup's
 history to `MAX_HISTORY_POINTS` (200) per model version when writing `data.json`,
 so the static site stays small while the graphs look identical (the chart is
