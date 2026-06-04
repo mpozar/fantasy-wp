@@ -449,11 +449,14 @@ def persist(conn, findings: list[Finding], now: str) -> None:
             )
 
 
-def check_published_site(data_json_path: str | None, now_iso: str | None) -> list[Finding]:
+def check_published_site(data_json_path: str | None, now_iso: str | None,
+                         *, conn=None) -> list[Finding]:
     """Validate the *actual published artifact* the site renders. Catches the
     user-visible failure directly: a started week whose matchup blocks have no
     scored-cat values = "no stats showing on the site". Also flags a stale or
-    unreadable data.json (publish silently failing)."""
+    unreadable data.json (publish silently failing). With `conn`, also cross-checks
+    that the published scores *agree* with the DB (not just that they exist) — see
+    the cross-source note below."""
     if not data_json_path:
         return []
     import json
@@ -467,7 +470,8 @@ def check_published_site(data_json_path: str | None, now_iso: str | None) -> lis
     except (OSError, ValueError) as e:
         return [Finding("INV_SITE_UNREADABLE", "error", None, f"data.json unreadable: {e}")]
     out = []
-    age = _minutes_old(d.get("generated_at"), now_iso)
+    gen = d.get("generated_at")
+    age = _minutes_old(gen, now_iso)
     if age is not None and age > STALE_MINUTES:
         out.append(Finding("ANOM_SITE_STALE", "warn", None,
                            f"data.json generated_at is {age:.0f} min old — publish may be failing"))
@@ -486,10 +490,44 @@ def check_published_site(data_json_path: str | None, now_iso: str | None) -> lis
                     out.append(Finding("INV_SITE_MISSING_SCORES", "error", m.get("matchup_id"),
                                        f"period {pid} {side} site block missing scored cat(s) "
                                        f"{','.join(missing)} — stats not showing on the site"))
+                # Cross-source: the published scores must match what's in the DB. We
+                # compare against category_state *as of generated_at* (what publish
+                # actually read), so a fetch landing after publish can't manufacture a
+                # false mismatch. Scoped to the live week (fresh, unpruned) to stay cheap.
+                if (conn is not None and gen and w.get("state") == "live"
+                        and blk.get("team_id") is not None):
+                    dbstate = _state_as_of(conn, m.get("matchup_id"), blk["team_id"], gen)
+                    for c in cats:
+                        sid, pub = c.get("stat_id"), c.get("score")
+                        if pub is None or sid not in dbstate:
+                            continue
+                        tol = 0.05 if sid in _RATES else 0.5
+                        if abs(pub - dbstate[sid]) > tol:
+                            out.append(Finding("INV_SITE_DB_MISMATCH", "error", m.get("matchup_id"),
+                                               f"period {pid} {side} {NAME.get(sid, sid)} "
+                                               f"site={pub} vs DB={dbstate[sid]} (as of {gen[:16]}) "
+                                               f"— published artifact disagrees with the DB"))
     return out
 
 
 # ── DB loading + orchestration ──
+
+def _state_as_of(conn, matchup_id: int, team_id: int, at_iso: str) -> dict[int, float]:
+    """Per-stat latest banked value at-or-before `at_iso` — i.e. exactly what a
+    publish stamped `generated_at=at_iso` would have read. Lets the cross-source
+    check compare data.json to the DB snapshot publish saw, immune to later fetches."""
+    rows = conn.execute(
+        """
+        SELECT stat_id, score FROM category_state cs
+        WHERE matchup_id=? AND team_id=? AND fetched_at <= ?
+          AND fetched_at = (SELECT MAX(fetched_at) FROM category_state c2
+                            WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
+                              AND c2.stat_id=cs.stat_id AND c2.fetched_at <= ?)
+        """,
+        (matchup_id, team_id, at_iso, at_iso),
+    ).fetchall()
+    return {r["stat_id"]: r["score"] for r in rows}
+
 
 def _load_state_prev(conn, matchup_id: int, team_id: int) -> dict[int, float]:
     """The *second*-latest banked value per stat (for the banked-regression check).
@@ -564,5 +602,5 @@ def run(conn, period_ids: list[int], *, now: str | None = None,
     for fn in _LEAGUE_CHECKS:
         findings.extend(fn(views))
     findings.extend(check_pipeline_freshness(conn, now))
-    findings.extend(check_published_site(data_json_path, now))
+    findings.extend(check_published_site(data_json_path, now, conn=conn))
     return findings

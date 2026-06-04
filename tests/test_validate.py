@@ -304,6 +304,51 @@ def test_site_skipped_without_path():
     assert v.check_published_site(None, "2026-06-04T21:00:00+00:00") == []
 
 
+# ── cross-source: published scores must match the DB (as of generated_at) ──
+
+def _live_site_block(team_id, scores):
+    """A data.json team block: scores is {stat_id: value}."""
+    bat = [{"stat_id": s, "score": scores[s]} for s in (1, 5, 20, 23, 18)]
+    pit = [{"stat_id": s, "score": scores[s]} for s in (48, 63, 47, 41, 83)]
+    return {"team_id": team_id, "batting": bat, "pitching": pit}
+
+_ALL_TEN = {1: 30, 5: 5, 20: 18, 23: 4, 48: 30, 63: 2, 83: 3, 18: 0.75, 47: 4.2, 41: 1.25}
+
+def test_site_db_mismatch_flagged(tmp_path):
+    conn = _mem_db()
+    _put_state(conn, 1, 20, _ALL_TEN, "2026-06-04T21:30:00+00:00")
+    site_scores = dict(_ALL_TEN); site_scores[1] = 19   # site shows H=19, DB has 30
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _live_site_block(20, site_scores),
+         "away": _live_site_block(21, _ALL_TEN)}]}]
+    # team 21 absent from DB → no rows to compare for away; only home H mismatches
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00", conn=conn)
+    mm = [x for x in f if x.code == "INV_SITE_DB_MISMATCH"]
+    assert len(mm) == 1 and "H site=19 vs DB=30" in mm[0].detail
+
+def test_site_db_agreement_ok(tmp_path):
+    conn = _mem_db()
+    _put_state(conn, 1, 20, _ALL_TEN, "2026-06-04T21:30:00+00:00")
+    _put_state(conn, 1, 21, _ALL_TEN, "2026-06-04T21:30:00+00:00")
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _live_site_block(20, _ALL_TEN),
+         "away": _live_site_block(21, _ALL_TEN)}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00", conn=conn)
+    assert [x for x in f if x.code == "INV_SITE_DB_MISMATCH"] == []
+
+def test_site_db_compare_ignores_later_fetch(tmp_path):
+    # DB updated AFTER generated_at must not create a phantom mismatch
+    conn = _mem_db()
+    _put_state(conn, 1, 20, _ALL_TEN, "2026-06-04T21:30:00+00:00")               # what publish saw
+    _put_state(conn, 1, 20, {**_ALL_TEN, 1: 41}, "2026-06-04T21:40:00+00:00")     # later fetch
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _live_site_block(20, _ALL_TEN),
+         "away": _live_site_block(21, _ALL_TEN)}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks, generated_at="2026-06-04T21:35:00+00:00"),
+                               "2026-06-04T21:41:00+00:00", conn=conn)
+    assert [x for x in f if x.code == "INV_SITE_DB_MISMATCH"] == []  # compared as-of 21:35, not 21:40
+
+
 # ── read-fix regression guard: an idle partial write must NOT drop banked cats ──
 
 def test_read_survives_idle_partial_write():
