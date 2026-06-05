@@ -46,6 +46,13 @@ _RATES = [18, 47, 41]                     # OPS, ERA, WHIP (ratios)
 NAME = {1: "H", 5: "HR", 20: "R", 23: "SB", 48: "K", 63: "QS", 83: "SVHD",
         18: "OPS", 47: "ERA", 41: "WHIP"}
 
+# Rate cats are *derived* from components at publish time (see cli._apply_derived_rates),
+# not read from the stored scraped rate — so the cross-source DB check must derive too.
+# Each rate is only comparable once its gating component is banked (else publish fell
+# back to the scraped value / the derivation degenerates), so gate on it.
+_RATE_DERIVERS = {18: sim.derive_ops, 47: sim.derive_era, 41: sim.derive_whip}
+_RATE_REQUIRES = {18: sim.STAT_AB, 47: sim.STAT_OUTS, 41: sim.STAT_OUTS}
+
 # Tunable thresholds.
 WP_SWING = 0.15           # |home_wp - prev| flagged for review
 RATE_DIVERGENCE = 0.40    # projected rate >40% off current → anomaly
@@ -525,13 +532,27 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                     dbstate = _state_as_of(conn, m.get("matchup_id"), blk["team_id"], gen)
                     for c in cats:
                         sid, pub = c.get("stat_id"), c.get("score")
-                        if pub is None or sid not in dbstate:
+                        if pub is None:
+                            continue
+                        # Rate cats: compare against the value derived from the DB
+                        # components (what publish emits), not the stored scraped
+                        # rate. Counting cats: the banked total. Skip a rate until its
+                        # gating component is banked — publish falls back to the
+                        # scraped value there, so it isn't comparable to a derivation.
+                        deriver = _RATE_DERIVERS.get(sid)
+                        if deriver is not None:
+                            if dbstate.get(_RATE_REQUIRES[sid], 0) <= 0:
+                                continue
+                            db_val = deriver(dbstate)
+                        elif sid in dbstate:
+                            db_val = dbstate[sid]
+                        else:
                             continue
                         tol = 0.05 if sid in _RATES else 0.5
-                        if abs(pub - dbstate[sid]) > tol:
+                        if abs(pub - db_val) > tol:
                             out.append(Finding("INV_SITE_DB_MISMATCH", "error", m.get("matchup_id"),
                                                f"period {pid} {side} {NAME.get(sid, sid)} "
-                                               f"site={pub} vs DB={dbstate[sid]} (as of {gen[:16]}) "
+                                               f"site={pub} vs DB={db_val} (as of {gen[:16]}) "
                                                f"— published artifact disagrees with the DB"))
     return out
 

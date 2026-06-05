@@ -41,6 +41,24 @@ def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
     return True
 
 
+def _scrape_owns_display_cat(stat_id: int, in_progress: bool) -> bool:
+    """Whether the live DOM scrape (not REST) owns this current-period display cat
+    this tick — i.e. REST must skip writing it.
+
+    - **Rate cats** (OPS/ERA/WHIP) are derived from components at publish time, so
+      the scraped rate value is never used — REST always skips them.
+    - **Counting display cats** (K/QS/SVHD) are scrape-owned only *while a live
+      scrape is running*. Once the slate is idle the scrape is skipped and REST is
+      the authoritative *final* source, so REST reconciles them (through the
+      monotonicity guard — it can only ratchet up). This captures a stat applied
+      after the last live scrape, e.g. a two-way player's pitching line credited at
+      game-final (Ohtani K 23→29, 2026-06-05). League-wide gate: an early-finishing
+      matchup waits until the whole slate is idle, then reconciles next tick."""
+    if stat_id in _RATE_STAT_IDS:
+        return True
+    return bool(in_progress)
+
+
 def _overlay_espn_probables(games: list[dict], start, end) -> int:
     """Fill `probable_pitcher_name` from ESPN's public feed for games where MLB
     hasn't posted one yet — ESPN's feed leads MLB statsapi by a day or two.
@@ -198,6 +216,16 @@ def fetch() -> None:
         ).fetchall():
             last_good[(r["matchup_id"], r["team_id"], r["stat_id"])] = r["score"]
 
+        # Whether a live DOM scrape will run this tick (any MLB game in progress).
+        # When idle, the scrape is skipped and REST is the authoritative *final*
+        # source, so REST may reconcile the display *counting* cats below (see
+        # `_scrape_owns_display_cat`). team_schedule is fresh — refresh-live ran first.
+        in_progress = conn.execute(
+            "SELECT COUNT(*) FROM team_schedule "
+            "WHERE matchup_period_id=? AND game_status='In Progress'",
+            (current_period,),
+        ).fetchone()[0]
+
         for m in matchups:
             if m["matchup_period_id"] > last_reg:
                 continue
@@ -219,11 +247,13 @@ def fetch() -> None:
             cur_p = m["matchup_period_id"] == current_period
             seeded = m["matchup_id"] in seeded_current
             for s in m["scores"]:
-                if cur_p and seeded and s["stat_id"] in display_cats:
-                    continue  # scrape owns display cats; REST only fills components
+                sid = s["stat_id"]
+                if (cur_p and seeded and sid in display_cats
+                        and _scrape_owns_display_cat(sid, in_progress)):
+                    continue  # scrape owns these now; REST only fills the rest
                 if cur_p:
                     _write_category_score(conn, last_good, m["matchup_id"],
-                                          s["team_id"], s["stat_id"],
+                                          s["team_id"], sid,
                                           s["score"], s["result"], now)
                 else:
                     conn.execute(
@@ -242,15 +272,10 @@ def fetch() -> None:
         # FastCast WebSocket; the REST endpoint we just polled can be 5-30 min
         # stale during live games. Fall back to REST data silently if the
         # scrape errors or returns nothing (auth wall, profile not set up).
-        # Only scrape when games are actually in progress. With nothing live,
-        # ESPN's REST scores are current and the ~15-60s headless-browser scrape
-        # is pure overhead (and the only place an idle-window runtime spike can
-        # come from). team_schedule status is fresh — refresh-live ran first.
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM team_schedule "
-            "WHERE matchup_period_id=? AND game_status='In Progress'",
-            (shape.current_matchup_period,),
-        ).fetchone()[0]
+        # Only scrape when games are actually in progress (computed above). With
+        # nothing live, ESPN's REST scores are current and the ~15-60s headless-
+        # browser scrape is pure overhead (and the only place an idle-window
+        # runtime spike can come from).
         scraped_count = 0
         scraped = {}
         scrape_skipped_idle = not in_progress
@@ -1111,6 +1136,49 @@ def _active_intervals(conn, period_id: int, now: str) -> list[dict]:
     ]
 
 
+# Rate display cats (OPS/ERA/WHIP) are stored as a *scraped* value that freezes
+# when the live scrape goes idle at slate's end, while their component counters
+# (ER/OUTS/P_H/P_BB/AB/…) keep updating via REST — so the scraped rate can drift
+# from both ESPN and the team's own components. Derive the published rate from
+# the current components instead (the same derivation `_cat_value` decides the WP
+# on), so the displayed number and WIN/LOSS stay consistent with the components.
+# (stat_id -> (deriver, display decimals))
+_RATE_DERIVERS = {
+    sim.STAT_OPS: (sim.derive_ops, 4),
+    sim.STAT_ERA: (sim.derive_era, 3),
+    sim.STAT_WHIP: (sim.derive_whip, 3),
+}
+_RATE_NO_DATA = 999.0  # derive_era/whip sentinel for no innings pitched
+
+
+def _apply_derived_rates(home_state: dict[int, dict],
+                         away_state: dict[int, dict]) -> None:
+    """Overwrite OPS/ERA/WHIP score+result in both team states with values
+    derived from the current component counters. Mutates in place — see the note
+    on `_RATE_DERIVERS`. Mirrors `sim._decide`'s comparison (incl. the no-data
+    sentinel) so the published result matches the WP's category decision."""
+    def components(state: dict[int, dict]) -> dict[int, float]:
+        return {sid: v["score"] for sid, v in state.items()
+                if v.get("score") is not None}
+
+    home_c, away_c = components(home_state), components(away_state)
+    for sid, (derive, ndigits) in _RATE_DERIVERS.items():
+        hv, av = derive(home_c), derive(away_c)
+        reversed_ = stats.is_reversed(sid)
+        if hv == av:
+            h_res, a_res = "TIE", "TIE"
+        else:
+            home_better = (hv < av) if reversed_ else (hv > av)
+            h_res, a_res = ("WIN", "LOSS") if home_better else ("LOSS", "WIN")
+        for state, val, res in ((home_state, hv, h_res), (away_state, av, a_res)):
+            # Keep the derived result (it mirrors the sim's _decide via the
+            # no-data sentinel), but never surface 999 as a score — fall back to
+            # the scraped display value when the team has no innings yet.
+            score = (round(val, ndigits) if val < _RATE_NO_DATA
+                     else (state.get(sid) or {}).get("score"))
+            state[sid] = {"score": score, "result": res}
+
+
 def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
     """One matchup with team blocks, current snapshot, and history.
 
@@ -1121,6 +1189,8 @@ def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
     away_team_id = m["away_team_id"]
     home_state = _latest_score_rows(conn, m["id"], home_team_id)
     away_state = _latest_score_rows(conn, m["id"], away_team_id)
+    if started:
+        _apply_derived_rates(home_state, away_state)
     wp_row = conn.execute(
         """
         SELECT * FROM wp_snapshots

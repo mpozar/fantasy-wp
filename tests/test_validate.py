@@ -373,6 +373,41 @@ def test_site_db_compare_ignores_later_fetch(tmp_path):
     assert [x for x in f if x.code == "INV_SITE_DB_MISMATCH"] == []  # compared as-of 21:35, not 21:40
 
 
+def test_site_db_mismatch_uses_derived_rate(tmp_path):
+    # Rate cats are derived from components at publish time, so the cross-source
+    # check must compare the published rate against the derivation — and flag a
+    # published *scraped* rate that disagrees with the components.
+    conn = _mem_db()
+    comp = {1: 30, 5: 5, 20: 18, 23: 4, 48: 30, 63: 2, 83: 3,          # counting
+            0: 90, 3: 6, 4: 1, 10: 12, 12: 1, 13: 2,                    # OPS components
+            sim.STAT_OUTS: 68, sim.STAT_ER: 8, sim.STAT_P_H: 17, sim.STAT_P_BB: 3,
+            47: 4.2, 41: 1.25, 18: 0.111}                              # stale scraped rates
+    _put_state(conn, 1, 20, comp, "2026-06-04T21:30:00+00:00")
+    _put_state(conn, 1, 21, comp, "2026-06-04T21:30:00+00:00")
+    derived = {18: round(sim.derive_ops(comp), 4),
+               47: round(sim.derive_era(comp), 3),
+               41: round(sim.derive_whip(comp), 3)}
+    good = {**{s: comp[s] for s in (1, 5, 20, 23, 48, 63, 83)}, **derived}
+
+    # Published derived rates agree with the DB derivation → silent.
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _live_site_block(20, good),
+         "away": _live_site_block(21, good)}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks, "2026-06-04T21:30:00+00:00"),
+                              "2026-06-04T21:31:00+00:00", conn=conn)
+    assert [x for x in f if x.code == "INV_SITE_DB_MISMATCH"] == []
+
+    # Publishing the stale *scraped* ERA (4.2) instead of the derived 3.176 → flagged.
+    stale = {**good, 47: comp[47]}
+    weeks2 = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _live_site_block(20, stale),
+         "away": _live_site_block(21, good)}]}]
+    f2 = v.check_published_site(_write_site(tmp_path, weeks2, "2026-06-04T21:30:00+00:00"),
+                               "2026-06-04T21:31:00+00:00", conn=conn)
+    mm = [x for x in f2 if x.code == "INV_SITE_DB_MISMATCH"]
+    assert len(mm) == 1 and "ERA" in mm[0].detail
+
+
 # ── read-fix regression guard: an idle partial write must NOT drop banked cats ──
 
 def test_read_survives_idle_partial_write():

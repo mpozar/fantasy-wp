@@ -9,7 +9,7 @@ two-way line) and must be rejected. Rate stats (OPS/ERA/WHIP) move freely.
 import sqlite3
 
 from app import sim
-from app.cli import _write_category_score, _RATE_STAT_IDS
+from app.cli import _write_category_score, _scrape_owns_display_cat, _RATE_STAT_IDS
 
 STAT_K = 48  # counting
 STAT_OUTS = 34  # counting
@@ -55,3 +55,22 @@ def test_rate_stat_may_decrease():
     lg = {(1, 1, sim.STAT_ERA): 6.0}
     assert _write_category_score(c, lg, 1, 1, sim.STAT_ERA, 3.5, None, "t1") is True
     assert _latest(c, sim.STAT_ERA) == 3.5  # rates can move either way
+
+
+# ── who owns a current-period display cat this tick (scrape vs REST) ──
+
+def test_rate_cat_never_written_by_rest():
+    # Rates are derived at publish from components, so REST always skips them.
+    assert _scrape_owns_display_cat(sim.STAT_ERA, in_progress=True) is True
+    assert _scrape_owns_display_cat(sim.STAT_ERA, in_progress=False) is True
+
+
+def test_counting_cat_scrape_owned_while_live():
+    # A live scrape owns the counting display cats while games are in progress.
+    assert _scrape_owns_display_cat(STAT_K, in_progress=True) is True
+
+
+def test_counting_cat_rest_reconciles_when_idle():
+    # Slate idle → no scrape → REST reconciles the final counting totals
+    # (the Ohtani K 23→29 post-final fix).
+    assert _scrape_owns_display_cat(STAT_K, in_progress=False) is False
