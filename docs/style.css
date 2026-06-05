@@ -515,19 +515,49 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   pointer-events: none;
 }
 .hover-point:hover .hover-cursor,
-.hover-point:hover .hover-dot { opacity: 1; }
+.hover-point:hover .hover-dot,
+.hover-point.selected .hover-cursor,
+.hover-point.selected .hover-dot { opacity: 1; }
 .hover-cursor {
   stroke: var(--muted);
   stroke-width: 1;
   stroke-dasharray: 2 2;
+}
+.hover-point.selected .hover-cursor {
+  stroke: var(--text, #222);
+  stroke-dasharray: none;
+  stroke-width: 1.5;
 }
 .hover-dot { stroke-width: 2; fill: #fff; }
 .hover-dot.home { stroke: #234c93; }
 .hover-dot.away { stroke: #a25617; }
 .hover-rect {
   fill: transparent;
-  cursor: crosshair;
+  cursor: pointer;
 }
+
+/* "As of <time>" banner shown above the category table when a past chart
+   point is selected, with a button to return to the live values. */
+.catwp-asof {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  flex-wrap: wrap;
+  margin: 1.25rem 0 .4rem;
+  font-size: .85rem;
+  color: var(--muted);
+}
+.catwp-asof strong { color: var(--text, #222); }
+.catwp-live {
+  border: 1px solid var(--border, #ccc);
+  background: var(--card, #fff);
+  color: inherit;
+  border-radius: 5px;
+  padding: .15rem .55rem;
+  font-size: .8rem;
+  cursor: pointer;
+}
+.catwp-live:hover { background: var(--bg, #f4f4f4); }
 
 .chart-tooltip {
   position: absolute;

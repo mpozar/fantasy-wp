@@ -208,6 +208,31 @@ function bindChartHovers(root) {
       pt.addEventListener("mouseleave", () => {
         tooltip.classList.remove("visible");
       });
+      // Click a point → show the category win rates as they were at that time.
+      // Only live-week points carry per-snapshot category_wp (see _matchup_block);
+      // for other weeks this is a no-op.
+      pt.addEventListener("click", () => {
+        const detailsEl = pt.closest(".details");
+        if (!detailsEl) return;
+        const idx = Number(detailsEl.id.replace("details-", ""));
+        const m = active.week && active.week.matchups[idx];
+        if (!m) return;
+        const point = (m.history || []).find(
+          (h) => h.computed_at === pt.dataset.time && h.category_wp);
+        if (!point) return;  // no category history at this point (e.g. past week)
+        const cats = active.data.league.categories_by_group;
+        const panel = document.getElementById("catwp-" + idx);
+        if (!panel) return;
+        wrap.querySelectorAll(".hover-point.selected")
+          .forEach((el) => el.classList.remove("selected"));
+        pt.classList.add("selected");
+        panel.innerHTML = categoryPanel(
+          { category_wp: point.category_wp, n_sims: point.n_sims }, cats, m, point.computed_at);
+        panel.querySelector(".catwp-live").addEventListener("click", () => {
+          pt.classList.remove("selected");
+          panel.innerHTML = categoryPanel(m.details, cats, m, null);
+        });
+      });
     });
   });
 }
@@ -308,7 +333,24 @@ function renderCategoryWP(d, cats, m) {
     </table>`;
 }
 
-function renderDetails(m, cats, week, scope) {
+// Friendly snapshot timestamp for the "as of" banner, e.g. "Thu, Jun 5, 10:05 AM".
+function fmtSnapTime(iso) {
+  const t = new Date(iso);
+  return t.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) +
+         ", " + t.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+// Category-win-rates panel content. `asOfIso` set → prepend an "as of <time>"
+// banner with a Return-to-live button (used when a past chart point is clicked).
+function categoryPanel(source, cats, m, asOfIso) {
+  const banner = asOfIso
+    ? `<div class="catwp-asof">Category win rates as of <strong>${fmtSnapTime(asOfIso)}</strong>` +
+      `<button type="button" class="catwp-live">↩ Return to live</button></div>`
+    : "";
+  return banner + renderCategoryWP(source, cats, m);
+}
+
+function renderDetails(m, cats, week, scope, idx) {
   if (!m.details) return "";
   const d = m.details;
   // WP-over-time renders whenever snapshot history exists — for the live week
@@ -319,7 +361,7 @@ function renderDetails(m, cats, week, scope) {
   return `
     <div class="details-inner">
       ${chart}
-      ${renderCategoryWP(d, cats, m)}
+      <div class="catwp-panel" id="catwp-${idx}">${categoryPanel(d, cats, m, null)}</div>
       <h3>What's driving the projection</h3>
       <div class="details-grid">
         <div>
@@ -383,7 +425,7 @@ function renderMatchup(m, cats, tbId, idx, started, week, scope) {
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
-        ${renderDetails(m, cats, week, scope)}
+        ${renderDetails(m, cats, week, scope, idx)}
       </div>
     </section>`;
 }

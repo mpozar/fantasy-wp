@@ -975,7 +975,7 @@ def publish() -> None:
                 (period_id,),
             ).fetchall()
             matchups_out = [
-                _matchup_block(conn, teams, m, started=started)
+                _matchup_block(conn, teams, m, started=started, live=(state == "live"))
                 for m in ms
             ]
             weeks_out.append({
@@ -1008,7 +1008,10 @@ def publish() -> None:
             "weeks": weeks_out,
         }
         out_path = Path(__file__).resolve().parent.parent / "docs" / "data.json"
-        out_path.write_text(json.dumps(out, indent=2))
+        # Compact (no indent/whitespace) — data.json is machine-generated and
+        # fetched on every page load; pretty-printing ~doubled the payload, which
+        # matters now that the live week carries per-point category history.
+        out_path.write_text(json.dumps(out, separators=(",", ":")))
         click.echo(
             f"Wrote {out_path} ({out_path.stat().st_size} bytes) — "
             f"{len(weeks_out)} weeks (periods {first}..{last_reg})"
@@ -1154,11 +1157,33 @@ def _apply_derived_rates(home_state: dict[int, dict],
             state[sid] = {"score": score, "result": res}
 
 
-def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
+def _slim_category_wp(details_json: str) -> tuple[list | None, int | None]:
+    """Pull a compact category_wp + n_sims from a snapshot's details_json, for
+    attaching per-point category history (live week only). Same shape
+    `renderCategoryWP` expects; avgs rounded to keep the payload small. Returns
+    (None, None) if the blob is missing/unparseable."""
+    try:
+        d = json.loads(details_json)
+    except (TypeError, json.JSONDecodeError):
+        return None, None
+    cwp = [
+        {"stat_id": c["stat_id"], "home_wins": c["home_wins"],
+         "away_wins": c["away_wins"], "ties": c["ties"],
+         "home_avg": round(c["home_avg"], 3), "away_avg": round(c["away_avg"], 3)}
+        for c in d.get("category_wp", [])
+    ]
+    return (cwp or None), d.get("n_sims")
+
+
+def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -> dict:
     """One matchup with team blocks, current snapshot, and history.
 
     `started` = the week has begun (state != "upcoming"); when False the team
     blocks emit null scores/records so the UI shows dashes for a pure projection.
+    `live` = the current (in-progress) week; only then do we attach each history
+    point's category_wp so the chart can be clicked back to a past category table
+    (past weeks are settled — their latest table already covers them, and
+    per-point category data for all weeks would bloat data.json several-fold).
     """
     home_team_id = m["home_team_id"]
     away_team_id = m["away_team_id"]
@@ -1174,24 +1199,25 @@ def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
         """,
         (m["id"],),
     ).fetchone()
+    cols = "computed_at, home_wp, away_wp, model_version" + (", details_json" if live else "")
     history_rows = conn.execute(
-        """
-        SELECT computed_at, home_wp, away_wp, model_version
-        FROM wp_snapshots
-        WHERE matchup_id=?
-        ORDER BY computed_at ASC
-        """,
+        f"SELECT {cols} FROM wp_snapshots WHERE matchup_id=? ORDER BY computed_at ASC",
         (m["id"],),
     ).fetchall()
-    history = [
-        {
+    history = []
+    for r in history_rows:
+        pt = {
             "computed_at": r["computed_at"],
             "home_wp": r["home_wp"],
             "away_wp": r["away_wp"],
             "model_version": r["model_version"],
         }
-        for r in history_rows
-    ]
+        if live and r["details_json"]:
+            cwp, n = _slim_category_wp(r["details_json"])
+            if cwp is not None:
+                pt["category_wp"] = cwp
+                pt["n_sims"] = n
+        history.append(pt)
     history = _downsample_history(history)
     details = None
     if wp_row and wp_row["details_json"]:
