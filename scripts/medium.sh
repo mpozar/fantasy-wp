@@ -14,7 +14,11 @@ source "$(dirname "$0")/_common.sh"
     log medium "start"
     "$APP" refresh-rosters
     # Recompute future-week WPs with the fresh projections. DB-only; the next
-    # fast-tier publish picks them up.
-    "$APP" compute --future
+    # fast-tier publish picks them up. Future weeks use fewer sims than the
+    # current-week (fast.sh) compute: their ROS-share projections are inherently
+    # fuzzy (no probables, rosters churn), so 10k's ~0.4pp MC precision is wasted
+    # — 2,500 (~1pp SE) is invisible there and runs ~4x faster (measured: 72
+    # matchups in ~30s vs multi-minute). Current week stays at 10k in fast.sh.
+    "$APP" compute --future --sims 2500
     log medium "done"
 } >> "$LOGS/medium.log" 2>&1
