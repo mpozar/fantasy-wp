@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app import sim
+from app import db, sim
 
 # League category stat ids, split by kind.
 _COUNTING = [1, 5, 20, 23, 48, 63, 83]   # H, HR, R, SB, K, QS, SVHD (cumulative)
@@ -47,10 +47,10 @@ NAME = {1: "H", 5: "HR", 20: "R", 23: "SB", 48: "K", 63: "QS", 83: "SVHD",
         18: "OPS", 47: "ERA", 41: "WHIP"}
 
 # Rate cats are *derived* from components at publish time (see cli._apply_derived_rates),
-# not read from the stored scraped rate — so the cross-source DB check must derive too.
-# Each rate is only comparable once its gating component is banked (else publish fell
-# back to the scraped value / the derivation degenerates), so gate on it.
-_RATE_DERIVERS = {18: sim.derive_ops, 47: sim.derive_era, 41: sim.derive_whip}
+# not read from the stored scraped rate — so the cross-source DB check derives too,
+# via the shared sim.RATE_DERIVERS routing. Each rate is only comparable once its
+# gating component is banked (else publish fell back to the scraped value / the
+# derivation degenerates), so gate on it.
 _RATE_REQUIRES = {18: sim.STAT_AB, 47: sim.STAT_OUTS, 41: sim.STAT_OUTS}
 
 # Tunable thresholds.
@@ -539,7 +539,7 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                         # rate. Counting cats: the banked total. Skip a rate until its
                         # gating component is banked — publish falls back to the
                         # scraped value there, so it isn't comparable to a derivation.
-                        deriver = _RATE_DERIVERS.get(sid)
+                        deriver = sim.RATE_DERIVERS.get(sid)
                         if deriver is not None:
                             if dbstate.get(_RATE_REQUIRES[sid], 0) <= 0:
                                 continue
@@ -563,34 +563,16 @@ def _state_as_of(conn, matchup_id: int, team_id: int, at_iso: str) -> dict[int, 
     """Per-stat latest banked value at-or-before `at_iso` — i.e. exactly what a
     publish stamped `generated_at=at_iso` would have read. Lets the cross-source
     check compare data.json to the DB snapshot publish saw, immune to later fetches."""
-    rows = conn.execute(
-        """
-        SELECT stat_id, score FROM category_state cs
-        WHERE matchup_id=? AND team_id=? AND fetched_at <= ?
-          AND fetched_at = (SELECT MAX(fetched_at) FROM category_state c2
-                            WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
-                              AND c2.stat_id=cs.stat_id AND c2.fetched_at <= ?)
-        """,
-        (matchup_id, team_id, at_iso, at_iso),
-    ).fetchall()
-    return {r["stat_id"]: r["score"] for r in rows}
+    return {sid: v["score"] for sid, v in
+            db.latest_category_state(conn, matchup_id, team_id, as_of=at_iso).items()}
 
 
 def _load_state_prev(conn, matchup_id: int, team_id: int) -> dict[int, float]:
     """The *second*-latest banked value per stat (for the banked-regression check).
     Per-stat, same reasoning as load_latest_state — stats aren't all written every
     tick, so 'previous' is per-stat, not the matchup's prior fetch timestamp."""
-    rows = conn.execute(
-        """
-        SELECT stat_id, score FROM (
-            SELECT stat_id, score,
-                   ROW_NUMBER() OVER (PARTITION BY stat_id ORDER BY fetched_at DESC) rn
-            FROM category_state WHERE matchup_id=? AND team_id=?
-        ) WHERE rn = 2
-        """,
-        (matchup_id, team_id),
-    ).fetchall()
-    return {r["stat_id"]: r["score"] for r in rows}
+    return {sid: v["score"] for sid, v in
+            db.latest_category_state(conn, matchup_id, team_id, rank=2).items()}
 
 def load_view(conn, matchup_id: int) -> dict | None:
     m = conn.execute(

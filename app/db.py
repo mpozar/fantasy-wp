@@ -214,6 +214,39 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+# Far-future ISO sentinel so an unbounded read can share the `fetched_at <= ?`
+# query path (real timestamps all sort before it).
+_MAX_TS = "9999-12-31T23:59:59+00:00"
+
+
+def latest_category_state(conn: sqlite3.Connection, matchup_id: int, team_id: int,
+                          *, as_of: str | None = None, rank: int = 1) -> dict[int, dict]:
+    """Banked category_state for one (matchup, team) as {stat_id: {"score", "result"}}.
+
+    The value is taken per *stat* at recency `rank` (1 = latest, 2 = second-latest),
+    NOT at the matchup's single latest fetch: current-period state is split-sourced
+    and written in partial subsets per tick (the scrape owns the display cats; an
+    idle fetch writes only REST components at a fresh timestamp), so a global
+    MAX(fetched_at) would drop any stat not touched that tick — the 2026-06-04
+    idle-fetch collapse. `as_of` (ISO ts) restricts to rows at-or-before it, i.e.
+    exactly what a publish stamped `generated_at=as_of` would have read.
+
+    Single source for every current-state reader (sim.load_latest_state,
+    cli._latest_score_rows, validate._state_as_of/_load_state_prev)."""
+    rows = conn.execute(
+        """
+        SELECT stat_id, score, result FROM (
+            SELECT stat_id, score, result,
+                   ROW_NUMBER() OVER (PARTITION BY stat_id ORDER BY fetched_at DESC) rn
+            FROM category_state
+            WHERE matchup_id=? AND team_id=? AND fetched_at <= ?
+        ) WHERE rn=?
+        """,
+        (matchup_id, team_id, as_of or _MAX_TS, rank),
+    ).fetchall()
+    return {r["stat_id"]: {"score": r["score"], "result": r["result"]} for r in rows}
+
+
 def init() -> None:
     conn = connect()
     try:

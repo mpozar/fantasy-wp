@@ -17,7 +17,7 @@ def _now_iso() -> str:
 
 # Rate categories (OPS/ERA/WHIP) — derived ratios that legitimately move either
 # direction, so they're never monotonicity-guarded.
-_RATE_STAT_IDS = frozenset({sim.STAT_OPS, sim.STAT_ERA, sim.STAT_WHIP})
+_RATE_STAT_IDS = frozenset(sim.RATE_DERIVERS)
 
 
 def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
@@ -760,8 +760,8 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                 )
 
             for m in ms:
-                home_scores = _latest_scores(conn, m["id"], m["home_team_id"])
-                away_scores = _latest_scores(conn, m["id"], m["away_team_id"])
+                home_scores = sim.load_latest_state(conn, m["id"], m["home_team_id"])
+                away_scores = sim.load_latest_state(conn, m["id"], m["away_team_id"])
 
                 if model_name == "mc-v1":
                     # Rosters are only stored for the current period; future
@@ -913,25 +913,6 @@ def _last_regular_season_period(conn) -> int | None:
         "SELECT MAX(matchup_period_id) AS p FROM matchups"
     ).fetchone()
     return row["p"] if row else None
-
-
-def _latest_scores(conn, matchup_id: int, team_id: int) -> dict[int, float]:
-    # Per (matchup, team, stat) latest — see load_latest_state in sim.py for why
-    # a single MAX(fetched_at) drops partially-written stats (idle-fetch bug).
-    rows = conn.execute(
-        """
-        SELECT cs.stat_id, cs.score
-        FROM category_state cs
-        WHERE cs.matchup_id=? AND cs.team_id=?
-          AND cs.fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state c2
-              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
-                AND c2.stat_id=cs.stat_id
-          )
-        """,
-        (matchup_id, team_id),
-    ).fetchall()
-    return {r["stat_id"]: r["score"] for r in rows}
 
 
 @cli.command()
@@ -1136,33 +1117,27 @@ def _active_intervals(conn, period_id: int, now: str) -> list[dict]:
     ]
 
 
-# Rate display cats (OPS/ERA/WHIP) are stored as a *scraped* value that freezes
-# when the live scrape goes idle at slate's end, while their component counters
-# (ER/OUTS/P_H/P_BB/AB/…) keep updating via REST — so the scraped rate can drift
-# from both ESPN and the team's own components. Derive the published rate from
-# the current components instead (the same derivation `_cat_value` decides the WP
-# on), so the displayed number and WIN/LOSS stay consistent with the components.
-# (stat_id -> (deriver, display decimals))
-_RATE_DERIVERS = {
-    sim.STAT_OPS: (sim.derive_ops, 4),
-    sim.STAT_ERA: (sim.derive_era, 3),
-    sim.STAT_WHIP: (sim.derive_whip, 3),
-}
+# Display decimals for the derived rate cats (deriver routing lives in
+# sim.RATE_DERIVERS — single source).
+_RATE_DECIMALS = {sim.STAT_OPS: 4, sim.STAT_ERA: 3, sim.STAT_WHIP: 3}
 _RATE_NO_DATA = 999.0  # derive_era/whip sentinel for no innings pitched
 
 
 def _apply_derived_rates(home_state: dict[int, dict],
                          away_state: dict[int, dict]) -> None:
     """Overwrite OPS/ERA/WHIP score+result in both team states with values
-    derived from the current component counters. Mutates in place — see the note
-    on `_RATE_DERIVERS`. Mirrors `sim._decide`'s comparison (incl. the no-data
-    sentinel) so the published result matches the WP's category decision."""
+    derived from the current component counters — the scraped rate freezes when
+    the live scrape goes idle while its components keep updating via REST, so it
+    drifts from both ESPN and the team's own components. Mutates in place. Mirrors
+    `sim._decide`'s comparison (incl. the no-data sentinel via `sim.cat_value`) so
+    the published number and result stay consistent with the WP's decision."""
     def components(state: dict[int, dict]) -> dict[int, float]:
         return {sid: v["score"] for sid, v in state.items()
                 if v.get("score") is not None}
 
     home_c, away_c = components(home_state), components(away_state)
-    for sid, (derive, ndigits) in _RATE_DERIVERS.items():
+    for sid, derive in sim.RATE_DERIVERS.items():
+        ndigits = _RATE_DECIMALS[sid]
         hv, av = derive(home_c), derive(away_c)
         reversed_ = stats.is_reversed(sid)
         if hv == av:
@@ -1241,23 +1216,8 @@ def _matchup_block(conn, teams: dict, m, *, started: bool) -> dict:
 
 
 def _latest_score_rows(conn, matchup_id: int, team_id: int) -> dict[int, dict]:
-    """Latest score+result keyed by stat_id."""
-    # Per (matchup, team, stat) latest — see load_latest_state in sim.py for why
-    # a single MAX(fetched_at) drops partially-written stats (idle-fetch bug).
-    rows = conn.execute(
-        """
-        SELECT cs.stat_id, cs.score, cs.result
-        FROM category_state cs
-        WHERE cs.matchup_id=? AND cs.team_id=?
-          AND cs.fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state c2
-              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
-                AND c2.stat_id=cs.stat_id
-          )
-        """,
-        (matchup_id, team_id),
-    ).fetchall()
-    return {r["stat_id"]: {"score": r["score"], "result": r["result"]} for r in rows}
+    """Latest score+result per stat for the published team block."""
+    return db.latest_category_state(conn, matchup_id, team_id)
 
 
 def _team_block(teams: dict, team_id: int, state: dict[int, dict],

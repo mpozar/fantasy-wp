@@ -23,7 +23,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from app import ingame
+from app import db, ingame
 
 MODEL_VERSION = "mc-v1"
 DEFAULT_SIMS = 10_000
@@ -290,14 +290,17 @@ def derive_whip(c: dict[int, float]) -> float:
     return (PH + PBB) * 3.0 / OUTS
 
 
-def _cat_value(c: dict[int, float], stat_id: int) -> float:
-    if stat_id == STAT_OPS:
-        return derive_ops(c)
-    if stat_id == STAT_ERA:
-        return derive_era(c)
-    if stat_id == STAT_WHIP:
-        return derive_whip(c)
-    return c.get(stat_id, 0)
+# stat_id → deriver for the three rate cats. Single source of truth: the win
+# comparison (`cat_value`), the publish display (`cli._apply_derived_rates`), and
+# validate's cross-source check all route rate cats through this.
+RATE_DERIVERS = {STAT_OPS: derive_ops, STAT_ERA: derive_era, STAT_WHIP: derive_whip}
+
+
+def cat_value(c: dict[int, float], stat_id: int) -> float:
+    """Category value for the win comparison: rate cats derived from their
+    component counters, counting cats read directly."""
+    deriver = RATE_DERIVERS.get(stat_id)
+    return deriver(c) if deriver else c.get(stat_id, 0)
 
 
 # ── Per-player budgets ──
@@ -1040,8 +1043,8 @@ def _decide(home_counters: dict,
     home_cats = 0
     away_cats = 0
     for stat_id, reversed_ in CATEGORIES:
-        h = _cat_value(home_counters, stat_id)
-        a = _cat_value(away_counters, stat_id)
+        h = cat_value(home_counters, stat_id)
+        a = cat_value(away_counters, stat_id)
         if h == a:
             per_cat[stat_id] = "TIE"
             continue
@@ -1057,8 +1060,8 @@ def _decide(home_counters: dict,
     if away_cats > home_cats:
         return "AWAY", per_cat
     # Categories tied — tiebreaker on hits
-    h_tb = _cat_value(home_counters, TIEBREAKER_STAT_ID)
-    a_tb = _cat_value(away_counters, TIEBREAKER_STAT_ID)
+    h_tb = cat_value(home_counters, TIEBREAKER_STAT_ID)
+    a_tb = cat_value(away_counters, TIEBREAKER_STAT_ID)
     if h_tb > a_tb:
         return "HOME", per_cat
     if a_tb > h_tb:
@@ -1219,8 +1222,8 @@ def simulate(inputs: MatchupInputs,
             "home_wins": cat_counts[stat_id]["HOME"],
             "away_wins": cat_counts[stat_id]["AWAY"],
             "ties": cat_counts[stat_id]["TIE"],
-            "home_avg": _cat_value(avg_h, stat_id),
-            "away_avg": _cat_value(avg_a, stat_id),
+            "home_avg": cat_value(avg_h, stat_id),
+            "away_avg": cat_value(avg_a, stat_id),
         }
         for stat_id, _ in CATEGORIES
     ]
@@ -1374,24 +1377,7 @@ def load_last_starts(conn: sqlite3.Connection) -> dict[str, str]:
 
 def load_latest_state(conn: sqlite3.Connection, matchup_id: int,
                       team_id: int) -> dict[int, float]:
-    # Latest value *per (matchup, team, stat)*, not by the matchup's single
-    # overall MAX(fetched_at): current-period category_state is split-sourced
-    # and partially written per tick (the scrape owns display cats; an idle
-    # fetch writes only REST components at a fresh timestamp). Keying on one
-    # global latest timestamp would drop any stat not written that tick — e.g.
-    # the scored display cats vanish on the first idle fetch after a slate,
-    # collapsing every WP toward 50/50. Mirrors the `last_good` loader in cli.py.
-    rows = conn.execute(
-        """
-        SELECT cs.stat_id, cs.score
-        FROM category_state cs
-        WHERE cs.matchup_id=? AND cs.team_id=?
-          AND cs.fetched_at = (
-              SELECT MAX(fetched_at) FROM category_state c2
-              WHERE c2.matchup_id=cs.matchup_id AND c2.team_id=cs.team_id
-                AND c2.stat_id=cs.stat_id
-          )
-        """,
-        (matchup_id, team_id),
-    ).fetchall()
-    return {r["stat_id"]: r["score"] for r in rows}
+    """Latest banked score per stat for the sim's starting counters. Per-stat
+    (not a single MAX(fetched_at)) — see `db.latest_category_state`."""
+    return {sid: v["score"] for sid, v in
+            db.latest_category_state(conn, matchup_id, team_id).items()}
