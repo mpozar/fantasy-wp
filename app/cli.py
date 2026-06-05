@@ -827,27 +827,50 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
               help="List open (unresolved) flags and exit.")
 @click.option("--resolve", "resolve_code", default=None, metavar="CODE",
               help="Mark open flags with this CODE (or 'all') resolved, and exit.")
+@click.option("--note", "resolve_note", default=None, metavar="TEXT",
+              help="Triage note recorded with --resolve (why it's benign / what it was).")
+@click.option("--by", "resolve_by", default=None, metavar="NAME",
+              help="Who resolved it (default: $USER). Recorded with --resolve.")
+@click.option("--resolved", "list_resolved", is_flag=True,
+              help="List recently *resolved* flags with their provenance, and exit.")
 def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
-                 resolve_code: str | None) -> None:
+                 resolve_code: str | None, resolve_note: str | None,
+                 resolve_by: str | None, list_resolved: bool) -> None:
     """Run invariant + anomaly checks over the latest WP snapshots and record
     findings in `validation_flags`. Cheap (no sims) — safe to run every fast tick.
     Review open flags with `--list`, dismiss triaged-legit ones with
-    `--resolve CODE`, and investigate the rest in Claude Code."""
+    `--resolve CODE --note "why"`, audit closed ones with `--resolved`."""
     from app import validate as _v
 
     conn = db.connect()
     try:
         if resolve_code:
-            with conn:
-                if resolve_code == "all":
-                    n = conn.execute(
-                        "UPDATE validation_flags SET resolved=1 WHERE resolved=0").rowcount
-                else:
-                    n = conn.execute(
-                        "UPDATE validation_flags SET resolved=1 WHERE resolved=0 AND code=?",
-                        (resolve_code,)).rowcount
+            import getpass
+            who = resolve_by or getpass.getuser()
+            if not resolve_note:
+                click.echo("  (tip: pass --note \"why this is benign\" so the reasoning "
+                           "survives — a bare resolve loses the triage.)", err=True)
+            n = _v.resolve(conn, resolve_code, now=_now_iso(), by=who, note=resolve_note)
             click.echo(f"Resolved {n} flag(s)"
-                       + ("" if resolve_code == "all" else f" with code {resolve_code}") + ".")
+                       + ("" if resolve_code == "all" else f" with code {resolve_code}")
+                       + f" (by {who}" + (f": {resolve_note}" if resolve_note else "") + ").")
+            return
+        if list_resolved:
+            rows = conn.execute(
+                "SELECT code, matchup_id, severity, resolved_at, resolved_by, resolution_note "
+                "FROM validation_flags WHERE resolved=1 "
+                "ORDER BY resolved_at DESC NULLS LAST, last_seen DESC LIMIT 30").fetchall()
+            if not rows:
+                click.echo("No resolved flags.")
+                return
+            click.echo(f"{len(rows)} resolved flag(s) (most recent first):")
+            for r in rows:
+                mid = "" if r["matchup_id"] in (None, -1) else f" m{r['matchup_id']}"
+                when = (r["resolved_at"] or "?")[:16]
+                who = r["resolved_by"] or "unknown"
+                note = r["resolution_note"] or "(no note)"
+                click.echo(f"  [{r['severity']:<5}] {r['code']}{mid}  "
+                           f"resolved {when} ({who}): {note}")
             return
         if list_only:
             rows = conn.execute(

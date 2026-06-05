@@ -482,6 +482,21 @@ def persist(conn, findings: list[Finding], now: str) -> None:
             )
 
 
+def resolve(conn, code: str, *, now: str, by: str, note: str | None = None) -> int:
+    """Mark open flags resolved *with provenance* (who/when/why). `code='all'`
+    resolves everything. Returns the number of rows closed. The note is the whole
+    point — it makes a triage conclusion durable next to the flag instead of
+    evaporating with the chat that reached it."""
+    sql = ("UPDATE validation_flags SET resolved=1, resolved_at=?, resolved_by=?, "
+           "resolution_note=? WHERE resolved=0")
+    params = [now, by, note]
+    if code != "all":
+        sql += " AND code=?"
+        params.append(code)
+    with conn:
+        return conn.execute(sql, params).rowcount
+
+
 def check_published_site(data_json_path: str | None, now_iso: str | None,
                          *, conn=None) -> list[Finding]:
     """Validate the *actual published artifact* the site renders. Catches the

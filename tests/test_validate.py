@@ -457,3 +457,38 @@ def test_persist_upserts_and_dedups():
     v.persist(conn, [finding], "2026-06-04T21:05:00+00:00")  # same day → bump occurrences
     row = conn.execute("SELECT matchup_id, occurrences, resolved FROM validation_flags").fetchone()
     assert row["matchup_id"] == -1 and row["occurrences"] == 2 and row["resolved"] == 0
+
+
+def _flags_db():
+    conn = _mem_db()
+    conn.execute("CREATE TABLE validation_flags (code TEXT, matchup_id INT, flag_date TEXT, "
+                 "severity TEXT, detail TEXT, first_seen TEXT, last_seen TEXT, occurrences INT, "
+                 "resolved INT, resolved_at TEXT, resolved_by TEXT, resolution_note TEXT, "
+                 "PRIMARY KEY (code, matchup_id, flag_date))")
+    return conn
+
+def test_resolve_stamps_provenance():
+    conn = _flags_db()
+    v.persist(conn, [v.Finding("ANOM_WP_SWING", "warn", 58, "swing")], "2026-06-05T07:55:00+00:00")
+    n = v.resolve(conn, "ANOM_WP_SWING", now="2026-06-05T08:00:00+00:00",
+                  by="mpozar", note="benign roster downgrade")
+    assert n == 1
+    r = conn.execute("SELECT resolved, resolved_at, resolved_by, resolution_note "
+                     "FROM validation_flags").fetchone()
+    assert r["resolved"] == 1 and r["resolved_by"] == "mpozar"
+    assert r["resolved_at"] == "2026-06-05T08:00:00+00:00"
+    assert r["resolution_note"] == "benign roster downgrade"
+
+def test_resolve_all_codes():
+    conn = _flags_db()
+    v.persist(conn, [v.Finding("ANOM_WP_SWING", "warn", 1, "a"),
+                     v.Finding("INV_RATE_RANGE", "error", 2, "b")], "2026-06-05T07:00:00+00:00")
+    assert v.resolve(conn, "all", now="2026-06-05T08:00:00+00:00", by="x", note=None) == 2
+
+def test_resolve_only_touches_open():
+    conn = _flags_db()
+    v.persist(conn, [v.Finding("ANOM_WP_SWING", "warn", 1, "a")], "2026-06-05T07:00:00+00:00")
+    v.resolve(conn, "ANOM_WP_SWING", now="2026-06-05T08:00:00+00:00", by="x", note="first")
+    # second resolve finds nothing open → 0, and must not overwrite the original note
+    assert v.resolve(conn, "ANOM_WP_SWING", now="2026-06-05T09:00:00+00:00", by="y", note="second") == 0
+    assert conn.execute("SELECT resolution_note FROM validation_flags").fetchone()[0] == "first"

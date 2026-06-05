@@ -195,6 +195,12 @@ CREATE TABLE IF NOT EXISTS validation_flags (
     last_seen    TEXT NOT NULL,
     occurrences  INTEGER NOT NULL DEFAULT 1,
     resolved     INTEGER NOT NULL DEFAULT 0,
+    -- Resolution provenance: who/when/why a flag was triaged closed, so the
+    -- reasoning survives the chat that did it (otherwise "resolved" is a bare bit
+    -- and the next investigator re-derives — or can't recover — the conclusion).
+    resolved_at     TEXT,
+    resolved_by     TEXT,
+    resolution_note TEXT,
     PRIMARY KEY (code, matchup_id, flag_date)
 );
 CREATE INDEX IF NOT EXISTS idx_validation_open
@@ -259,6 +265,9 @@ def init() -> None:
             ("team_schedule", "opponent_runs", "INTEGER"),
             ("scoring_settings", "lineup_slots_json", "TEXT"),
             ("wp_snapshots", "edited", "INTEGER NOT NULL DEFAULT 0"),
+            ("validation_flags", "resolved_at", "TEXT"),
+            ("validation_flags", "resolved_by", "TEXT"),
+            ("validation_flags", "resolution_note", "TEXT"),
         ):
             table, col, type_ = column_def
             try:

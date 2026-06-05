@@ -675,16 +675,22 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
    probables across the relevant tick. For data shape, recall `category_state`
    for the **current period** is split-sourced (scrape owns the display cats;
    REST fills raw components ER/OUTS/AB/…) — see "Live data freshness".
-3. **Resolve the outcome:**
+3. **Resolve the outcome — always with a `--note`** (the conclusion is the durable
+   artifact; a bare resolve loses it and the next investigator re-derives or, for
+   "who/when", *can't* recover it):
    - *Real bug* → fix it, add a regression test in `tests/test_validate.py`, then
      the next compute clears the flag (or `--resolve` it).
    - *Legit one-off* (e.g. a genuine 18pp WP swing from a real roster move) →
-     `app validate --resolve CODE` to dismiss the open instances.
+     `app validate --resolve CODE --note "why it's benign"` to dismiss the open
+     instances. Records `resolved_at`/`resolved_by`(=$USER)/`resolution_note`.
    - *Legit recurring* (the check is too strict, like the All-Star period below)
      → **tune the check** in `app/validate.py` (raise a threshold / add an
      exception) and update its test; don't just keep resolving it daily.
-   - `app validate --resolve all` clears everything (use sparingly).
-4. **On-demand sweep:** `app validate --all` re-runs every period (not just the
+   - `app validate --resolve all --note "…"` clears everything (use sparingly).
+4. **Audit closed flags:** `app validate --resolved` → recently-resolved flags with
+   their provenance (who/when/why), so a cold chat reads the prior triage instead of
+   redoing it. (Pre-2026-06-05 resolves predate provenance → shown as "unknown".)
+5. **On-demand sweep:** `app validate --all` re-runs every period (not just the
    current one) — good for a full audit or after a model change.
 
 ### Flag reference (code → meaning → how to read it)
