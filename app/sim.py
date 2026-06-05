@@ -630,18 +630,51 @@ def _is_hitter_candidate(p: dict) -> bool:
     return _has_hitter_ros(p.get("ros_stats") or {})
 
 
+def _max_slot_assignment(candidates: list[dict], slot_instances: list[int]) -> set[int]:
+    """Maximum bipartite matching of candidates to lineup-slot instances.
+
+    Returns the set of indices into `candidates` that won a slot. Augmenting-path
+    (Kuhn's): unlike greedy first-fit, it re-routes an already-seated *flexible*
+    hitter to an alternate slot so a *constrained* hitter can also play — so a slot
+    only one hitter can fill is never wasted (e.g. the lone 3B-eligible bat is put
+    at 3B, freeing 2B for a 2B-only hitter, seating both). `candidates` must be
+    pre-sorted by descending impact; since augmenting never un-seats anyone, that
+    means a capacity-bound day seats the highest-impact subset. `candidates[i]
+    ["eligible"]` is the set of slot ids that hitter can fill."""
+    match_inst = [-1] * len(slot_instances)  # slot-instance idx → candidate idx
+
+    def augment(ci: int, visited: list[bool]) -> bool:
+        for si, slot in enumerate(slot_instances):
+            if slot in candidates[ci]["eligible"] and not visited[si]:
+                visited[si] = True
+                if match_inst[si] == -1 or augment(match_inst[si], visited):
+                    match_inst[si] = ci
+                    return True
+        return False
+
+    seated: set[int] = set()
+    for ci in range(len(candidates)):
+        if augment(ci, [False] * len(slot_instances)):
+            seated.add(ci)
+    return seated
+
+
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
                          lineup_slot_counts: dict[int, int]) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
-    lineup slot. Greedy by per-game impact; honors slot eligibility and
-    league-configured slot counts.
+    lineup slot. Honors slot eligibility and league-configured slot counts, and
+    seats hitters by per-game impact.
 
     Two-way players (e.g. Ohtani) are skipped as hitters on days they're
     listed as the probable starter for their team — they can't bat that day.
 
-    The greedy is good enough at ~10-12 hitters × ~10 slots — exact bipartite
-    matching would only differ by a few % and isn't worth the complexity.
+    Slotting uses optimal bipartite matching per day (`_max_slot_assignment`),
+    not greedy first-fit: greedy can spend a flexible bat on an early slot and
+    then waste a scarce slot only that bat could fill (e.g. the lone 3B-eligible
+    hitter taken at 2B → 3B empty AND a 2B-only hitter benched). The problem is
+    tiny (~10 hitters × ~10 slots) and runs once per team in build_budgets — well
+    outside the per-sim loop — so the cost is immaterial.
     """
     units: dict[int, float] = {
         p["player_id"]: 0.0 for p in roster
@@ -657,6 +690,8 @@ def _hitter_days_slotted(roster: list[dict],
     }
     if not hitter_slot_counts:
         return units
+    # One node per slot capacity unit (UTIL×2 → two UTIL instances, etc.).
+    slot_instances = [s for s, cnt in hitter_slot_counts.items() for _ in range(cnt)]
 
     hitters = [
         p for p in roster
@@ -699,8 +734,8 @@ def _hitter_days_slotted(roster: list[dict],
             factor = max(_hitter_factor(g) for g in team_games_today)
             if factor <= 0:
                 continue
-            eligible = [s for s in (p.get("eligible_slots") or [])
-                        if s in hitter_slot_counts]
+            eligible = {s for s in (p.get("eligible_slots") or [])
+                        if s in hitter_slot_counts}
             if not eligible:
                 continue
             candidates.append({
@@ -710,14 +745,12 @@ def _hitter_days_slotted(roster: list[dict],
                 "impact": _hitter_per_game_impact(p),
             })
 
+        # Optimal assignment: seat the most hitters (highest-impact first), with
+        # re-routing so no scarce slot is wasted. See `_max_slot_assignment`.
         candidates.sort(key=lambda c: -c["impact"])
-        slots_remaining = dict(hitter_slot_counts)
-        for c in candidates:
-            for slot in c["eligible"]:
-                if slots_remaining.get(slot, 0) > 0:
-                    slots_remaining[slot] -= 1
-                    units[c["player_id"]] += c["factor"]
-                    break
+        for ci in _max_slot_assignment(candidates, slot_instances):
+            c = candidates[ci]
+            units[c["player_id"]] += c["factor"]
 
     return units
 

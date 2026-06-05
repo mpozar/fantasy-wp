@@ -189,14 +189,21 @@ Day-conflict resolution (so a two-way isn't counted batting *and* pitching the s
 
 ### Lineup optimization (hitters)
 
-`_hitter_days_slotted` runs a per-day greedy matcher:
+`_hitter_days_slotted` runs a per-day matcher:
 1. For each day in the matchup week
 2. List rostered hitters whose MLB team plays that day, who aren't IL'd, who aren't pitching that day (two-way), and who have eligible slots
 3. Sort by `_hitter_per_game_impact` (R + 0.6·H + 0.3·SB + 0.5·HR per game)
-4. Greedy: top hitter takes the first slot they're eligible for that still has capacity
+4. **Optimal bipartite matching** (`_max_slot_assignment`, Kuhn's augmenting paths) assigns hitters to slot instances — impact-sorted, so a capacity-bound day seats the highest-impact subset
 5. Each hitter who wins a slot gets `+1 × hitter_in_progress_factor(today's game)` toward their `units`
 
-Greedy is good enough at ~10-12 hitters × ~10 slots — exact Hungarian matching would differ by a few % at most. Documented limitation.
+Step 4 was greedy first-fit until 2026-06-05. Greedy could spend a *flexible*
+bat on an early slot and then waste a *scarce* slot only that bat could fill —
+e.g. the lone 3B-eligible hitter taken at 2B leaves 3B empty AND benches a
+2B-only hitter, dropping a whole hitter (3 games) from the projection and biasing
+the matchup WP (observed ~8pp on one matchup). Kuhn's re-routes the flexible bat
+(→3B) so both play. It's pure-Python, no new deps; the problem is tiny (~10×10)
+and runs once per team in `build_budgets` (outside the per-sim loop), so the cost
+is immaterial. Regression: `tests/test_lineup_matching.py`.
 
 ### IL handling
 
