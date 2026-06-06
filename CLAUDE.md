@@ -205,6 +205,17 @@ the matchup WP (observed ~8pp on one matchup). Kuhn's re-routes the flexible bat
 and runs once per team in `build_budgets` (outside the per-sim loop), so the cost
 is immaterial. Regression: `tests/test_lineup_matching.py`.
 
+**Timezone-independence (no `date.today()`).** Which days a hitter is still slotted
+for is driven by game **status** (`_hitter_factor`: Final → 0, in-progress →
+innings-left/9, scheduled → 1.0), *not* a wall-clock date floor. Healthy players get
+no date floor at all — a played day falls out via its Final status, smoothly. The
+only "now" the sim needs (the IL-return heuristic) is an injected **UTC** `as_of`,
+threaded `simulate → build_budgets → _hitter_days_slotted / _is_playable`; the sim
+never calls `date.today()`, so it behaves identically on any host timezone. (Until
+2026-06-06 it *did* use host-local `date.today()`, which dropped a whole day's
+projection at 00:00 CEST — the midnight WP lurch in `INCIDENTS.md`.) Regression:
+`tests/test_hitter_days_tz.py`.
+
 ### IL handling
 
 `_est_return_date(p, today)` — in priority order:

@@ -556,7 +556,7 @@ def refresh_live() -> None:
     """
     from datetime import date, timedelta
 
-    today = date.today()
+    today = datetime.now(timezone.utc).date()   # UTC, not host-local (tz-independent)
     yesterday = today - timedelta(days=1)
     end = today + timedelta(days=2)
     games = mlb.fetch_schedule(yesterday, end)

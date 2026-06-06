@@ -21,7 +21,7 @@ import sqlite3
 import string
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app import db, ingame
 
@@ -108,6 +108,16 @@ IL_RETURN_DAYS = {
 }
 
 
+def _utc_today() -> date:
+    """Reference 'today' for the projection, in **UTC** — never the host's local
+    date. The sim must behave identically regardless of the machine's timezone, so
+    we never call `date.today()` (which rolls at the host's local midnight and once
+    dropped a day of still-unplayed US games at 00:00 CEST — see INCIDENTS.md). The
+    common path keys off game *status* and needs no clock at all; this is only the
+    reference for the IL-return heuristic, which is ±days fuzzy anyway."""
+    return datetime.now(timezone.utc).date()
+
+
 def _est_return_date(p: dict, today: date) -> date | None:
     """Estimated date the player can next contribute.
 
@@ -132,7 +142,7 @@ def _est_return_date(p: dict, today: date) -> date | None:
     return None
 
 
-def _is_playable(p: dict) -> bool:
+def _is_playable(p: dict, as_of: date | None = None) -> bool:
     """Whether this player can contribute at some point in the projection
     window.
 
@@ -146,7 +156,7 @@ def _is_playable(p: dict) -> bool:
     inj = (p.get("injury_status") or "").upper()
     if p.get("lineup_slot_id") == IL_SLOT:
         return inj in IL_RETURN_DAYS
-    return _est_return_date(p, date.today()) is not None
+    return _est_return_date(p, as_of or _utc_today()) is not None
 
 # Fallback RP appearance rate when ROS projection or team-total games are
 # missing. Real per-player rates range ~0.1 (mop-up) to ~0.5 (workhorse
@@ -661,7 +671,8 @@ def _max_slot_assignment(candidates: list[dict], slot_instances: list[int]) -> s
 
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
-                         lineup_slot_counts: dict[int, int]) -> dict[int, float]:
+                         lineup_slot_counts: dict[int, int],
+                         as_of: date | None = None) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
     lineup slot. Honors slot eligibility and league-configured slot counts, and
     seats hitters by per-game impact.
@@ -676,9 +687,10 @@ def _hitter_days_slotted(roster: list[dict],
     tiny (~10 hitters × ~10 slots) and runs once per team in build_budgets — well
     outside the per-sim loop — so the cost is immaterial.
     """
+    as_of = as_of or _utc_today()
     units: dict[int, float] = {
         p["player_id"]: 0.0 for p in roster
-        if _is_playable(p) and _is_hitter_candidate(p)
+        if _is_playable(p, as_of) and _is_hitter_candidate(p)
     }
     if not units:
         return units
@@ -695,13 +707,12 @@ def _hitter_days_slotted(roster: list[dict],
 
     hitters = [
         p for p in roster
-        if _is_playable(p) and _is_hitter_candidate(p)
+        if _is_playable(p, as_of) and _is_hitter_candidate(p)
     ]
 
     # Per-player estimated return date — IL players become available again
     # mid-period and only get slotted from that day onward.
-    today = date.today()
-    return_by_pid = {p["player_id"]: _est_return_date(p, today) for p in hitters}
+    return_by_pid = {p["player_id"]: _est_return_date(p, as_of) for p in hitters}
 
     # All dates that appear in the team schedule (sorted for deterministic order).
     dates = sorted({
@@ -718,9 +729,16 @@ def _hitter_days_slotted(roster: list[dict],
             day = None
         candidates = []
         for p in hitters:
-            # Skip IL'd players whose estimated return is after this date.
             ret = return_by_pid.get(p["player_id"])
-            if ret is None or (day is not None and day < ret):
+            if ret is None:
+                continue  # indefinitely out (OUT/INJURY_RESERVE/unknown)
+            # IL'd players: skip dates before their estimated return. Healthy
+            # players (ret <= as_of) get NO date floor — a past day falls out via
+            # `_hitter_factor` (Final → 0) below, not a wall-clock comparison. The
+            # old `day < ret` floor for healthy players (ret == local-today) is what
+            # dropped a whole day's projection at the host's local midnight; keying
+            # off game status instead makes this timezone-independent and smooth.
+            if ret > as_of and day is not None and day < ret:
                 continue
             team_games_today = [
                 g for g in schedule_by_team.get(p["pro_team_id"], [])
@@ -860,6 +878,7 @@ def build_budgets(roster: list[dict],
                   live_by_team: dict[int, dict[str, dict]] | None = None,
                   last_start_by_pitcher: dict[str, str] | None = None,
                   use_cadence: bool = True,
+                  as_of: date | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
@@ -881,12 +900,13 @@ def build_budgets(roster: list[dict],
     lineup_slot_counts = lineup_slot_counts or {}
     live_by_team = live_by_team or {}
     last_start_by_pitcher = last_start_by_pitcher or {}
-    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts)
-    today = date.today()
+    as_of = as_of or _utc_today()
+    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts, as_of)
+    today = as_of
 
     out: list[Budget] = []
     for p in roster:
-        if not _is_playable(p):
+        if not _is_playable(p, as_of):
             continue
         ros = p["ros_stats"]
         pos = p["default_position_id"]
@@ -1153,7 +1173,9 @@ def simulate(inputs: MatchupInputs,
              live_by_team: dict[int, dict[str, dict]] | None = None,
              last_start_by_pitcher: dict[str, str] | None = None,
              use_cadence: bool = True,
+             as_of: date | None = None,
              ) -> tuple[float, float, dict]:
+    as_of = as_of or _utc_today()   # UTC, never host-local — resolved once per run
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
         team_total_ros_games=team_total_ros_games,
@@ -1161,6 +1183,7 @@ def simulate(inputs: MatchupInputs,
         live_by_team=live_by_team,
         last_start_by_pitcher=last_start_by_pitcher,
         use_cadence=use_cadence,
+        as_of=as_of,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
@@ -1169,6 +1192,7 @@ def simulate(inputs: MatchupInputs,
         live_by_team=live_by_team,
         last_start_by_pitcher=last_start_by_pitcher,
         use_cadence=use_cadence,
+        as_of=as_of,
     )
 
     home_wins = 0

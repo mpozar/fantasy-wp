@@ -5,6 +5,32 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-06-06 — host-local `date.today()` lurch (model bug, fixed; no data edit)
+
+**TL;DR.** The hitter lineup optimizer (`_hitter_days_slotted`) floored slotted days
+with `date.today()` — the *host machine's local date* (CEST). So at **00:00 CEST
+(22:00 UTC)** every night, "today" rolled forward and a whole day's hitter projection
+was dropped at once — including US evening games that **hadn't been played yet**
+(dated "yesterday" in CEST but first pitch ~01:00 CEST). That produced an artificial,
+discrete WP step at ~22:00 UTC, intermittently (only when the just-crossed US date
+still had unplayed/in-progress games — observed 2026-06-03/04/05, absent 06-01/02).
+No data was corrupted or hand-edited; it's a transient projection artifact.
+
+**Why it looked like a jump, not a smooth handoff:** the day-set was gated by a hard
+`day < ret` date comparison, bypassing the smooth `_hitter_factor` (which scales an
+in-progress game by innings remaining). So a day went from full (1.0) to gone in one
+tick instead of decaying as its games played.
+
+**Fix.** Healthy players now take **no date floor** — past games fall out via game
+*status* (`_hitter_factor`: Final → 0), which is timezone-free. The only remaining
+"now" (the IL-return heuristic) takes an injected **UTC** `as_of` threaded
+`simulate → build_budgets → _hitter_days_slotted / _is_playable`, never
+`date.today()`. The sim is now a pure function of `(schedule, as_of)` — identical on
+any host timezone. Guarded by `tests/test_hitter_days_tz.py`. Investigating a WP step
+at ~22:00 UTC on dates **before** this fix? It may be partly this artifact.
+
+---
+
 ## 2026-06-04 (evening) — idle-fetch dropped scored cats; WP collapsed toward 50/50
 
 **TL;DR.** When the last live game of the slate went Final (~21:35 UTC), the next
