@@ -150,6 +150,47 @@ CREATE TABLE IF NOT EXISTS live_pitchers (
 CREATE INDEX IF NOT EXISTS idx_live_pitchers_team
     ON live_pitchers (pro_team_id);
 
+-- ── Live per-batter lines for the current week's games (live OPS components) ──
+-- One row per batter who has appeared, for every game in the live window (both
+-- in-progress and recently-Final, until ESPN's once-daily REST settle absorbs
+-- it). Lets the sim reconstruct each fantasy team's banked OPS components
+-- (AB/H/2B/3B/HR/BB/HBP/SF) live instead of waiting for the ~07:00 UTC settle.
+-- Matched to rostered hitters by normalized name; attributed to a fantasy team
+-- only if the hitter was in an active (non-bench) lineup slot that day. Mirrors
+-- live_pitchers; empty when nothing is in the window, in which case the sim
+-- behaves exactly as before.
+CREATE TABLE IF NOT EXISTS live_batters (
+    game_pk     INTEGER NOT NULL,
+    mlbam_id    INTEGER NOT NULL,
+    name        TEXT,
+    pro_team_id INTEGER,             -- ESPN proTeamId
+    ab  INTEGER, h INTEGER, b2 INTEGER, b3 INTEGER, hr INTEGER,
+    bb  INTEGER, hbp INTEGER, sf INTEGER,
+    fetched_at  TEXT NOT NULL,
+    PRIMARY KEY (game_pk, mlbam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_live_batters_team
+    ON live_batters (pro_team_id);
+
+-- ── Daily fantasy-lineup snapshots (who counted on a given day) ──
+-- One row per (game_date, fantasy_team, player) recording the player's ESPN
+-- lineup_slot_id for that day. The source of truth for "did this player's stats
+-- count for the team on day D" — a player contributes a day's box-score line
+-- only if their slot that day is an active (scored) slot, not bench (16) / IL
+-- (17). Needed for live component reconstruction (pitching + OPS) and usable to
+-- replace projected lineups with actuals for elapsed days. Snapshotted forward
+-- each live tick (lineups lock daily, so the in-day snapshot is authoritative).
+CREATE TABLE IF NOT EXISTS daily_lineups (
+    game_date       TEXT NOT NULL,   -- MLB official date, YYYY-MM-DD
+    fantasy_team_id INTEGER NOT NULL,
+    player_id       INTEGER NOT NULL,
+    lineup_slot_id  INTEGER,
+    fetched_at      TEXT NOT NULL,
+    PRIMARY KEY (game_date, fantasy_team_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_lineups_day
+    ON daily_lineups (game_date, fantasy_team_id);
+
 -- ── Per-pitcher start history (anchor for the rotation-cadence SP model) ──
 -- One row per (pitcher, game) that the pitcher started, derived from Final
 -- games' probable pitcher (the probable IS the actual starter once a game is
@@ -264,6 +305,9 @@ def init() -> None:
             ("team_schedule", "team_runs", "INTEGER"),
             ("team_schedule", "opponent_runs", "INTEGER"),
             ("scoring_settings", "lineup_slots_json", "TEXT"),
+            # Pitcher hits/walks allowed — added for live WHIP components.
+            ("live_pitchers", "p_h", "INTEGER"),
+            ("live_pitchers", "p_bb", "INTEGER"),
             ("wp_snapshots", "edited", "INTEGER NOT NULL DEFAULT 0"),
             ("validation_flags", "resolved_at", "TEXT"),
             ("validation_flags", "resolved_by", "TEXT"),

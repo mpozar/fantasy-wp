@@ -258,6 +258,36 @@ def fetch_rosters_and_projections() -> dict:
     }
 
 
+def fetch_daily_lineups(scoring_period_id: int | None = None) -> list[dict]:
+    """Each fantasy team's lineup-slot assignment for one day.
+
+    Returns [{fantasy_team_id, player_id, full_name, lineup_slot_id}]. With no
+    `scoring_period_id` this is the *current* day's (locked) lineup — what we
+    snapshot each live tick. Passing a `scoringPeriodId` fetches a historical
+    day's lineup for backfill (ESPN serves per-scoring-period roster states).
+
+    This is the source of truth for "did this player count for the team that
+    day": a player's box-score line contributes only if their slot here is an
+    active (scored) slot, not bench/IL.
+    """
+    extra = {"scoringPeriodId": scoring_period_id} if scoring_period_id else None
+    d = _get(["mRoster"], extra)
+    out: list[dict] = []
+    for t in d.get("teams", []):
+        team_id = t["id"]
+        for entry in t.get("roster", {}).get("entries", []):
+            pid = ((entry.get("playerPoolEntry") or {}).get("player") or {}).get("id")
+            if pid is None:
+                continue
+            out.append({
+                "fantasy_team_id": team_id,
+                "player_id": pid,
+                "full_name": ((entry.get("playerPoolEntry") or {}).get("player") or {}).get("fullName") or "",
+                "lineup_slot_id": entry.get("lineupSlotId"),
+            })
+    return out
+
+
 def fetch_all_matchups() -> list[dict]:
     """All matchups across every period in the season, each with cat-by-cat
     scores (zeros for future periods).

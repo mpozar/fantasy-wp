@@ -566,18 +566,50 @@ def refresh_live() -> None:
     # Per game-date: distinct game statuses, for the activity tracker below.
     statuses_by_date: dict[str, set[str]] = {}
 
-    # Fetch live boxscores for in-progress games *before* opening the write
-    # transaction (network I/O shouldn't hold the DB lock). A boxscore failure
-    # just means no in-game QS/SVHD detail for that game — fall back silently.
+    # Fetch live boxscores *before* opening the write transaction (network I/O
+    # shouldn't hold the DB lock). A boxscore failure just means no live
+    # components / in-game QS-SVHD for that game — fall back silently.
+    #
+    # We keep box-score lines for every "unsettled" game (game_date on/after the
+    # ESPN settle boundary): in-progress AND recently-Final ones whose stats
+    # ESPN's once-daily REST hasn't absorbed yet. Re-fetching them each tick
+    # keeps a just-Final game's true final line current (cheap: only the last
+    # ~1-2 days of games, and only ones with data). Older games are pruned —
+    # they're already in ESPN's banked totals, so the sim reads them from there.
+    settle_boundary = sim.settle_boundary_date(datetime.now(timezone.utc))
     window_pks = {g["game_pk"] for g in games}
-    in_progress_pks = sorted({g["game_pk"] for g in games
-                              if g["game_status"] == "In Progress"})
-    live_rows: list[dict] = []
-    for pk in in_progress_pks:
+    status_by_pk: dict[int, set] = {}
+    date_by_pk: dict[int, str] = {}
+    for g in games:
+        status_by_pk.setdefault(g["game_pk"], set()).add(g["game_status"])
+        date_by_pk[g["game_pk"]] = g["game_date"]
+    in_progress_pks = sorted(pk for pk, st in status_by_pk.items()
+                             if "In Progress" in st)
+    unsettled_pks = {pk for pk in window_pks
+                     if date_by_pk[pk] >= settle_boundary}
+    _has_data = {"In Progress"} | _FINAL_GAME_STATES
+    fetch_pks = sorted(pk for pk in unsettled_pks
+                       if status_by_pk[pk] & _has_data)
+    live_p: list[dict] = []
+    live_b: list[dict] = []
+    for pk in fetch_pks:
         try:
-            live_rows.extend(mlb.fetch_boxscore(pk))
+            bs = mlb.fetch_boxscore(pk)
+            live_p.extend(bs["pitchers"])
+            live_b.extend(bs["batters"])
         except Exception:  # noqa: BLE001 — best-effort; REST hiccup → skip game
             pass
+
+    # Snapshot today's locked fantasy lineups (who counts for whom), keyed by the
+    # day(s) with games. INSERT OR IGNORE below keeps each day's *first* snapshot
+    # (taken at/after first pitch, when lineups are locked) authoritative.
+    lineup_dates = sorted({date_by_pk[pk] for pk in fetch_pks})
+    daily_lineup_rows: list[dict] = []
+    if lineup_dates:
+        try:
+            daily_lineup_rows = espn.fetch_daily_lineups()
+        except Exception:  # noqa: BLE001 — auth hiccup → skip; reconstruction falls back
+            daily_lineup_rows = []
 
     conn = db.connect()
     try:
@@ -639,33 +671,63 @@ def refresh_live() -> None:
                      now),
                 )
 
-            # Live pitcher lines: drop rows for games in this window that are no
-            # longer in progress (finished → QS/SVHD banked into totals), then
-            # replace the rows for each in-progress game with a fresh snapshot.
-            stale = [pk for pk in window_pks if pk not in in_progress_pks]
-            for pk in stale:
+            # Live box-score lines (pitchers + batters). Prune games ESPN has now
+            # settled or that fell out of the window; refresh each fetched game's
+            # rows. Both tables are keyed by game_pk so a per-game DELETE + insert
+            # keeps the latest snapshot (player sets only grow within a game).
+            existing = {r[0] for r in conn.execute(
+                "SELECT game_pk FROM live_pitchers "
+                "UNION SELECT game_pk FROM live_batters")}
+            for pk in (existing - unsettled_pks) | set(fetch_pks):
                 conn.execute("DELETE FROM live_pitchers WHERE game_pk=?", (pk,))
-            for pk in in_progress_pks:
-                conn.execute("DELETE FROM live_pitchers WHERE game_pk=?", (pk,))
-            for lp in live_rows:
+                conn.execute("DELETE FROM live_batters WHERE game_pk=?", (pk,))
+            for lp in live_p:
                 conn.execute(
                     """
                     INSERT INTO live_pitchers
                         (game_pk, mlbam_id, name, pro_team_id, order_idx, is_last,
-                         games_started, outs, er, k, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                         games_started, outs, er, k, p_h, p_bb, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (lp["game_pk"], lp["mlbam_id"], lp["name"], lp["espn_team_id"],
                      lp["order_idx"], 1 if lp["is_last"] else 0, lp["games_started"],
-                     lp["outs"], lp["er"], lp["k"], now),
+                     lp["outs"], lp["er"], lp["k"], lp["p_h"], lp["p_bb"], now),
                 )
+            for lb in live_b:
+                conn.execute(
+                    """
+                    INSERT INTO live_batters
+                        (game_pk, mlbam_id, name, pro_team_id,
+                         ab, h, b2, b3, hr, bb, hbp, sf, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (lb["game_pk"], lb["mlbam_id"], lb["name"], lb["espn_team_id"],
+                     lb["ab"], lb["h"], lb["b2"], lb["b3"], lb["hr"],
+                     lb["bb"], lb["hbp"], lb["sf"], now),
+                )
+
+            # Daily lineup snapshots: first snapshot per (day, team, player) wins.
+            for gd in lineup_dates:
+                for e in daily_lineup_rows:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO daily_lineups
+                            (game_date, fantasy_team_id, player_id,
+                             lineup_slot_id, fetched_at)
+                        VALUES (?,?,?,?,?)
+                        """,
+                        (gd, e["fantasy_team_id"], e["player_id"],
+                         e["lineup_slot_id"], now),
+                    )
     finally:
         conn.close()
 
     click.echo(
         f"Refreshed live game state: {yesterday.isoformat()}..{end.isoformat()}, "
         f"team_game_rows={len(games)}, in_progress={len(in_progress_pks)}, "
-        f"live_pitcher_rows={len(live_rows)}, espn_probables_filled={espn_pp}"
+        f"boxscore_games={len(fetch_pks)}, live_pitcher_rows={len(live_p)}, "
+        f"live_batter_rows={len(live_b)}, lineup_rows={len(daily_lineup_rows)}, "
+        f"espn_probables_filled={espn_pp}"
     )
 
 
@@ -742,6 +804,22 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                 lineup_slot_counts = {}
 
         now = _now_iso()
+
+        # Live component reconstruction (current week only). The unsettled-window
+        # MLB box-score lines we fold into each team's banked pitching/OPS
+        # components, beating ESPN's once-daily REST settle. Empty → no-op for
+        # --future, non-mc models, or when nothing is live right now.
+        live_components = (not future_only) and model_name == "mc-v1"
+        settle_boundary = (
+            sim.settle_boundary_date(datetime.now(timezone.utc))
+            if live_components else None
+        )
+        unsettled_lines = (
+            sim.load_unsettled_lines(conn, since_date=settle_boundary)
+            if live_components else {"pitchers": [], "batters": []}
+        )
+        live_accepts = 0
+
         total_matchups = 0
         for period_id in periods:
             ms = conn.execute(
@@ -768,12 +846,22 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     # weeks reuse today's roster (best estimate of who'll be
                     # on each team).
                     roster_period = current if future_only else period_id
+                    home_roster = sim.load_team_roster(conn, roster_period, m["home_team_id"])
+                    away_roster = sim.load_team_roster(conn, roster_period, m["away_team_id"])
+                    if live_components:
+                        home_scores, hdec = sim.apply_live_components(
+                            conn, m["home_team_id"], home_scores, home_roster,
+                            unsettled_lines, since_date=settle_boundary)
+                        away_scores, adec = sim.apply_live_components(
+                            conn, m["away_team_id"], away_scores, away_roster,
+                            unsettled_lines, since_date=settle_boundary)
+                        live_accepts += sum(1 for d in (hdec + adec) if d["accepted"])
                     inputs = sim.MatchupInputs(
                         matchup_id=m["id"],
                         home_state=home_scores,
                         away_state=away_scores,
-                        home_roster=sim.load_team_roster(conn, roster_period, m["home_team_id"]),
-                        away_roster=sim.load_team_roster(conn, roster_period, m["away_team_id"]),
+                        home_roster=home_roster,
+                        away_roster=away_roster,
                     )
                     home_wp, away_wp, details = sim.simulate(
                         inputs, schedule_by_team, n_sims=sims,
@@ -810,9 +898,13 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             total_matchups += len(ms)
         conn.commit()
         scope = "future" if future_only else "current"
+        live_note = (
+            f", live_component_groups_accepted={live_accepts}"
+            if live_components else ""
+        )
         click.echo(
             f"Computed WP for {total_matchups} matchups ({scope}: "
-            f"periods {periods[0]}..{periods[-1]}) using {model_name}."
+            f"periods {periods[0]}..{periods[-1]}) using {model_name}{live_note}."
         )
     finally:
         conn.close()

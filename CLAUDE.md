@@ -446,7 +446,12 @@ The fast tier is the only one that publishes; medium/daily just update the DB an
 - `compute --future` recomputes 78 matchups (13 weeks × 6) × 10k sims each. Takes ~3-5 min.
 - `refresh-rosters` pulls 12 teams × ~25 players × ROS projections. ~10s.
 - `refresh-schedule` (all weeks) hits MLB statsapi 14 times. ~5-10s.
-- `refresh-live` hits MLB statsapi once (2-day window). ~1s.
+- `refresh-live` hits MLB statsapi once for the schedule (2-day window) plus one
+  boxscore per *unsettled* game (in-progress + recently-Final today, ~10-30 during
+  a slate) and one ESPN `mRoster` call for the daily lineup snapshot. ~1s idle,
+  ~2-4s during a live slate — still well under the 5-min budget. All best-effort
+  (failures fall back silently; live component reconstruction degrades to ESPN's
+  stale-but-safe components).
 
 ### git push from cron
 
@@ -503,6 +508,67 @@ monotonicity guard already uses (cli.py, with the same rationale in its comment)
 If you add another current-state reader, use the same per-stat pattern. The
 `INV_CURRENT_CATS_MISSING` validation check (below) guards against a regression:
 once a side has pitched, every scored cat must be present in current_state.
+
+### Live component reconstruction (beating the once-daily REST settle)
+
+**The problem.** The scrape owns the displayed scored cats and updates them live,
+but the sim *projects* end-of-week ERA/WHIP/OPS/QS from the raw rate **components**
+(`OUTS`, `ER`, `P_H`, `P_BB`; `AB`, `2B`, `3B`, `B_BB`, `HBP`, `SF`) — and those come
+only from ESPN's REST endpoint, which **settles them ~once a day (~07:00 UTC ≈
+midnight Pacific, ESPN's stat finalization)**, not live. So during a slate the
+displayed rates move (scrape) while the projection baseline runs on banked
+innings/AB that can be ~24h stale; when REST finally settles, the WP takes a
+discrete step. (This is the mechanism behind "why did the WP jump at ~07:00 UTC"
+— a benign daily catch-up, not a bug. See the WP-swing note below.)
+
+**The fix.** We rebuild the components live from the MLB box-scores we already
+fetch, attribute them by the day's fantasy lineup, and trust them only when the
+rate they imply matches ESPN's live scraped rate. Pieces:
+
+- **Source.** `mlb.fetch_boxscore` (now `mlb.parse_boxscore` + a network wrapper)
+  returns `{"pitchers": [...], "batters": [...]}` — pitcher lines carry `p_h`/`p_bb`
+  (for WHIP); batter lines carry the full OPS component set. We already fetched
+  every live game's boxscore for the in-game QS/SVHD model; this just stops
+  discarding the batting half and adds two pitching fields.
+- **Retention (`refresh-live`).** Keep box-score lines (`live_pitchers`,
+  `live_batters`) for every **unsettled** game — `game_date >= sim.settle_boundary_date(now)`
+  (= `now − 7h`'s date; games on/after it aren't in ESPN's banked totals yet) —
+  re-fetching each tick so a just-Final game's true final line stays current.
+  Older games are pruned (ESPN has them; the sim reads them from category_state).
+- **Attribution (`daily_lineups`).** Each tick we snapshot the locked fantasy
+  lineup (`espn.fetch_daily_lineups`) keyed by game_date (first snapshot per day
+  wins — taken at/after first pitch when lineups lock). A box-score line counts
+  for a team only if the matched player (by `_norm_name`; no ESPN↔MLBAM id
+  crosswalk) was in an active slot that day: pitching lines need a **pitcher slot
+  {13,14,15}**, batting lines a **hitter slot ({0–12,19})**; bench (16) / IL (17)
+  never count. This is what correctly handles two-way players (Ohtani counts on
+  the side he's slotted) and lineup changes.
+- **The guard (`sim.reconcile_live_components`, pure).** For each rate group
+  (pitching = ERA+WHIP over OUTS/ER/P_H/P_BB; OPS over AB/2B/3B/B_BB/HBP/SF —
+  `H`/`HR` stay at baseline since the scrape owns those scored cats live, so adding
+  a delta would double-count), reconstructed = ESPN baseline + summed unsettled
+  delta. We commit the reconstruction **only if** every derived rate is within
+  `LIVE_RATE_TOL` of the live *scraped* rate; otherwise we keep the stale-but-safe
+  ESPN baseline. The scraped rate is authoritative for current standings, so this
+  makes the whole thing fail-safe: a wrong attribution (lineup drift, name-match
+  miss) or a double-count simply fails the check and falls back — never produces a
+  number that disagrees with what ESPN shows.
+- **Wiring.** `compute` (current week only, mc-v1) loads the unsettled lines once
+  and calls `sim.apply_live_components` per team before `simulate`; the echo reports
+  `live_component_groups_accepted`. No-op for `--future`, non-mc models, or when
+  nothing is live — behaves exactly as before. `app/validate.py`
+  `check_live_lineup_capture` warns (`ANOM_LINEUP_SNAPSHOT_MISSING`) if box-score
+  lines exist for a day but no lineup was captured (ESPN-auth failure → silent
+  fallback for everyone).
+
+**Validated** (2026-06-06): reconstructing each team's prior-day pitching `OUTS`
+from real box-scores + the real ESPN lineup reproduced ESPN's own banked `OUTS`
+delta **exactly for 10/12 teams**; the 2 misses were lineup *day*-drift (a proxy
+current-day lineup vs the actual prior-day one) — which the per-day `daily_lineups`
+snapshot fixes and the guard catches by falling back. Tests: `tests/test_live_components.py`.
+
+Tuning knobs at the top of `sim.py`: `SETTLE_LAG_HOURS` (7), `PITCHER_SLOTS`,
+`NON_COUNTING_SLOTS`, `LIVE_RATE_TOL`, `PITCH_RATE_COMPONENTS`, `OPS_RECON_COMPONENTS`.
 
 ### Auth (the tricky part)
 
@@ -726,7 +792,8 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
 | `ANOM_SCRAPE_EMPTY` | warn | games in progress ⇒ the live scrape returns >0 cells | the DOM scrape silently failed (auth wall, expired `.playwright_profile`, selector drift) and `fetch` fell back to laggy REST — display cats rot *while games are live*. Raised at **fetch** time (not `run`), since only `fetch` knows a scrape was attempted. Fix: re-run `scripts/espn_auth_setup.py`. ×N occurrences/day = persistent vs a one-off hiccup. |
-| `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, or games going live. Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
+| `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, games going live, or a benign ~07:00-UTC daily component settle (see "Live component reconstruction"). Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
+| `ANOM_LINEUP_SNAPSHOT_MISSING` | warn | a day with live box-score lines has a `daily_lineups` snapshot | the ESPN lineup fetch in `refresh-live` failed (auth hiccup / expired cookies) → live component reconstruction can't attribute and silently falls back to stale ESPN components for every team. Check ESPN auth; verify `espn.fetch_daily_lineups` works. Quiet whenever nothing is live. |
 | `ANOM_WP_FLAPPING` | warn | home_wp doesn't oscillate (≥`FLAP_MIN_REVERSALS` direction flips ≥8pp over the last `FLAP_WINDOW` ticks) | a stat keeps being written then dropped then rewritten (flaky scrape/source regressing a counting cat). Distinct from a one-way swing or a swing-then-recover (those don't reverse repeatedly). Active weeks only. |
 | `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within 40% of current once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`); legit if the current sample is small/noisy. |
 
@@ -814,5 +881,10 @@ Read this file's "Investigating WP changes" section first. The most common cause
 4. medium.sh refresh (projections updated)
 5. Monte Carlo noise (small jiggles up to ~1pp at p≈0.5)
 6. Live game in progress (cum state updates as plays happen)
+7. **Daily component settle (~07:00 UTC)** — ESPN finalizes the raw rate
+   components once a day, so projected ERA/WHIP/OPS/QS can step then. Live
+   component reconstruction (see that section) now smooths most of this by
+   rebuilding components from box-scores during the slate; a residual step can
+   remain if reconstruction was falling back (e.g. `ANOM_LINEUP_SNAPSHOT_MISSING`).
 
-Always **compare the budgets before vs after** the transition. The "what changed" is usually obvious from the diff.
+Always **compare the budgets before vs after** the transition. The "what changed" is usually obvious from the diff. For a swing isolated to ERA/WHIP/OPS/QS with the counting cats unchanged, suspect the component settle (cause 7).

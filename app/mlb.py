@@ -184,43 +184,88 @@ def _ip_to_outs(ip: str | float | None) -> int:
         return 0
 
 
-def fetch_boxscore(game_pk: int) -> list[dict]:
-    """Per-pitcher live lines for one game, for in-game QS/SVHD projection.
+def parse_boxscore(payload: dict, game_pk: int) -> dict:
+    """Pure parse of an MLB statsapi boxscore JSON into per-pitcher and
+    per-batter lines (split out so it's unit-testable without the network).
 
-    Returns one row per pitcher who has appeared, in appearance order:
-      {game_pk, mlbam_id, name, espn_team_id, order_idx, is_last (currently
-       pitching for their team), games_started, outs, er, k}
+    Returns {"pitchers": [...], "batters": [...]}:
+      pitchers — one row per pitcher who appeared, in appearance order:
+        {game_pk, mlbam_id, name, espn_team_id, order_idx, is_last, games_started,
+         outs, er, k, p_h (hits allowed), p_bb (walks allowed)}
+      batters  — one row per batter who appeared:
+        {game_pk, mlbam_id, name, espn_team_id, ab, h, b2, b3, hr, bb, hbp, sf}
 
     `order_idx`/`is_last` come from the team's ordered `pitchers` list — a
     starter has exited once they're not the last entry. Skips teams not in the
     MLBAM_TO_ESPN map.
     """
-    with httpx.Client(timeout=30.0) as client:
-        r = client.get(f"{BASE_URL}/game/{game_pk}/boxscore")
-    r.raise_for_status()
-    teams = (r.json().get("teams") or {})
-
-    out: list[dict] = []
+    teams = (payload.get("teams") or {})
+    pitchers: list[dict] = []
+    batters: list[dict] = []
     for side in ("home", "away"):
         t = teams.get(side) or {}
         team_mlbam = ((t.get("team") or {}).get("id"))
         if team_mlbam not in MLBAM_TO_ESPN:
             continue
-        order = t.get("pitchers") or []           # personIds, appearance order
+        espn_team_id = MLBAM_TO_ESPN[team_mlbam]
         players = t.get("players") or {}
+
+        order = t.get("pitchers") or []           # personIds, appearance order
         for idx, pid in enumerate(order):
             p = players.get(f"ID{pid}") or {}
             st = (p.get("stats") or {}).get("pitching") or {}
-            out.append({
+            pitchers.append({
                 "game_pk": game_pk,
                 "mlbam_id": pid,
                 "name": (p.get("person") or {}).get("fullName"),
-                "espn_team_id": MLBAM_TO_ESPN[team_mlbam],
+                "espn_team_id": espn_team_id,
                 "order_idx": idx,
                 "is_last": idx == len(order) - 1,
                 "games_started": st.get("gamesStarted") or 0,
                 "outs": _ip_to_outs(st.get("inningsPitched")),
                 "er": st.get("earnedRuns") or 0,
                 "k": st.get("strikeOuts") or 0,
+                "p_h": st.get("hits") or 0,
+                "p_bb": st.get("baseOnBalls") or 0,
             })
-    return out
+
+        # Batters: everyone with a batting line who actually batted (AB+BB+HBP+SF
+        # > 0 catches pinch-hitters/walks; a defensive sub with no PA contributes
+        # nothing and is skipped so it can't be mis-attributed).
+        for pid in (t.get("batters") or players.keys()):
+            pid_int = pid if isinstance(pid, int) else None
+            p = players.get(f"ID{pid}" if pid_int is not None else pid) or {}
+            person_id = (p.get("person") or {}).get("id")
+            if person_id is None:
+                continue
+            st = (p.get("stats") or {}).get("batting") or {}
+            ab = st.get("atBats") or 0
+            bb = st.get("baseOnBalls") or 0
+            hbp = st.get("hitByPitch") or 0
+            sf = st.get("sacFlies") or 0
+            if ab + bb + hbp + sf == 0:
+                continue
+            batters.append({
+                "game_pk": game_pk,
+                "mlbam_id": person_id,
+                "name": (p.get("person") or {}).get("fullName"),
+                "espn_team_id": espn_team_id,
+                "ab": ab,
+                "h": st.get("hits") or 0,
+                "b2": st.get("doubles") or 0,
+                "b3": st.get("triples") or 0,
+                "hr": st.get("homeRuns") or 0,
+                "bb": bb,
+                "hbp": hbp,
+                "sf": sf,
+            })
+    return {"pitchers": pitchers, "batters": batters}
+
+
+def fetch_boxscore(game_pk: int) -> dict:
+    """Fetch one game's boxscore → {"pitchers": [...], "batters": [...]}.
+    Thin network wrapper around `parse_boxscore`."""
+    with httpx.Client(timeout=30.0) as client:
+        r = client.get(f"{BASE_URL}/game/{game_pk}/boxscore")
+    r.raise_for_status()
+    return parse_boxscore(r.json(), game_pk)

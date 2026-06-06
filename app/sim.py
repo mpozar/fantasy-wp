@@ -64,6 +64,27 @@ PITCHER_COUNTERS = [
     STAT_K, STAT_QS, STAT_SVHD,
 ]
 
+# ── Live component reconstruction (beat the once-daily ESPN REST settle) ──
+# ESPN's REST endpoint settles the raw rate *components* (the stats below) only
+# ~once a day (~07:00 UTC), so the sim's projected ERA/WHIP/OPS run on banked
+# innings/AB that can be ~24h stale even while the scrape keeps the displayed
+# rates live. We rebuild these components from the live MLB box-scores we
+# already fetch, attributed by the day's fantasy lineup, and trust them only
+# when the rate they imply matches ESPN's live *scraped* rate (else we keep the
+# stale-but-safe ESPN value). See CLAUDE.md "Live component reconstruction".
+SETTLE_LAG_HOURS = 7                    # ESPN absorbs a stat-day ~07:00 UTC next
+NON_COUNTING_SLOTS = {16, 17}          # BE (bench), IL — don't score that day
+PITCHER_SLOTS = {13, 14, 15}           # SP / RP / P — pitching lines count here
+# Pitching-rate components (ERA, WHIP) — all REST-only, so all reconstructed.
+PITCH_RATE_COMPONENTS = (STAT_OUTS, STAT_ER, STAT_P_H, STAT_P_BB)
+# OPS components we reconstruct: the REST-only ones. H (1) and HR (5) are
+# *scored* cats the scrape already owns live, so they stay at the baseline
+# value — adding a delta would double-count the scrape.
+OPS_RECON_COMPONENTS = (STAT_AB, STAT_2B, STAT_3B, STAT_B_BB, STAT_HBP, STAT_SF)
+# Max gap between our reconstructed rate and ESPN's live scraped rate for the
+# reconstruction to be trusted (rounding + a fraction of an in-flight out/AB).
+LIVE_RATE_TOL = {STAT_ERA: 0.20, STAT_WHIP: 0.04, STAT_OPS: 0.012}
+
 # Scoring categories: (stat_id, reversed?)
 CATEGORIES = [
     (STAT_H,    False),
@@ -304,6 +325,106 @@ def derive_whip(c: dict[int, float]) -> float:
 # comparison (`cat_value`), the publish display (`cli._apply_derived_rates`), and
 # validate's cross-source check all route rate cats through this.
 RATE_DERIVERS = {STAT_OPS: derive_ops, STAT_ERA: derive_era, STAT_WHIP: derive_whip}
+
+
+def _sum_counted(lines: list[dict], slot_by_norm_name: dict[str, int],
+                 counting_slots: set[int], fields: tuple[str, ...]) -> tuple[dict, int]:
+    """Sum box-score `fields` over the lines whose matched fantasy player was in
+    a counting lineup slot that day. A line is matched to a rostered player by
+    normalized name (no ESPN↔MLBAM id crosswalk); unrostered players and ones on
+    the bench/IL contribute nothing. Returns ({field: total}, n_matched)."""
+    totals = {f: 0.0 for f in fields}
+    matched = 0
+    for ln in lines:
+        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
+        if slot is None or slot not in counting_slots:
+            continue
+        matched += 1
+        for f in fields:
+            totals[f] += ln.get(f) or 0
+    return totals, matched
+
+
+def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
+                 components: tuple[int, ...], derivers: dict[int, callable],
+                 scraped: dict[int, float], n_matched: int) -> dict:
+    """Commit `recon`'s `components` into `state` IFF every rate derived from
+    `recon` matches its live scraped value within tolerance — i.e. our component
+    reconstruction is provably consistent with what ESPN is showing live. On any
+    mismatch (or no live lines, or a missing scraped rate) leave `state` on the
+    ESPN baseline. Returns a decision record for logging/validation. Pure (aside
+    from mutating the passed-in `state`, which is a per-team working copy)."""
+    ok = n_matched > 0
+    rates: dict[int, dict] = {}
+    for stat_id, fn in derivers.items():
+        scr = scraped.get(stat_id)
+        rec_rate = fn(recon)
+        rates[stat_id] = {"scraped": scr, "reconstructed": round(rec_rate, 4)}
+        if scr is None or abs(rec_rate - scr) > LIVE_RATE_TOL[stat_id]:
+            ok = False
+    if ok:
+        for c in components:
+            state[c] = recon[c]
+    return {"group": name, "accepted": ok, "matched_lines": n_matched, "rates": rates}
+
+
+def reconcile_live_components(
+    baseline: dict[int, float],
+    *,
+    pitcher_lines: list[dict],
+    batter_lines: list[dict],
+    slot_by_norm_name: dict[str, int],
+    scraped: dict[int, float],
+) -> tuple[dict[int, float], list[dict]]:
+    """Replace ESPN's once-daily-stale pitching/OPS components in `baseline` with
+    live values reconstructed from MLB box-score lines — but only for a rate
+    group whose implied rate matches ESPN's live *scraped* rate. Pure.
+
+    `pitcher_lines`/`batter_lines` are the team's unsettled-window lines (games
+    not yet in ESPN's banked totals). `slot_by_norm_name` is each rostered
+    player's fantasy lineup slot that day. `scraped` holds the live displayed
+    rates {STAT_ERA, STAT_WHIP, STAT_OPS} (authoritative for current standings).
+
+    Returns (state, decisions): `state` is a copy of `baseline` with components
+    swapped in for accepted groups; `decisions` records each group's verdict.
+    """
+    state = dict(baseline)
+    decisions: list[dict] = []
+
+    # ── pitching group (ERA + WHIP): OUTS/ER/P_H/P_BB, all REST-only ──
+    pit, n_pit = _sum_counted(
+        pitcher_lines, slot_by_norm_name, PITCHER_SLOTS,
+        ("outs", "er", "p_h", "p_bb"),
+    )
+    recon_pit = dict(baseline)
+    recon_pit[STAT_OUTS] = baseline.get(STAT_OUTS, 0) + pit["outs"]
+    recon_pit[STAT_ER]   = baseline.get(STAT_ER, 0)   + pit["er"]
+    recon_pit[STAT_P_H]  = baseline.get(STAT_P_H, 0)  + pit["p_h"]
+    recon_pit[STAT_P_BB] = baseline.get(STAT_P_BB, 0) + pit["p_bb"]
+    decisions.append(_judge_group(
+        "pitching", state, recon_pit, PITCH_RATE_COMPONENTS,
+        {STAT_ERA: derive_era, STAT_WHIP: derive_whip}, scraped, n_pit,
+    ))
+
+    # ── OPS group: AB/2B/3B/BB/HBP/SF (REST-only). H & HR stay at baseline —
+    #    they're scored cats the scrape already keeps live. ──
+    bat, n_bat = _sum_counted(
+        batter_lines, slot_by_norm_name, HITTER_SLOT_IDS,
+        ("ab", "b2", "b3", "bb", "hbp", "sf"),
+    )
+    recon_ops = dict(baseline)
+    recon_ops[STAT_AB]   = baseline.get(STAT_AB, 0)   + bat["ab"]
+    recon_ops[STAT_2B]   = baseline.get(STAT_2B, 0)   + bat["b2"]
+    recon_ops[STAT_3B]   = baseline.get(STAT_3B, 0)   + bat["b3"]
+    recon_ops[STAT_B_BB] = baseline.get(STAT_B_BB, 0) + bat["bb"]
+    recon_ops[STAT_HBP]  = baseline.get(STAT_HBP, 0)  + bat["hbp"]
+    recon_ops[STAT_SF]   = baseline.get(STAT_SF, 0)   + bat["sf"]
+    decisions.append(_judge_group(
+        "ops", state, recon_ops, OPS_RECON_COMPONENTS,
+        {STAT_OPS: derive_ops}, scraped, n_bat,
+    ))
+
+    return state, decisions
 
 
 def cat_value(c: dict[int, float], stat_id: int) -> float:
@@ -1397,19 +1518,108 @@ def load_schedule_by_team(conn: sqlite3.Connection,
 
 
 def load_live_pitchers(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
-    """Live pitcher lines for in-progress games, keyed by ESPN proTeamId then
-    normalized pitcher name (matching how budgets look players up). Empty when
+    """Pitcher lines for games **in progress right now**, keyed by ESPN proTeamId
+    then normalized pitcher name (matching how budgets look players up). For the
+    in-game QS/SVHD override only, which must not fire on a Final game (its credit
+    is already banked). `live_pitchers` now also retains recently-Final games for
+    component reconstruction, so filter to In Progress here explicitly. Empty when
     no games are live — in which case build_budgets behaves exactly as before."""
     rows = conn.execute(
         """
-        SELECT game_pk, name, pro_team_id, is_last, games_started, outs, er, k
-        FROM live_pitchers
+        SELECT lp.game_pk, lp.name, lp.pro_team_id, lp.is_last, lp.games_started,
+               lp.outs, lp.er, lp.k
+        FROM live_pitchers lp
+        WHERE EXISTS (SELECT 1 FROM team_schedule ts
+                      WHERE ts.game_pk = lp.game_pk AND ts.game_status = 'In Progress')
         """
     ).fetchall()
     out: dict[int, dict[str, dict]] = {}
     for r in rows:
         out.setdefault(r["pro_team_id"], {})[_norm_name(r["name"])] = dict(r)
     return out
+
+
+def settle_boundary_date(now_utc) -> str:
+    """The earliest game_date ESPN has NOT yet settled into its banked totals,
+    as 'YYYY-MM-DD'. ESPN absorbs a stat-day ~SETTLE_LAG_HOURS after midnight
+    UTC (~07:00), so shifting now back by that lag and taking the date gives the
+    boundary: games on-or-after it are still 'live' (not in ESPN's REST totals)
+    and are the ones we reconstruct."""
+    return (now_utc - timedelta(hours=SETTLE_LAG_HOURS)).date().isoformat()
+
+
+def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[str, list[dict]]:
+    """All live box-score lines for games not yet in ESPN's banked totals
+    (game_date >= since_date) → {"pitchers": [...], "batters": [...]}. Flat (not
+    grouped by team): reconcile matches each line to a fantasy roster by name, so
+    a line only contributes where its player is rostered + slotted. Empty when
+    nothing is live, in which case reconciliation is a no-op."""
+    pit = [dict(r) for r in conn.execute(
+        """
+        SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb
+        FROM live_pitchers lp
+        WHERE EXISTS (SELECT 1 FROM team_schedule ts
+                      WHERE ts.game_pk = lp.game_pk AND ts.game_date >= ?)
+        """, (since_date,))]
+    bat = [dict(r) for r in conn.execute(
+        """
+        SELECT lb.name, lb.ab, lb.h, lb.b2, lb.b3, lb.hr, lb.bb, lb.hbp, lb.sf
+        FROM live_batters lb
+        WHERE EXISTS (SELECT 1 FROM team_schedule ts
+                      WHERE ts.game_pk = lb.game_pk AND ts.game_date >= ?)
+        """, (since_date,))]
+    return {"pitchers": pit, "batters": bat}
+
+
+def load_active_slots(conn: sqlite3.Connection, fantasy_team_id: int, *,
+                      since_date: str, fallback_roster: list[dict]) -> dict[str, int]:
+    """{norm_name: lineup_slot_id} for one fantasy team's players. Source of
+    truth is `daily_lineups` (the latest snapshot on-or-after `since_date` — the
+    locked lineup that actually scored that day); for any player without a daily
+    snapshot yet we fall back to their current roster slot."""
+    out: dict[str, int] = {}
+    for p in fallback_roster:
+        nm = _norm_name(p.get("full_name"))
+        if nm:
+            out[nm] = p.get("lineup_slot_id")
+    rows = conn.execute(
+        """
+        SELECT dl.lineup_slot_id, dl.game_date, p.full_name
+        FROM daily_lineups dl JOIN players p ON p.id = dl.player_id
+        WHERE dl.fantasy_team_id = ? AND dl.game_date >= ?
+        ORDER BY dl.game_date
+        """,
+        (fantasy_team_id, since_date),
+    ).fetchall()
+    for r in rows:  # ascending → the latest day's slot wins
+        nm = _norm_name(r["full_name"])
+        if nm:
+            out[nm] = r["lineup_slot_id"]
+    return out
+
+
+def apply_live_components(conn: sqlite3.Connection, fantasy_team_id: int,
+                         baseline: dict[int, float], roster: list[dict],
+                         unsettled_lines: dict[str, list[dict]], *,
+                         since_date: str) -> tuple[dict[int, float], list[dict]]:
+    """Thin DB wrapper around `reconcile_live_components`: loads this team's
+    daily lineup slots, takes the live scraped rates straight from `baseline`
+    (the scrape writes them), and returns (adjusted_state, decisions). No-op
+    (returns baseline unchanged) when there are no live lines."""
+    if not unsettled_lines["pitchers"] and not unsettled_lines["batters"]:
+        return baseline, []
+    slot_by_norm_name = load_active_slots(
+        conn, fantasy_team_id, since_date=since_date, fallback_roster=roster)
+    scraped = {STAT_ERA: baseline.get(STAT_ERA),
+               STAT_WHIP: baseline.get(STAT_WHIP),
+               STAT_OPS: baseline.get(STAT_OPS)}
+    return reconcile_live_components(
+        baseline,
+        pitcher_lines=unsettled_lines["pitchers"],
+        batter_lines=unsettled_lines["batters"],
+        slot_by_norm_name=slot_by_norm_name,
+        scraped=scraped,
+    )
 
 
 def load_last_starts(conn: sqlite3.Connection) -> dict[str, str]:

@@ -459,6 +459,44 @@ def check_scrape_health(in_progress: int, scraped_cells: int) -> list[Finding]:
     return []
 
 
+def check_live_lineup_capture(conn, now_iso: str | None) -> list[Finding]:
+    """Live component reconstruction needs a `daily_lineups` snapshot to know who
+    counted for each team that day. If box-score lines exist for an unsettled day
+    but no lineup was captured for it (ESPN auth hiccup / fetch failure in
+    refresh-live), every team silently falls back to ESPN's once-daily-stale
+    components — the exact staleness reconstruction is meant to fix, failing
+    quietly. Cheap two-count guard on the unsettled window."""
+    if not now_iso:
+        return []
+    from datetime import datetime
+    from app import sim as _sim
+    try:
+        boundary = _sim.settle_boundary_date(datetime.fromisoformat(now_iso))
+    except (ValueError, TypeError):
+        return []
+    days = conn.execute(
+        """
+        SELECT DISTINCT ts.game_date AS gd
+        FROM team_schedule ts
+        WHERE ts.game_date >= ?
+          AND (EXISTS (SELECT 1 FROM live_pitchers lp WHERE lp.game_pk = ts.game_pk)
+            OR EXISTS (SELECT 1 FROM live_batters  lb WHERE lb.game_pk = ts.game_pk))
+        """,
+        (boundary,),
+    ).fetchall()
+    out = []
+    for r in days:
+        n = conn.execute("SELECT COUNT(*) c FROM daily_lineups WHERE game_date=?",
+                         (r["gd"],)).fetchone()["c"]
+        if n == 0:
+            out.append(Finding(
+                "ANOM_LINEUP_SNAPSHOT_MISSING", "warn", None,
+                f"live box-score lines exist for {r['gd']} but no daily_lineups "
+                f"snapshot — live component reconstruction is falling back to "
+                f"stale ESPN components for all teams; check ESPN auth in refresh-live"))
+    return out
+
+
 def persist(conn, findings: list[Finding], now: str) -> None:
     """Upsert findings into `validation_flags`, deduped per code+matchup+day (a
     recurrence the same day bumps `occurrences`/`last_seen`). Shared by `validate_cmd`
@@ -648,5 +686,6 @@ def run(conn, period_ids: list[int], *, now: str | None = None,
     for fn in _LEAGUE_CHECKS:
         findings.extend(fn(views))
     findings.extend(check_pipeline_freshness(conn, now))
+    findings.extend(check_live_lineup_capture(conn, now))
     findings.extend(check_published_site(data_json_path, now, conn=conn))
     return findings
