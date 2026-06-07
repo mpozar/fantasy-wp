@@ -1337,6 +1337,32 @@ def _slim_category_wp(details_json: str) -> tuple[list | None, int | None]:
     return (cwp or None), d.get("n_sims")
 
 
+def _fold_live_components(conn, home_state, away_state,
+                          home_team_id, away_team_id, period_id) -> None:
+    """Fold live box-score components into the published team states so the
+    scoreboard's *derived* ERA/WHIP/OPS (and QS/SVHD) reflect today's games — the
+    same reconstruction the WP projection uses (`sim.apply_live_components`).
+
+    Without this, `_apply_derived_rates` derives the displayed rates from the
+    REST-lagged `category_state` components, so during live games the scoreboard
+    drifts stale while the projection (which folds in the live box scores) moves —
+    e.g. a team shown at ERA 2.38 while its projection and the live scrape both read
+    4.5 after a rough inning. No-op when nothing is live."""
+    settle = sim.settle_boundary_date(datetime.now(timezone.utc))
+    unsettled = sim.load_unsettled_lines(conn, since_date=settle)
+    if not unsettled["pitchers"] and not unsettled["batters"]:
+        return
+    for state, tid in ((home_state, home_team_id), (away_state, away_team_id)):
+        baseline = {sid: c.get("score") for sid, c in state.items()
+                    if c.get("score") is not None}
+        roster = sim.load_team_roster(conn, period_id, tid)
+        recon, _ = sim.apply_live_components(conn, tid, baseline, roster, unsettled,
+                                             since_date=settle)
+        for sid, val in recon.items():
+            if val is not None:
+                state.setdefault(sid, {"score": None, "result": None})["score"] = val
+
+
 def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -> dict:
     """One matchup with team blocks, current snapshot, and history.
 
@@ -1352,6 +1378,9 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
     home_state = _latest_score_rows(conn, m["id"], home_team_id)
     away_state = _latest_score_rows(conn, m["id"], away_team_id)
     if started:
+        if live:   # make the displayed rates match the projection's live view
+            _fold_live_components(conn, home_state, away_state,
+                                  home_team_id, away_team_id, m["matchup_period_id"])
         _apply_derived_rates(home_state, away_state)
         _apply_counting_results(home_state, away_state)
     wp_row = conn.execute(

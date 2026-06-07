@@ -46,12 +46,13 @@ _RATES = [18, 47, 41]                     # OPS, ERA, WHIP (ratios)
 NAME = {1: "H", 5: "HR", 20: "R", 23: "SB", 48: "K", 63: "QS", 83: "SVHD",
         18: "OPS", 47: "ERA", 41: "WHIP"}
 
-# Rate cats are *derived* from components at publish time (see cli._apply_derived_rates),
-# not read from the stored scraped rate — so the cross-source DB check derives too,
-# via the shared sim.RATE_DERIVERS routing. Each rate is only comparable once its
-# gating component is banked (else publish fell back to the scraped value / the
-# derivation degenerates), so gate on it.
-_RATE_REQUIRES = {18: sim.STAT_AB, 47: sim.STAT_OUTS, 41: sim.STAT_OUTS}
+# Cats whose *displayed* value publish derives from the live box-score
+# reconstruction (cli._fold_live_components → _apply_derived_rates / _count_qs etc.),
+# not from raw category_state: ERA/WHIP/OPS (derived from reconstructed components)
+# and QS/SVHD (reconstructed counting credits). The cross-source DB check skips
+# these — they aren't comparable to raw category_state during live games — and only
+# checks the scrape-owned counting cats (H/HR/R/SB/K).
+_LIVE_RECON_CATS = {18, 47, 41, 63, 83}   # OPS, ERA, WHIP, QS, SVHD
 
 # Tunable thresholds.
 WP_SWING = 0.15           # |home_wp - prev| flagged for review
@@ -579,33 +580,24 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                 # Cross-source: the published scores must match what's in the DB. We
                 # compare against category_state *as of generated_at* (what publish
                 # actually read), so a fetch landing after publish can't manufacture a
-                # false mismatch. Scoped to the live week (fresh, unpruned) to stay cheap.
+                # false mismatch. Scoped to the live week (fresh, unpruned) to stay
+                # cheap, and to the scrape-owned counting cats (H/HR/R/SB/K) — the
+                # rate cats and QS/SVHD are now derived in publish from the *live
+                # box-score reconstruction* (so the scoreboard matches the projection;
+                # see cli._fold_live_components), not from raw category_state, so
+                # they're not comparable to it here. Their freshness is covered by
+                # sharing that reconstruction with the WP and by INV_RATE_RANGE.
                 if (conn is not None and gen and w.get("state") == "live"
                         and blk.get("team_id") is not None):
                     dbstate = _state_as_of(conn, m.get("matchup_id"), blk["team_id"], gen)
                     for c in cats:
                         sid, pub = c.get("stat_id"), c.get("score")
-                        if pub is None:
+                        if pub is None or sid in _LIVE_RECON_CATS or sid not in dbstate:
                             continue
-                        # Rate cats: compare against the value derived from the DB
-                        # components (what publish emits), not the stored scraped
-                        # rate. Counting cats: the banked total. Skip a rate until its
-                        # gating component is banked — publish falls back to the
-                        # scraped value there, so it isn't comparable to a derivation.
-                        deriver = sim.RATE_DERIVERS.get(sid)
-                        if deriver is not None:
-                            if dbstate.get(_RATE_REQUIRES[sid], 0) <= 0:
-                                continue
-                            db_val = deriver(dbstate)
-                        elif sid in dbstate:
-                            db_val = dbstate[sid]
-                        else:
-                            continue
-                        tol = 0.05 if sid in _RATES else 0.5
-                        if abs(pub - db_val) > tol:
+                        if abs(pub - dbstate[sid]) > 0.5:
                             out.append(Finding("INV_SITE_DB_MISMATCH", "error", m.get("matchup_id"),
                                                f"period {pid} {side} {NAME.get(sid, sid)} "
-                                               f"site={pub} vs DB={db_val} (as of {gen[:16]}) "
+                                               f"site={pub} vs DB={dbstate[sid]} (as of {gen[:16]}) "
                                                f"— published artifact disagrees with the DB"))
             # Records must mirror: head-to-head category scoring means home wins a
             # category ⟺ away loses it. A non-mirror record is the asymmetric-record
