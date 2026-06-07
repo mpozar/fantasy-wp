@@ -345,6 +345,30 @@ def _sum_counted(lines: list[dict], slot_by_norm_name: dict[str, int],
     return totals, matched
 
 
+def _count_qs(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int, int]:
+    """Quality starts among **Final** starter lines whose pitcher was slotted in a
+    pitching slot that day. QS is computed from the raw line — a started game with
+    ≥ QS_OUTS outs and ≤ QS_MAX_ER ER — same definition as the in-progress model.
+
+    Final-only on purpose: while a game is In Progress, `ingame.py` already supplies
+    the QS probability in the budget, so crediting it here too would double-count.
+    Once Final, that override switches off and the credit otherwise waits for ESPN's
+    once-daily settle — the gap this closes. Returns (qs_count, n_started_matched)."""
+    qs = matched = 0
+    for ln in lines:
+        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
+        if slot is None or slot not in PITCHER_SLOTS:
+            continue
+        if not ln.get("games_started"):
+            continue
+        if (ln.get("game_status") or "") != "Final":
+            continue
+        matched += 1
+        if (ln.get("outs") or 0) >= ingame.QS_OUTS and (ln.get("er") or 0) <= ingame.QS_MAX_ER:
+            qs += 1
+    return qs, matched
+
+
 def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
                  components: tuple[int, ...], derivers: dict[int, callable],
                  scraped: dict[int, float], n_matched: int) -> dict:
@@ -423,6 +447,18 @@ def reconcile_live_components(
         "ops", state, recon_ops, OPS_RECON_COMPONENTS,
         {STAT_OPS: derive_ops}, scraped, n_bat,
     ))
+
+    # ── QS: a *counting credit*, not a rate, so the rate-match guard doesn't apply.
+    #    Computed deterministically from Final starter lines and added to the banked
+    #    QS total — the unsettled window excludes already-settled games, so this is
+    #    additive without double-counting (same guarantee the rate groups rely on).
+    #    Final-only avoids overlap with the in-progress QS model. SVHD is not yet
+    #    reconstructed (needs saves/holds in the box-score parse) — see CLAUDE.md. ──
+    qs_added, n_qs = _count_qs(pitcher_lines, slot_by_norm_name)
+    if qs_added:
+        state[STAT_QS] = baseline.get(STAT_QS, 0) + qs_added
+    decisions.append({"group": "qs", "accepted": qs_added > 0,
+                      "matched_lines": n_qs, "qs_added": qs_added})
 
     return state, decisions
 
@@ -1556,7 +1592,9 @@ def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[s
     nothing is live, in which case reconciliation is a no-op."""
     pit = [dict(r) for r in conn.execute(
         """
-        SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb
+        SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb, lp.games_started,
+               (SELECT ts.game_status FROM team_schedule ts
+                WHERE ts.game_pk = lp.game_pk LIMIT 1) AS game_status
         FROM live_pitchers lp
         WHERE EXISTS (SELECT 1 FROM team_schedule ts
                       WHERE ts.game_pk = lp.game_pk AND ts.game_date >= ?)

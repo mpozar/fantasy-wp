@@ -93,6 +93,11 @@ def _pitcher(name, outs, er, p_h, p_bb):
     return {"name": name, "outs": outs, "er": er, "p_h": p_h, "p_bb": p_bb}
 
 
+def _starter(name, outs, er, status="Final"):
+    return {"name": name, "outs": outs, "er": er, "p_h": 4, "p_bb": 1,
+            "games_started": 1, "game_status": status}
+
+
 def _batter(name, ab, h=0, b2=0, b3=0, hr=0, bb=0, hbp=0, sf=0):
     return {"name": name, "ab": ab, "h": h, "b2": b2, "b3": b3,
             "hr": hr, "bb": bb, "hbp": hbp, "sf": sf}
@@ -241,7 +246,8 @@ def _mem_db():
     conn.executescript(
         """
         CREATE TABLE team_schedule (matchup_period_id INT, game_pk INT, game_date TEXT,
-            pro_team_id INT, PRIMARY KEY (matchup_period_id, game_pk, pro_team_id));
+            pro_team_id INT, game_status TEXT,
+            PRIMARY KEY (matchup_period_id, game_pk, pro_team_id));
         CREATE TABLE live_pitchers (game_pk INT, mlbam_id INT, name TEXT, pro_team_id INT,
             order_idx INT, is_last INT, games_started INT, outs INT, er INT, k INT,
             p_h INT, p_bb INT, fetched_at TEXT, PRIMARY KEY (game_pk, mlbam_id));
@@ -260,8 +266,8 @@ def _mem_db():
 def test_loaders_scope_to_unsettled_window_and_attribute_by_lineup():
     conn = _mem_db()
     # Two games: one unsettled (today), one already settled (older) → must be excluded.
-    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100)")
-    conn.execute("INSERT INTO team_schedule VALUES (10, 4001, '2026-06-04', 100)")
+    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
+    conn.execute("INSERT INTO team_schedule VALUES (10, 4001, '2026-06-04', 100, 'Final')")
     # Pitcher lines in both games for the same rostered pitcher.
     conn.execute("INSERT INTO live_pitchers VALUES "
                  "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 't')")
@@ -290,7 +296,7 @@ def test_loaders_scope_to_unsettled_window_and_attribute_by_lineup():
 
 def test_apply_falls_back_to_roster_slot_without_daily_snapshot():
     conn = _mem_db()
-    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100)")
+    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
                  "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 't')")
     conn.commit()
@@ -311,7 +317,7 @@ def test_lineup_capture_check_flags_missing_snapshot():
     from app import validate as v
     conn = _mem_db()
     # A live game on the unsettled day, with box-score lines but NO daily_lineups.
-    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100)")
+    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
                  "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 't')")
     conn.commit()
@@ -322,9 +328,60 @@ def test_lineup_capture_check_flags_missing_snapshot():
 def test_lineup_capture_check_quiet_when_snapshot_present():
     from app import validate as v
     conn = _mem_db()
-    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100)")
+    conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
                  "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 't')")
     conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-06', 7, 1, 13, 't')")
     conn.commit()
     assert v.check_live_lineup_capture(conn, "2026-06-06T20:00:00+00:00") == []
+
+
+# ───────────────────── QS reconstruction (counting credit) ─────────────────────
+
+def _qs_args(lines, slots):
+    """reconcile() with rate validation disabled (scraped=None) so we isolate QS."""
+    return dict(pitcher_lines=lines, batter_lines=[], slot_by_norm_name=slots,
+                scraped={sim.STAT_ERA: None, sim.STAT_WHIP: None, sim.STAT_OPS: None})
+
+
+def test_qs_credited_from_final_start():
+    baseline = {sim.STAT_QS: 2}
+    lines = [_starter("Ace", outs=21, er=2)]          # 7 IP, 2 ER → QS
+    slots = {sim._norm_name("Ace"): PITCH_SLOT}
+    state, decisions = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    qs = next(d for d in decisions if d["group"] == "qs")
+    assert qs["accepted"] and qs["qs_added"] == 1
+    assert state[sim.STAT_QS] == 3                     # additive to banked
+
+def test_in_progress_start_not_credited():
+    # Same line but game still live → ingame model owns it, reconstruction must skip.
+    baseline = {sim.STAT_QS: 2}
+    lines = [_starter("Ace", outs=21, er=2, status="In Progress")]
+    slots = {sim._norm_name("Ace"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state.get(sim.STAT_QS) == 2                 # unchanged
+
+def test_non_qualifying_final_start_not_credited():
+    baseline = {sim.STAT_QS: 2}
+    lines = [_starter("Shelled", outs=15, er=5),       # <6 IP and >3 ER
+             _starter("Decent", outs=18, er=4)]        # 6 IP but 4 ER
+    slots = {sim._norm_name("Shelled"): PITCH_SLOT, sim._norm_name("Decent"): PITCH_SLOT}
+    state, decisions = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    qs = next(d for d in decisions if d["group"] == "qs")
+    assert qs["matched_lines"] == 2 and qs["qs_added"] == 0
+    assert state.get(sim.STAT_QS) == 2
+
+def test_benched_or_unrostered_starter_not_credited():
+    baseline = {sim.STAT_QS: 2}
+    lines = [_starter("Benched Ace", outs=21, er=1)]
+    slots = {sim._norm_name("Benched Ace"): 16}        # bench slot
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state.get(sim.STAT_QS) == 2
+
+def test_reliever_line_not_counted_as_qs():
+    baseline = {sim.STAT_QS: 1}
+    lines = [{"name": "Long Man", "outs": 21, "er": 0, "p_h": 3, "p_bb": 0,
+              "games_started": 0, "game_status": "Final"}]   # 7 IP but not a start
+    slots = {sim._norm_name("Long Man"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state.get(sim.STAT_QS) == 1
