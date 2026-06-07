@@ -23,7 +23,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from app import db, ingame
+from app import db, ingame, mlb
 
 MODEL_VERSION = "mc-v1"
 DEFAULT_SIMS = 10_000
@@ -369,6 +369,29 @@ def _count_qs(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int
     return qs, matched
 
 
+def _count_svhd(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int, int]:
+    """Net SVHD from **Final** reliever lines whose pitcher was slotted in a
+    pitching slot. ESPN's *scored* SVHD (stat 83) is SV + HLD − BS (blown saves
+    subtracted — not raw SV+HLD/stat 56; see the stat-83 note in CLAUDE.md), so we
+    mirror that formula. Final-only (the in-progress SVHD model in `ingame.py` owns
+    live games — crediting here too would double-count) and additive to the banked
+    total (the unsettled window keeps it from double-counting settled games), same
+    safeties as `_count_qs`. Net can be negative (a blown save without an offsetting
+    SV/HLD). Returns (net_svhd, n_decisions_matched)."""
+    net = matched = 0
+    for ln in lines:
+        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
+        if slot is None or slot not in PITCHER_SLOTS:
+            continue
+        if (ln.get("game_status") or "") != "Final":
+            continue
+        sv, hld, bs = (ln.get("sv") or 0), (ln.get("hld") or 0), (ln.get("bs") or 0)
+        if sv or hld or bs:
+            matched += 1
+            net += sv + hld - bs
+    return net, matched
+
+
 def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
                  components: tuple[int, ...], derivers: dict[int, callable],
                  scraped: dict[int, float], n_matched: int) -> dict:
@@ -459,6 +482,13 @@ def reconcile_live_components(
         state[STAT_QS] = baseline.get(STAT_QS, 0) + qs_added
     decisions.append({"group": "qs", "accepted": qs_added > 0,
                       "matched_lines": n_qs, "qs_added": qs_added})
+
+    # ── SVHD: same counting-credit treatment as QS, formula SV + HLD − BS. ──
+    svhd_added, n_svhd = _count_svhd(pitcher_lines, slot_by_norm_name)
+    if svhd_added:
+        state[STAT_SVHD] = baseline.get(STAT_SVHD, 0) + svhd_added
+    decisions.append({"group": "svhd", "accepted": svhd_added != 0,
+                      "matched_lines": n_svhd, "svhd_added": svhd_added})
 
     return state, decisions
 
@@ -1534,21 +1564,43 @@ def load_total_remaining_games(conn: sqlite3.Connection,
     return {r["pro_team_id"]: r["n"] for r in rows}
 
 
+# Game statuses that mean the game is NOT being played as part of this week —
+# a makeup gets its own Scheduled row, so these must not count as a remaining
+# start/appearance.
+_SKIP_SCHEDULE_STATES = {"Postponed", "Suspended", "Cancelled", "Canceled"}
+
+
 def load_schedule_by_team(conn: sqlite3.Connection,
                           matchup_period_id: int) -> dict[int, list[dict]]:
+    """Team → its games in this matchup period, for the sim's start/appearance
+    projections.
+
+    Two exclusions keep phantom games out of the projection:
+      - **Out-of-window dates.** `matchup_period_id` is part of the
+        `team_schedule` PK, so when a game is postponed its row keeps the
+        original period id while its `game_date` moves months out (the makeup
+        date). Without clamping to the period's Mon→Sun window, that row would
+        be counted as a remaining game — making a probable project 2.0 starts
+        and inflating teammates' RP appearances (Ranger Suarez / Chapman,
+        2026-06-06).
+      - **Postponed/suspended/cancelled status**, even if still dated in-window.
+    """
+    start, end = mlb.matchup_period_window(matchup_period_id)
     rows = conn.execute(
         """
         SELECT pro_team_id, game_pk, game_date, opponent_pro_team_id, is_home,
                probable_pitcher_mlbam_id, probable_pitcher_name, game_status,
                current_inning, inning_state, team_runs, opponent_runs
         FROM team_schedule
-        WHERE matchup_period_id = ?
+        WHERE matchup_period_id = ? AND game_date BETWEEN ? AND ?
         ORDER BY game_date
         """,
-        (matchup_period_id,),
+        (matchup_period_id, start.isoformat(), end.isoformat()),
     ).fetchall()
     out: dict[int, list[dict]] = {}
     for r in rows:
+        if r["game_status"] in _SKIP_SCHEDULE_STATES:
+            continue
         out.setdefault(r["pro_team_id"], []).append(dict(r))
     return out
 
@@ -1593,6 +1645,7 @@ def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[s
     pit = [dict(r) for r in conn.execute(
         """
         SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb, lp.games_started,
+               lp.sv, lp.hld, lp.bs,
                (SELECT ts.game_status FROM team_schedule ts
                 WHERE ts.game_pk = lp.game_pk LIMIT 1) AS game_status
         FROM live_pitchers lp

@@ -227,6 +227,12 @@ def parse_boxscore(payload: dict, game_pk: int) -> dict:
                 "k": st.get("strikeOuts") or 0,
                 "p_h": st.get("hits") or 0,
                 "p_bb": st.get("baseOnBalls") or 0,
+                # SVHD components: ESPN's scored SVHD (stat 83) is SV + HLD − BS
+                # (blown saves subtracted — see the stat-83 note in CLAUDE.md), so
+                # we keep blown saves too, not just raw SV+HLD.
+                "sv": st.get("saves") or 0,
+                "hld": st.get("holds") or 0,
+                "bs": st.get("blownSaves") or 0,
             })
 
         # Batters: everyone with a batting line who actually batted (AB+BB+HBP+SF

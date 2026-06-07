@@ -250,7 +250,8 @@ def _mem_db():
             PRIMARY KEY (matchup_period_id, game_pk, pro_team_id));
         CREATE TABLE live_pitchers (game_pk INT, mlbam_id INT, name TEXT, pro_team_id INT,
             order_idx INT, is_last INT, games_started INT, outs INT, er INT, k INT,
-            p_h INT, p_bb INT, fetched_at TEXT, PRIMARY KEY (game_pk, mlbam_id));
+            p_h INT, p_bb INT, sv INT, hld INT, bs INT, fetched_at TEXT,
+            PRIMARY KEY (game_pk, mlbam_id));
         CREATE TABLE live_batters (game_pk INT, mlbam_id INT, name TEXT, pro_team_id INT,
             ab INT, h INT, b2 INT, b3 INT, hr INT, bb INT, hbp INT, sf INT,
             fetched_at TEXT, PRIMARY KEY (game_pk, mlbam_id));
@@ -270,9 +271,9 @@ def test_loaders_scope_to_unsettled_window_and_attribute_by_lineup():
     conn.execute("INSERT INTO team_schedule VALUES (10, 4001, '2026-06-04', 100, 'Final')")
     # Pitcher lines in both games for the same rostered pitcher.
     conn.execute("INSERT INTO live_pitchers VALUES "
-                 "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 't')")
+                 "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 0, 0, 0, 't')")
     conn.execute("INSERT INTO live_pitchers VALUES "
-                 "(4001, 1, 'Counted Ace', 100, 0, 1, 1, 21, 9, 5, 15, 5, 't')")
+                 "(4001, 1, 'Counted Ace', 100, 0, 1, 1, 21, 9, 5, 15, 5, 0, 0, 0, 't')")
     conn.execute("INSERT INTO players VALUES (1, 'Counted Ace')")
     conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-06', 7, 1, 13, 't')")
     conn.commit()
@@ -298,7 +299,7 @@ def test_apply_falls_back_to_roster_slot_without_daily_snapshot():
     conn = _mem_db()
     conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
-                 "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 't')")
+                 "(5001, 1, 'Counted Ace', 100, 0, 1, 1, 30, 4, 7, 20, 8, 0, 0, 0, 't')")
     conn.commit()
     lines = sim.load_unsettled_lines(conn, since_date="2026-06-06")
     # No daily_lineups row → falls back to the roster's current slot.
@@ -319,7 +320,7 @@ def test_lineup_capture_check_flags_missing_snapshot():
     # A live game on the unsettled day, with box-score lines but NO daily_lineups.
     conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
-                 "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 't')")
+                 "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 0, 0, 0, 't')")
     conn.commit()
     findings = v.check_live_lineup_capture(conn, "2026-06-06T20:00:00+00:00")
     assert {f.code for f in findings} == {"ANOM_LINEUP_SNAPSHOT_MISSING"}
@@ -330,7 +331,7 @@ def test_lineup_capture_check_quiet_when_snapshot_present():
     conn = _mem_db()
     conn.execute("INSERT INTO team_schedule VALUES (10, 5001, '2026-06-06', 100, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "
-                 "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 't')")
+                 "(5001, 1, 'A', 100, 0, 1, 1, 18, 1, 5, 3, 1, 0, 0, 0, 't')")
     conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-06', 7, 1, 13, 't')")
     conn.commit()
     assert v.check_live_lineup_capture(conn, "2026-06-06T20:00:00+00:00") == []
@@ -385,3 +386,58 @@ def test_reliever_line_not_counted_as_qs():
     slots = {sim._norm_name("Long Man"): PITCH_SLOT}
     state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
     assert state.get(sim.STAT_QS) == 1
+
+
+# ──────────────────── SVHD reconstruction (SV + HLD − BS) ────────────────────
+
+def _reliever(name, sv=0, hld=0, bs=0, status="Final"):
+    return {"name": name, "outs": 3, "er": 0, "p_h": 1, "p_bb": 0, "games_started": 0,
+            "game_status": status, "sv": sv, "hld": hld, "bs": bs}
+
+
+def test_svhd_credited_from_final_reliever():
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("Closer", sv=1)]
+    slots = {sim._norm_name("Closer"): PITCH_SLOT}
+    state, decisions = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    svhd = next(d for d in decisions if d["group"] == "svhd")
+    assert svhd["accepted"] and svhd["svhd_added"] == 1
+    assert state[sim.STAT_SVHD] == 6                  # additive to banked
+
+def test_svhd_hold_credited():
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("Setup Man", hld=1)]
+    slots = {sim._norm_name("Setup Man"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state[sim.STAT_SVHD] == 6
+
+def test_svhd_subtracts_blown_save():
+    # ESPN's stat 83 nets blown saves: a pure blown save is -1.
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("Blew It", bs=1)]
+    slots = {sim._norm_name("Blew It"): PITCH_SLOT}
+    state, decisions = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    svhd = next(d for d in decisions if d["group"] == "svhd")
+    assert svhd["svhd_added"] == -1
+    assert state[sim.STAT_SVHD] == 4
+
+def test_svhd_in_progress_not_credited():
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("Closer", sv=1, status="In Progress")]
+    slots = {sim._norm_name("Closer"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state.get(sim.STAT_SVHD) == 5             # ingame model owns it
+
+def test_svhd_unrostered_or_benched_not_credited():
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("Benched Closer", sv=1)]
+    slots = {sim._norm_name("Benched Closer"): 16}   # bench slot
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state.get(sim.STAT_SVHD) == 5
+
+def test_svhd_additive_over_multiple_relievers():
+    baseline = {sim.STAT_SVHD: 5}
+    lines = [_reliever("A", sv=1), _reliever("B", hld=1), _reliever("C", bs=1)]
+    slots = {sim._norm_name(n): PITCH_SLOT for n in ("A", "B", "C")}
+    state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
+    assert state[sim.STAT_SVHD] == 5 + (1 + 1 - 1)   # net +1

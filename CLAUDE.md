@@ -561,10 +561,16 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   in the budget — crediting here too would double-count), and the **unsettled
   window** (already-settled games leave it, so the add isn't double-counted — same
   guarantee the rate groups rely on). This closes the QS half of the morning settle
-  jump (e.g. the 2026-06-07 m60 case: Jo Mamas's 3rd QS posting at 07:00). **SVHD is
-  not yet reconstructed** — it needs saves/holds extracted in `mlb.parse_boxscore` +
-  `live_pitchers` columns + save-situation handling; deferred. Until then SVHD still
-  waits for the daily settle.
+  jump (e.g. the 2026-06-07 m60 case: Jo Mamas's 3rd QS posting at 07:00).
+- **SVHD (counting credit, `_count_svhd`).** Same Final-only + unsettled-window
+  treatment as QS, summed from `live_pitchers.sv/hld/bs`. Formula is **SV + HLD − BS**
+  — *not* raw SV+HLD: ESPN's scored stat 83 subtracts blown saves (see the stat-83
+  note under "ESPN API quirks"; stat 56 is the raw sum and does *not* match). Net can
+  be negative (a blown save). ⚠️ Unlike the rate groups (validated against the live
+  scrape) and QS (deterministic), the SV+HLD−BS formula is from ESPN's *documented*
+  composition, not yet empirically reconciled against a real banked stat-83 delta —
+  worth a one-time check (like the OUTS 10/12 validation) once a save/hold lands in
+  an unsettled game.
 - **Wiring.** `compute` (current week only, mc-v1) loads the unsettled lines once
   and calls `sim.apply_live_components` per team before `simulate`; the echo reports
   `live_component_groups_accepted`. No-op for `--future`, non-mc models, or when

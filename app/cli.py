@@ -686,12 +686,13 @@ def refresh_live() -> None:
                     """
                     INSERT INTO live_pitchers
                         (game_pk, mlbam_id, name, pro_team_id, order_idx, is_last,
-                         games_started, outs, er, k, p_h, p_bb, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         games_started, outs, er, k, p_h, p_bb, sv, hld, bs, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (lp["game_pk"], lp["mlbam_id"], lp["name"], lp["espn_team_id"],
                      lp["order_idx"], 1 if lp["is_last"] else 0, lp["games_started"],
-                     lp["outs"], lp["er"], lp["k"], lp["p_h"], lp["p_bb"], now),
+                     lp["outs"], lp["er"], lp["k"], lp["p_h"], lp["p_bb"],
+                     lp.get("sv") or 0, lp.get("hld") or 0, lp.get("bs") or 0, now),
                 )
             for lb in live_b:
                 conn.execute(
