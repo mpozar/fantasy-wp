@@ -705,6 +705,64 @@ Common case: user notices a sudden WP shift and asks why. Method:
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
 
+### WP-swing investigation playbook — themes & gotchas (read before diagnosing)
+
+Distilled from many live WP-swing investigations. These are the traps that waste
+time and the signatures that explain ~every swing fast:
+
+1. **Diff `details_json.category_wp`, not just `home_wp`.** Pull the before/after
+   snapshots and compare each category's win% and projected avg; the category with
+   the big win% delta IS the cause. The fastest tell: **a projected per-category
+   avg that jumps by exactly +1.0 = a discrete counting event was banked.**
+   - **QS +1.0** → a starter completed a quality start (6 IP, ≤3 ER), credited at
+     Final (or in-progress once he passes 18 outs). e.g. deGrom's 6 IP / 0 ER.
+   - **SVHD +1.0 right as a rostered reliever's game goes Final** → a save/hold
+     credited. Usually a *hold* that projected ~0 all game and only surfaces at
+     Final (see "holds resolve at Final" — cause #8 below). e.g. Bazardo, Ferrer.
+
+2. **NEVER read "current" rates off raw `category_state` / `load_latest_state`.**
+   `derive_ops`/`derive_era`/`derive_whip` on the raw banked state mixes
+   **scrape-live H/HR** with **REST-stale AB/ER/OUTS** components → a bogus current
+   rate that contradicts the scoreboard (cost hours: "Teacher leads OPS .958" when
+   the board said .824, and "behind in ERA/WHIP" when he led). For the *current*
+   standing use the **scraped** value (stat 18/47/41) or the **folded** state —
+   run `sim.apply_live_components(...)` (what `compute` does) or
+   `cli._fold_live_components(...)` (what `publish` does) *before* deriving. The
+   folded-derived rate matches the board; the raw-derived one is meaningless.
+
+3. **Current standing ≠ projection.** A category's win% is about the *projected
+   end-of-week* totals. "Currently behind but projected to win" is legitimate
+   (e.g. a ratio cat where the opponent's ERA/WHIP will regress up as they throw
+   more innings). Don't treat a current deficit as a contradiction of a high win%.
+
+4. **The model can be AHEAD of the ESPN scoreboard.** Live reconstruction credits
+   QS/SVHD/components from finalized box scores *before* ESPN's once-daily
+   ~07:00 UTC settle, so the model's numbers can legitimately differ from (lead)
+   the board. Conversely a swing right at ~07:00 UTC is usually the benign daily
+   component settle (cause #7), not a bug.
+
+5. **Reachable-bounds sanity check for "impossible" category odds.** QS ≤1 per
+   start, SVHD ≤1 per appearance. For a near-locked category, compute each team's
+   banked + max-possible-remaining; if the sim shows probability for an outcome
+   outside those bounds, suspect a sampling/projection bug — that's how the
+   Poisson-lets-one-start-score-2-QS bug (→ Binomial, `c710cbf`) was caught.
+
+6. **One-tick blip that recovers = transient bad read, not an event.** `live_pitchers`
+   is overwritten each fetch, so a single-tick QS/SVHD dip/spike that snaps back
+   next tick is usually a momentary stale/partial box-score read; you can't replay
+   the exact line. Don't over-attribute it.
+
+7. **Phantom schedule games inflate starts/appearances/lineup-days.** If a probable
+   projects >1 start, or an RP/hitter's "games remaining" looks too high, check for
+   postponed / out-of-window games still filed under the period (the
+   `matchup_period_id` PK keeps a postponed game in-period with a far-future date).
+   `load_schedule_by_team` now filters these, but stale rows can still mislead a
+   raw `team_schedule` query — filter to the period's Mon–Sun window.
+
+8. **Owner-known benign behaviors (don't flag as bugs):** RP-classified pitchers
+   can carry a small QS (they spot-start); holds resolve at Final (cause #8); the
+   ~07:00 UTC daily settle step; sub-1pp tick-to-tick jitter is Monte Carlo noise.
+
 ## Operations
 
 ### Running manually
