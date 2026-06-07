@@ -303,6 +303,24 @@ misjudged; the accurate version tracks entry score across ticks. Also still wort
 a one-time confirm that ESPN's live totals exclude in-progress QS/SVHD (the
 "banked at Final" assumption); if they don't, exited-while-live would double-count.
 
+**Known limitation — holds resolve at Final → a discrete WP jump (accepted, not fixed).**
+A consequence of the current-margin check above: a *hold* is frequently projected
+~0 for the whole game and only credited when the game finalizes (via the live
+`_count_svhd` reconstruction reading MLB's `holds` field). A reliever earns a hold
+by leaving *with the lead*, but the lead is often extended past 3 or blown after he
+exits, so at compute time `_is_save_situation(current_margin)` / `lead_intact` are
+False and the in-game model gives 0 — even though he's locked in for the hold. When
+the game ends, `_count_svhd` credits the +1, the reliever's SVHD category can flip,
+and the matchup WP steps up suddenly. Saves by a closer pitching the 9th in a 1–3
+lead are handled fine live; **holds** (middle relief, already exited, margin moved)
+are the weak spot. Worked examples 2026-06-07: Eduard Bazardo and Jose Ferrer each
+earned a hold in a 4–5 *loss* — current margin −1 → projected 0 all game → +1 at
+Final → a one-tick WP jump for the Bums (83%→98.5%) and a smaller one for Bear
+Nation (0.1%→1.25%). **Owner decision: leave it** — the Final-time reconstruction
+catches it within minutes; the proper fix (track each reliever's entry/exit margin
+across `refresh-live` ticks so the hold is credited at exit) isn't worth the
+complexity for a few-minute-early credit. Revisit only if it becomes a nuisance.
+
 Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
 save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
 in-game QS path on two live starters (a cruising 0-ER start projected ~0.82 and
@@ -913,5 +931,12 @@ Read this file's "Investigating WP changes" section first. The most common cause
    component reconstruction (see that section) now smooths most of this by
    rebuilding components from box-scores during the slate; a residual step can
    remain if reconstruction was falling back (e.g. `ANOM_LINEUP_SNAPSHOT_MISSING`).
+8. **A reliever's hold crediting at game-end** — a hold projected ~0 all game
+   (the in-game model judges the save situation off the current margin, which has
+   moved since he pitched) then lands as +1 SVHD when the game finalizes, flipping
+   the SVHD category and stepping the WP up. Expected behavior — see the "holds
+   resolve at Final" limitation under in-game QS/SVHD. Tell-tale: the jump is
+   entirely in SVHD, projected SVHD rises by exactly 1.0, right as a rostered
+   reliever's game goes Final.
 
 Always **compare the budgets before vs after** the transition. The "what changed" is usually obvious from the diff. For a swing isolated to ERA/WHIP/OPS/QS with the counting cats unchanged, suspect the component settle (cause 7).
