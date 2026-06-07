@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -1144,30 +1144,44 @@ _FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
 # only thin what the static site downloads. ~200 points is far more than the
 # ~640px-wide chart can resolve, so downsampled graphs look identical to full.
 MAX_HISTORY_POINTS = 200
+RECENT_FULL_HOURS = 18   # keep points from the last ~game-day at full 5-min
+                         # resolution (live week only) so the "Today" chart zoom
+                         # and hover are granular; older history is still thinned.
 
 
 def _downsample_history(history: list[dict],
-                        max_points: int = MAX_HISTORY_POINTS) -> list[dict]:
+                        max_points: int = MAX_HISTORY_POINTS,
+                        recent_since: str | None = None) -> list[dict]:
     """Thin a matchup's snapshot history for the published payload.
 
     Grouped by model_version (the chart only ever plots one model's series),
-    each group is reduced to evenly-spaced points that always include its
-    first and last. Nothing is deleted from the DB — this only shrinks
-    data.json so past weeks can keep their graphs without unbounded growth.
+    each group is reduced to evenly-spaced points that always include its first
+    and last. Nothing is deleted from the DB — this only shrinks data.json so past
+    weeks keep their graphs without unbounded growth.
+
+    `recent_since` (UTC ISO): points on/after it are kept at **full** resolution
+    (only the older remainder is thinned to `max_points`). The live week passes
+    this so the current game-day stays 5-min-granular for the "Today" zoom and
+    fine hover; everything else passes None and thins the whole series as before.
     """
     by_ver: dict[str, list[dict]] = {}
     for h in history:
         by_ver.setdefault(h["model_version"], []).append(h)
 
-    def evenly(rows: list[dict]) -> list[dict]:
-        n = len(rows)
-        if n <= max_points:
-            return rows
-        step = (n - 1) / (max_points - 1)
-        idx = sorted({round(i * step) for i in range(max_points)})
-        return [rows[i] for i in idx]
+    def thin(rows: list[dict]) -> list[dict]:
+        if recent_since is None:
+            older, recent = rows, []
+        else:  # ISO-8601 UTC strings sort lexicographically
+            older = [r for r in rows if r["computed_at"] < recent_since]
+            recent = [r for r in rows if r["computed_at"] >= recent_since]
+        n = len(older)
+        if n > max_points:
+            step = (n - 1) / (max_points - 1)
+            idx = sorted({round(i * step) for i in range(max_points)})
+            older = [older[i] for i in idx]
+        return older + recent   # recent kept at full resolution
 
-    out = [h for rows in by_ver.values() for h in evenly(rows)]
+    out = [h for rows in by_ver.values() for h in thin(rows)]
     out.sort(key=lambda h: h["computed_at"])
     return out
 
@@ -1367,7 +1381,13 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
                 pt["category_wp"] = cwp
                 pt["n_sims"] = n
         history.append(pt)
-    history = _downsample_history(history)
+    # Live week: keep the last ~game-day at full resolution (granular "Today"
+    # zoom + hover); past/upcoming weeks thin the whole series.
+    recent_since = None
+    if live:
+        recent_since = (datetime.now(timezone.utc)
+                        - timedelta(hours=RECENT_FULL_HOURS)).isoformat(timespec="seconds")
+    history = _downsample_history(history, recent_since=recent_since)
     details = None
     if wp_row and wp_row["details_json"]:
         try:

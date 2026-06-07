@@ -95,18 +95,13 @@ function renderChart(history, currentModel, week, scope) {
     const clipped = pts.filter((p) => tms(p) >= cutoff);
     if (clipped.length >= 2) pts = clipped;
   } else if (scope === "today" && intervals.length) {
-    // Clip to the start of the current day's games — a live zoom on today. Walk
-    // game-day starts newest-first and take the most recent one that still leaves
-    // ≥2 points, so it shows today once today has data, else the latest day that
-    // does (never silently expanding to the full history). Linear fallback below
-    // then renders those points over real time.
-    const starts = intervals
-      .map((iv) => new Date(iv.start).getTime())
-      .sort((a, b) => b - a);
-    for (const s of starts) {
-      const clipped = pts.filter((p) => tms(p) >= s);
-      if (clipped.length >= 2) { pts = clipped; break; }
-    }
+    // Clip to the start of the current day's games — the most recent active
+    // interval's start — then render linearly: a live zoom on today, starting at
+    // today's first pitch (not 24h back). Keep the clip as long as it leaves a
+    // point to draw; only fall back to the full range if today has none yet.
+    const dayStart = Math.max(...intervals.map((iv) => new Date(iv.start).getTime()));
+    const clipped = pts.filter((p) => tms(p) >= dayStart);
+    if (clipped.length >= 1) pts = clipped;
   }
 
   // Linear fallback (full, matchup, or active with no usable intervals).
