@@ -607,6 +607,16 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                                                f"period {pid} {side} {NAME.get(sid, sid)} "
                                                f"site={pub} vs DB={db_val} (as of {gen[:16]}) "
                                                f"— published artifact disagrees with the DB"))
+            # Records must mirror: head-to-head category scoring means home wins a
+            # category ⟺ away loses it. A non-mirror record is the asymmetric-record
+            # bug — per-team stored results desynced under temporal skew (see
+            # cli._apply_counting_results, which derives them symmetrically).
+            hr, ar = (m.get("home") or {}).get("record"), (m.get("away") or {}).get("record")
+            if hr and ar and not (hr["W"] == ar["L"] and hr["L"] == ar["W"] and hr["T"] == ar["T"]):
+                out.append(Finding("INV_SITE_RECORD_ASYMMETRIC", "error", m.get("matchup_id"),
+                                   f"period {pid} records not mirrored: home "
+                                   f"{hr['W']}-{hr['L']}-{hr['T']} vs away "
+                                   f"{ar['W']}-{ar['L']}-{ar['T']} — category results desynced"))
     return out
 
 

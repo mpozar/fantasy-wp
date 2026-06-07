@@ -327,6 +327,20 @@ def test_site_missing_file(tmp_path):
 def test_site_skipped_without_path():
     assert v.check_published_site(None, "2026-06-04T21:00:00+00:00") == []
 
+def test_site_asymmetric_record_flagged(tmp_path):
+    bad = {"matchup_id": 1, "home": dict(_FULL_BLK, record={"W": 9, "L": 1, "T": 0}),
+           "away": dict(_FULL_BLK, record={"W": 2, "L": 7, "T": 1})}  # not mirrored
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [bad]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    assert any(x.code == "INV_SITE_RECORD_ASYMMETRIC" for x in f)
+
+def test_site_mirrored_record_ok(tmp_path):
+    good = {"matchup_id": 1, "home": dict(_FULL_BLK, record={"W": 6, "L": 3, "T": 1}),
+            "away": dict(_FULL_BLK, record={"W": 3, "L": 6, "T": 1})}
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [good]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    assert not any(x.code == "INV_SITE_RECORD_ASYMMETRIC" for x in f)
+
 
 # ── cross-source: published scores must match the DB (as of generated_at) ──
 

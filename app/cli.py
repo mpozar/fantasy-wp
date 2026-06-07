@@ -1272,6 +1272,38 @@ def _apply_derived_rates(home_state: dict[int, dict],
             state[sid] = {"score": score, "result": res}
 
 
+def _apply_counting_results(home_state: dict[int, dict],
+                            away_state: dict[int, dict]) -> None:
+    """Recompute WIN/LOSS/TIE for the *counting* categories by comparing the two
+    teams' banked scores, so the two sides' results are ALWAYS mirror images.
+
+    The per-team `result` stored by the fetch/scrape is stamped independently per
+    (team, stat) and read per-stat-latest, so a category lead that flips between
+    the two teams' last writes — e.g. mid overnight stat-reconciliation — leaves
+    the stored results non-complementary, and `_team_block` then sums them into
+    asymmetric W-L-T records (Dawgs 9-1-0 vs Bear 2-7-1 instead of mirror images).
+    Deriving from a single comparison makes it symmetric by construction. Rates are
+    already handled this way in `_apply_derived_rates`; this covers the rest.
+    A missing counting score reads as 0 (cumulative-from-zero) so both sides are
+    always comparable and the record always mirrors."""
+    rate_ids = set(sim.RATE_DERIVERS)
+    counting = [s for s in (stats.BATTING_STAT_IDS + stats.PITCHING_STAT_IDS)
+                if s not in rate_ids]
+    for sid in counting:
+        h, a = home_state.get(sid), away_state.get(sid)
+        if h is None and a is None:
+            continue  # category not tracked at all
+        hv = (h or {}).get("score") or 0
+        av = (a or {}).get("score") or 0
+        if hv == av:
+            h_res, a_res = "TIE", "TIE"
+        else:
+            home_better = (hv < av) if stats.is_reversed(sid) else (hv > av)
+            h_res, a_res = ("WIN", "LOSS") if home_better else ("LOSS", "WIN")
+        home_state[sid] = {"score": (h or {}).get("score"), "result": h_res}
+        away_state[sid] = {"score": (a or {}).get("score"), "result": a_res}
+
+
 def _slim_category_wp(details_json: str) -> tuple[list | None, int | None]:
     """Pull a compact category_wp + n_sims from a snapshot's details_json, for
     attaching per-point category history (live week only). Same shape
@@ -1306,6 +1338,7 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
     away_state = _latest_score_rows(conn, m["id"], away_team_id)
     if started:
         _apply_derived_rates(home_state, away_state)
+        _apply_counting_results(home_state, away_state)
     wp_row = conn.execute(
         """
         SELECT * FROM wp_snapshots
