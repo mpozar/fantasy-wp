@@ -1058,6 +1058,21 @@ def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
     return rates
 
 
+def _has_live_inprogress_start(full_name: str, schedule_by_team: dict,
+                               live_by_team: dict, team_id: int) -> bool:
+    """True if this pitcher has a started line in a game that's *in progress right
+    now* — i.e. `_override_sp_qs` has a live start to act on. Used to keep a minimal
+    SP budget alive once his start-units have decayed to ~0 (a deep outing, where
+    `_sp_factor`→0 makes `_make_budget` drop him): without it, an exited starter's
+    earned-but-unbanked QS falls into the seam between the in-progress model and the
+    Final-only QS reconstruction, vanishing until ESPN's daily settle."""
+    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
+    if not live or not live.get("games_started"):
+        return False
+    return any(g.get("game_status") == "In Progress" and g.get("game_pk") == live["game_pk"]
+               for g in schedule_by_team.get(team_id, []))
+
+
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
                   team_total_ros_games: dict[int, int] | None = None,
@@ -1199,6 +1214,18 @@ def build_budgets(roster: list[dict],
                     budget.extra_dist = sp_extra_dist
                     budget.extra_per_start = sp_extra_per_start
                     budget.units += sp_est_units   # show total expected starts
+            # A starter who's pitched past his expected exit has units≈0, so
+            # _make_budget drops him — but if his game is still in progress his
+            # earned (now locked) QS must stay credited. Keep a minimal budget so
+            # _override_sp_qs can supply it; otherwise it vanishes until the daily
+            # settle (the Yamamoto 04:15→07:00 case). Hands off to the Final-only
+            # QS reconstruction once the game ends (no overlap: this needs the game
+            # In Progress, reconstruction needs it Final).
+            if (budget is None and role_p == "SP"
+                    and _has_live_inprogress_start(p["full_name"], schedule_by_team,
+                                                   live_by_team, team_id)):
+                budget = Budget(player_id=p["player_id"], name=p["full_name"],
+                                role="SP", units=0.0, expected={})
             if budget:
                 # In-game override for the threshold/context stats — no-op
                 # unless this pitcher's team has a game in progress right now.

@@ -114,3 +114,36 @@ def test_svhd_not_entered_blowout_gated_down():
     ungated = _svhd([_reliever()], {TEAM: [_game(inning=8, probable=None,
                                                  team_runs=3, opp_runs=2)]}, {})
     assert base < ungated
+
+
+# ── seam: a deep in-progress starter (units≈0) must keep his earned QS ──
+
+def test_deep_inprogress_starter_keeps_qs_credit():
+    """A starter who pitched past his exit inning has units≈0, so _make_budget
+    would drop his SP budget — but his game is still in progress and he's earned a
+    QS (21 outs, 1 ER). The credit must survive via a kept minimal budget + the
+    in-game override, not vanish into the in-progress→settle seam (the Yamamoto
+    04:15→07:00 case)."""
+    roster = [_starter()]
+    schedule = {TEAM: [_game(status="In Progress", inning=8)]}   # deep game
+    live = _live(is_last=0, outs=21, er=1)                       # exited, 7 IP, 1 ER → QS
+    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
+                            live_by_team=live)
+    sp = [b for b in budgets if b.role == "SP"]
+    assert sp, "deep in-progress starter's budget must be kept (else QS is lost)"
+    assert sp[0].expected.get(STAT_QS, 0.0) > 0.9   # earned QS credited live
+
+def test_no_minimal_budget_without_live_start():
+    """The minimal-budget rescue is scoped to a live in-progress start — a deep
+    starter whose game is already Final isn't resurrected here (the Final-only QS
+    reconstruction owns that), so no spurious SP budget."""
+    roster = [_starter()]
+    schedule = {TEAM: [_game(status="Final", inning=9)]}
+    live = {TEAM: {sim._norm_name("Test Starter"):
+                   dict(game_pk=999, name="Test Starter", is_last=0,
+                        games_started=1, outs=21, er=1, k=5)}}
+    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
+                            live_by_team=live)
+    # Final game → load path would exclude it live; here live_by_team is passed but
+    # the game is Final, so _has_live_inprogress_start is False → no minimal budget.
+    assert not [b for b in budgets if b.role == "SP"]
