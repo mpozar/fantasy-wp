@@ -308,9 +308,8 @@ def init() -> None:
             # Pitcher hits/walks allowed — added for live WHIP components.
             ("live_pitchers", "p_h", "INTEGER"),
             ("live_pitchers", "p_bb", "INTEGER"),
-            ("live_pitchers", "sv", "INTEGER"),    # saves      ┐ SVHD (stat 83) =
-            ("live_pitchers", "hld", "INTEGER"),   # holds      │ SV + HLD − BS
-            ("live_pitchers", "bs", "INTEGER"),    # blown saves┘ (blown subtracted)
+            ("live_pitchers", "sv", "INTEGER"),    # saves ┐ SVHD (stat 83) = SV + HLD
+            ("live_pitchers", "hld", "INTEGER"),   # holds ┘ (blown saves not scored)
             ("wp_snapshots", "edited", "INTEGER NOT NULL DEFAULT 0"),
             ("validation_flags", "resolved_at", "TEXT"),
             ("validation_flags", "resolved_by", "TEXT"),

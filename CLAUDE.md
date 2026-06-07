@@ -399,7 +399,12 @@ But its meaning differs across sources:
 - **Full-season projection** (split=0, src=1): stat 83 = the league's SVHD scoring value. **Trustworthy** — matches ESPN's web UI.
 - **ROS projection** (split=6, src=1): stat 83 is **broken** for some players (sometimes equals GP). DO NOT use directly.
 - **Actuals** (split=0, src=0): stat 83 = the league's SVHD scoring value. **Trustworthy.**
-- `stat_id 56` in actuals = raw `SV + HLD` sum (different from the league's SVHD score, which subtracts blown saves or similar). **Don't use 56**, use 83 in actuals.
+- `stat_id 56` in actuals = raw `SV + HLD` sum. Prefer **stat 83** in actuals (it's
+  the league's scored SVHD counter and what `espn.fetch_rosters_and_projections`
+  uses). *(An earlier version of this note claimed 83 "subtracts blown saves" — that
+  was an unverified guess, probably from the broken split=6 ROS values; this league
+  scores SVHD = SV + HLD, no blown-save penalty. The live SVHD reconstruction uses
+  SV + HLD accordingly.)*
 
 Our SVHD derivation (in `espn.fetch_rosters_and_projections`): at fetch time, override the broken split=6 stat 83 with `rate × ros_gp`, where `rate` is the player's actual season-to-date rate (`act_s83 / act_gp`), falling back to the full-season projection rate (`proj_s83 / proj_gp`) when sample size is small (< 15 GP).
 
@@ -563,14 +568,12 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   guarantee the rate groups rely on). This closes the QS half of the morning settle
   jump (e.g. the 2026-06-07 m60 case: Jo Mamas's 3rd QS posting at 07:00).
 - **SVHD (counting credit, `_count_svhd`).** Same Final-only + unsettled-window
-  treatment as QS, summed from `live_pitchers.sv/hld/bs`. Formula is **SV + HLD − BS**
-  — *not* raw SV+HLD: ESPN's scored stat 83 subtracts blown saves (see the stat-83
-  note under "ESPN API quirks"; stat 56 is the raw sum and does *not* match). Net can
-  be negative (a blown save). ⚠️ Unlike the rate groups (validated against the live
-  scrape) and QS (deterministic), the SV+HLD−BS formula is from ESPN's *documented*
-  composition, not yet empirically reconciled against a real banked stat-83 delta —
-  worth a one-time check (like the OUTS 10/12 validation) once a save/hold lands in
-  an unsettled game.
+  treatment as QS, summed from `live_pitchers.sv/hld`. **SVHD = SV + HLD** — this
+  league does *not* score blown saves. (An earlier note claimed stat 83 "subtracts
+  blown saves," but that was a mis-read of the broken split=6 ROS projection, not the
+  actuals; the `stat_id 56` quirk note under "ESPN API quirks" should be taken with
+  that grain of salt.) Worth a one-time sanity check against a real banked stat-83
+  delta once a save/hold lands in an unsettled game, same as the OUTS 10/12 validation.
 - **Wiring.** `compute` (current week only, mc-v1) loads the unsettled lines once
   and calls `sim.apply_live_components` per team before `simulate`; the echo reports
   `live_component_groups_accepted`. No-op for `--future`, non-mc models, or when

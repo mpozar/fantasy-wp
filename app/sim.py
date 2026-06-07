@@ -370,26 +370,26 @@ def _count_qs(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int
 
 
 def _count_svhd(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int, int]:
-    """Net SVHD from **Final** reliever lines whose pitcher was slotted in a
-    pitching slot. ESPN's *scored* SVHD (stat 83) is SV + HLD − BS (blown saves
-    subtracted — not raw SV+HLD/stat 56; see the stat-83 note in CLAUDE.md), so we
-    mirror that formula. Final-only (the in-progress SVHD model in `ingame.py` owns
-    live games — crediting here too would double-count) and additive to the banked
-    total (the unsettled window keeps it from double-counting settled games), same
-    safeties as `_count_qs`. Net can be negative (a blown save without an offsetting
-    SV/HLD). Returns (net_svhd, n_decisions_matched)."""
-    net = matched = 0
+    """SVHD (saves + holds) from **Final** reliever lines whose pitcher was slotted
+    in a pitching slot. This league scores SVHD = SV + HLD; blown saves are *not*
+    scored (ESPN's stat 83 is the standard SV+HLD category — an earlier note that it
+    "subtracts blown saves" was a mis-read of the broken ROS projection split, not
+    the actuals). Final-only (the in-progress SVHD model in `ingame.py` owns live
+    games — crediting here too would double-count) and additive to the banked total
+    (the unsettled window prevents double-counting settled games), same safeties as
+    `_count_qs`. Returns (svhd, n_decisions_matched)."""
+    total = matched = 0
     for ln in lines:
         slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
         if slot is None or slot not in PITCHER_SLOTS:
             continue
         if (ln.get("game_status") or "") != "Final":
             continue
-        sv, hld, bs = (ln.get("sv") or 0), (ln.get("hld") or 0), (ln.get("bs") or 0)
-        if sv or hld or bs:
+        sv, hld = (ln.get("sv") or 0), (ln.get("hld") or 0)
+        if sv or hld:
             matched += 1
-            net += sv + hld - bs
-    return net, matched
+            total += sv + hld
+    return total, matched
 
 
 def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
@@ -483,11 +483,11 @@ def reconcile_live_components(
     decisions.append({"group": "qs", "accepted": qs_added > 0,
                       "matched_lines": n_qs, "qs_added": qs_added})
 
-    # ── SVHD: same counting-credit treatment as QS, formula SV + HLD − BS. ──
+    # ── SVHD: same counting-credit treatment as QS; scored as SV + HLD. ──
     svhd_added, n_svhd = _count_svhd(pitcher_lines, slot_by_norm_name)
     if svhd_added:
         state[STAT_SVHD] = baseline.get(STAT_SVHD, 0) + svhd_added
-    decisions.append({"group": "svhd", "accepted": svhd_added != 0,
+    decisions.append({"group": "svhd", "accepted": svhd_added > 0,
                       "matched_lines": n_svhd, "svhd_added": svhd_added})
 
     return state, decisions
@@ -1645,7 +1645,7 @@ def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[s
     pit = [dict(r) for r in conn.execute(
         """
         SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb, lp.games_started,
-               lp.sv, lp.hld, lp.bs,
+               lp.sv, lp.hld,
                (SELECT ts.game_status FROM team_schedule ts
                 WHERE ts.game_pk = lp.game_pk LIMIT 1) AS game_status
         FROM live_pitchers lp
