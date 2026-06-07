@@ -42,6 +42,8 @@ const headerCells = (blocks, tbId) =>
 //   "matchup" — clipped to the week's Monday (drops the pre-matchup projection).
 //   "active"  — dead time between game-days collapsed to nothing; one segment
 //               per game-day, with a labeled divider between days.
+//   "today"   — clipped to the start of the current day's games (the most recent
+//               active interval), then linear — a live zoom on today.
 function renderChart(history, currentModel, week, scope) {
   if (!history || history.length === 0) return "";
   let pts = history.filter((h) => h.model_version === currentModel);
@@ -92,6 +94,19 @@ function renderChart(history, currentModel, week, scope) {
   } else if (scope === "matchup" && cutoff != null) {
     const clipped = pts.filter((p) => tms(p) >= cutoff);
     if (clipped.length >= 2) pts = clipped;
+  } else if (scope === "today" && intervals.length) {
+    // Clip to the start of the current day's games — a live zoom on today. Walk
+    // game-day starts newest-first and take the most recent one that still leaves
+    // ≥2 points, so it shows today once today has data, else the latest day that
+    // does (never silently expanding to the full history). Linear fallback below
+    // then renders those points over real time.
+    const starts = intervals
+      .map((iv) => new Date(iv.start).getTime())
+      .sort((a, b) => b - a);
+    for (const s of starts) {
+      const clipped = pts.filter((p) => tms(p) >= s);
+      if (clipped.length >= 2) { pts = clipped; break; }
+    }
   }
 
   // Linear fallback (full, matchup, or active with no usable intervals).
@@ -448,6 +463,7 @@ function fmtDay(dateStr) {
 //   "full"    — entire history
 //   "matchup" — clipped to the week's start
 //   "active"  — dead time between game-days collapsed, day dividers (default)
+//   "today"   — clipped to the start of the current day's games
 // Falls back to the full linear range for weeks with no active intervals
 // (e.g. upcoming weeks). Global; `active` holds the currently displayed week
 // so the control can re-render in place.
@@ -457,6 +473,7 @@ const CHART_SCOPES = [
   { id: "full", label: "Full" },
   { id: "matchup", label: "Matchup" },
   { id: "active", label: "Active" },
+  { id: "today", label: "Today" },
 ];
 
 // A week is "started" once any of its games has begun (state set server-side
