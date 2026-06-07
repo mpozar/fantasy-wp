@@ -222,8 +222,10 @@ def fetch_rosters_and_projections() -> dict:
                     act_gp = act_stats.get("32")
                     # stat_id 83 IS the league's SVHD scoring counter in both
                     # actuals and projections — verified against ESPN's web UI.
-                    # stat_id 56 is the raw SV+HLD sum, which doesn't match
-                    # what ESPN scores (blown saves are subtracted, etc.).
+                    # In this league SVHD = SV + HLD, with no blown-save penalty
+                    # (an earlier note claiming 83 "subtracts blown saves" was a
+                    # mis-read of the broken split=6 ROS projection, not the
+                    # actuals). Prefer 83 over the raw stat_id 56 sum.
                     act_svhd = act_stats.get("83")
                     if act_gp and float(act_gp) >= MIN_ACT_GP_FOR_SVHD_RATE:
                         svhd_rate = float(act_svhd or 0) / float(act_gp)
