@@ -322,7 +322,12 @@ We Poisson-sample most counters, but ER is the one stat with measurable overdisp
 - Everything else: VMR ≈ 1.0 (Poisson is fine — including K, which "feels" volatile but actually isn't)
 - AB, QS, SVHD, OUTS for SP: actually *underdispersed* (workhorses are stable)
 
-ER uses Negative Binomial sampling (`_neg_binom`); other stats stay Poisson. See `ER_VMR_BY_ROLE` and `_neg_binom` in `sim.py`.
+Sampling by stat (`_simulate_team` in `sim.py`):
+- **ER** → Negative Binomial (`_neg_binom`, the one over-dispersed counter).
+- **QS, SVHD** (`PER_EVENT_CAPPED`) → **Binomial** (`_binomial_from_mean`): they're bounded at ≤1 per start / per appearance, so Poisson — unbounded and over-dispersed — could return impossible totals (e.g. 2 QS from one start, which spuriously "won" a locked QS category, 2026-06-07). Binomial(⌈mean⌉, mean/⌈mean⌉) preserves the mean, can never exceed the event count, and is under-dispersed (matching the note above). The cadence extra-start piece uses `Binomial(k, rate)` for the same reason.
+- **Everything else** (K, H, R, OUTS, AB, …) → Poisson.
+
+Note this caps QS/SVHD *per start*; a pitcher projected for a phantom *extra start* (cadence over-projection, e.g. on the last day of a week) can still carry an extra QS — that's a separate cadence-model limitation, not a sampling one.
 
 If the user complains that a category WP "feels too lopsided," it's almost always projection asymmetry (one team really does project better), not variance — `_decide` in `sim.py` is doing the right math.
 

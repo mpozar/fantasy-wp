@@ -64,6 +64,11 @@ PITCHER_COUNTERS = [
     STAT_K, STAT_QS, STAT_SVHD,
 ]
 
+# Threshold/context stats bounded at ≤1 per event (QS per start, SVHD per
+# appearance). Sampled as Binomial, not Poisson, so a single start/appearance
+# can never contribute more than one — see `_binomial_from_mean`.
+PER_EVENT_CAPPED = frozenset({STAT_QS, STAT_SVHD})
+
 # ── Live component reconstruction (beat the once-daily ESPN REST settle) ──
 # ESPN's REST endpoint settles the raw rate *components* (the stats below) only
 # ~once a day (~07:00 UTC), so the sim's projected ERA/WHIP/OPS run on banked
@@ -268,6 +273,32 @@ def _poisson(lam: float) -> int:
                 return k - 1
     # Normal approximation for large lambda
     return max(0, round(random.gauss(lam, math.sqrt(lam))))
+
+
+def _binomial(n: int, p: float) -> int:
+    """Number of successes in `n` independent Bernoulli(p) trials."""
+    p = max(0.0, min(1.0, p))
+    if n <= 0 or p <= 0.0:
+        return 0
+    return sum(1 for _ in range(n) if random.random() < p)
+
+
+def _binomial_from_mean(mean: float) -> int:
+    """Draw a *per-event-capped* counting stat (QS, SVHD) from its expected
+    value so it can never exceed the number of events it came from.
+
+    QS is ≤1 per start and SVHD ≤1 per appearance, so a Poisson draw — unbounded
+    and over-dispersed — can return physically impossible totals (e.g. 2 quality
+    starts from a single in-progress start, which spuriously let a team "win" a
+    locked QS category). Model it instead as Binomial(n, p) with n = ⌈mean⌉
+    trials and p = mean/n: the mean is preserved exactly, the draw is capped at
+    ⌈mean⌉ ≤ the true start/appearance count (so never impossible), and the
+    variance is below Poisson — matching the empirically *under*-dispersed
+    behavior of QS/SVHD (see "Variance" in CLAUDE.md)."""
+    if mean <= 0:
+        return 0
+    n = math.ceil(mean)
+    return _binomial(n, mean / n)
 
 
 def _sample_dist(weights: list[float]) -> int:
@@ -1348,6 +1379,10 @@ def _simulate_team(current_state: dict[int, float],
                 # Use a Negative Binomial draw to reflect that overdispersion.
                 vmr = ER_VMR_BY_ROLE.get(b.role, 1.0)
                 draw = _neg_binom(exp, vmr)
+            elif stat_id in PER_EVENT_CAPPED:
+                # QS/SVHD are ≤1 per start/appearance — Binomial, not Poisson,
+                # or a single start could "earn" 2+ QS (see _binomial_from_mean).
+                draw = _binomial_from_mean(exp)
             else:
                 draw = _poisson(exp)
             counters[stat_id] = counters.get(stat_id, 0) + draw
@@ -1362,6 +1397,9 @@ def _simulate_team(current_state: dict[int, float],
                     mean = rate * k
                     if stat_id == STAT_ER:
                         draw = _neg_binom(mean, ER_VMR_BY_ROLE.get(b.role, 1.0))
+                    elif stat_id in PER_EVENT_CAPPED:
+                        # k extra starts, ≤1 QS/SVHD each → Binomial(k, rate).
+                        draw = _binomial(k, min(1.0, rate))
                     else:
                         draw = _poisson(mean)
                     counters[stat_id] = counters.get(stat_id, 0) + draw
