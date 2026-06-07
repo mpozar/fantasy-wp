@@ -46,14 +46,29 @@ read_zshenv_var() {
 # skip on contention; slow jobs should wait their turn.
 LOCKFILE="$REPO/.app.lock"
 
-# Try to acquire the lock. Returns 0 on success, 1 if held by a live process.
+# A tick should never legitimately hold the lock this long — medium.sh's
+# `compute --future` (the slowest job) runs ~3-5 min. Past this we treat the
+# holder as wedged (a network call hung beyond its own timeout, or a process
+# killed without its EXIT trap firing) and steal the lock, so one stuck tick
+# can't freeze the whole pipeline until someone clears it by hand.
+MAX_LOCK_AGE=1200   # 20 minutes
+
+# Try to acquire the lock. Returns 0 on success, 1 if held by a live, recent
+# process. Steals the lock from a dead holder OR one wedged past MAX_LOCK_AGE.
 acquire_lock() {
-    # Clear a stale lockfile left by a dead process (best-effort).
     if [ -e "$LOCKFILE" ]; then
-        local pid
+        local pid age
         pid=$(cat "$LOCKFILE" 2>/dev/null || true)
+        # File mtime age in seconds (BSD stat on macOS; treat as 0 if it vanished).
+        age=$(( $(date +%s) - $(stat -f %m "$LOCKFILE" 2>/dev/null || date +%s) ))
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$age" -lt "$MAX_LOCK_AGE" ]; then
+            return 1   # held by a live, not-yet-wedged process
+        fi
+        # Stale: dead holder, or alive but wedged past MAX_LOCK_AGE. If still
+        # alive, kill it first so it can't wake up and double-write, then steal.
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            return 1
+            log lock "stealing wedged lock from pid $pid (held ${age}s); killing it"
+            kill "$pid" 2>/dev/null || true
         fi
         rm -f "$LOCKFILE"
     fi
