@@ -92,14 +92,14 @@ don't support.
    **Result:** <final WP> · <one-line hook>.
    ### The arc
    <1–2 sentences: started where, peaked/troughed when, how it ended>
-   ### Final category breakdown
-   - **<Winner> (X):** <cats; call out the close ones, e.g. HR 12–11, OPS .839–.838>
-   - **<Loser> (Y):** <cats>   [+ ties: <cats>]
    ### The swings that decided it
    1. <date/time> — <what happened, the driver category, the NAMED player, WP move>
    **Turning point:** <one sentence — what actually clinched it>
    ```
    Lead with the decisive late swing(s); emphasize what swung it down the stretch.
+   Don't enumerate every category — weave only the close/decisive ones into the
+   prose (the result line already gives the X–Y, and on the site the scoreboard
+   sits right there).
 
 5. **Author the annotations + write-up, then publish.** The site renders, from
    `docs/annotations/<id>.json`: the "✦ Annotate" overlay (events + spans) and a
@@ -120,10 +120,13 @@ don't support.
      span's label/dir agree with the events inside it (no "loses ground" when the
      team gained; no span headlining ERA when a HR was the real mover).
    - **writeup** (markdown, in-panel): body-only, compact — a short **arc**
-     paragraph, a **Final categories** bullet list (close ones called out, ties
-     noted), a **What swung it** list (decisive late events, named players), and a
-     one-line **turning point**. Use `###`/`**bold**`/`- ` only — NO H1, NO tables
-     (the renderer is a small subset). The `result` line is added automatically.
+     paragraph, a **What swung it** list (decisive late events, named players), and
+     a one-line **turning point**. Do NOT include a full category breakdown — the
+     site shows the scoreboard right beside the write-up, so enumerating every
+     category is pure redundancy. Weave only the *close/decisive* categories into
+     the prose (e.g. "won HR by one, 12–11"). Use `###`/`**bold**`/`- ` only — NO
+     H1, NO tables (the renderer is a small subset). The `result` line is added
+     automatically.
 
    Then bundle (the writer validates signs/timestamps + adds the deterministic
    tie-aware result line) and commit:
@@ -174,3 +177,6 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
   gets the collapse span + the recovery span + the decisive plays.
 - **R and SB aren't player-attributable** from the box parse — describe them, don't
   name a player (until `mlb.parse_boxscore` gains `runs`/`stolenBases`).
+- **No full category breakdown in the write-up.** The site shows the scoreboard
+  beside it, so listing every category is redundant. Weave only the close/decisive
+  cats into the prose (the auto result line carries the X–Y). [owner, 2026-06-08]
