@@ -691,18 +691,22 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   `docs/annotations/<matchup_id>.json` — lazily
   `fetch`ed only when the toggle is on (so **data.json is never touched / no
   payload bloat**), `null`-cached when absent. These files are **generated
-  on-demand**, not by `publish`: the `/matchup-summary` skill (or
-  `python scripts/matchup_summary.py <id> --annotate`) writes + commits them. The
-  generator names events from snapshot budgets (QS/SVHD/SP projection swings) and
-  MLB box scores (banked-hitting swings like a HR); spans are day-level category
-  trends. Empty file / 404 → no overlay (ask for a summary to generate it).
+  on-demand**, not by `publish`: the `/matchup-summary` skill writes + commits
+  them. The events (named plays) and spans (day-level trends) are **authored by
+  the LLM** running the skill and bundled via
+  `scripts/matchup_facts.py <id> --write <authored.json>`; the writer validates
+  the sign convention (positive `wp_delta` from the named team's perspective;
+  `side` away/home, `dir` up=away-gained/down=home-gained) and adds a
+  deterministic tie-aware `result` line. Empty file / 404 → no overlay (ask for a
+  summary to generate it).
 - **Weekly write-up in Details.** The same `docs/annotations/<id>.json` may carry a
   `writeup` (markdown) + `result` line; when present, Details renders a "Weekly
   summary" section below the chart (a tiny markdown subset renderer, `mdToHtml` —
   headings/bold/lists/paragraphs, no tables/raw HTML). Fetched lazily the first
   time a matchup's panel is expanded (`fetchSummary`), independent of the Annotate
-  toggle. Authored + bundled by `/matchup-summary` (`scripts/matchup_summary.py
-  <id> --annotate --writeup <md>`); absent → the section just doesn't render.
+  toggle. Authored + bundled by `/matchup-summary` (`scripts/matchup_facts.py
+  <id> --write <authored.json>`, where the json carries `events`+`spans`+`writeup`);
+  absent → the section just doesn't render.
 
 ## Investigating "why did this WP change?"
 
