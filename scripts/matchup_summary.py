@@ -83,18 +83,19 @@ def _box_attribute(conn, period, team_id, date, sid):
     pks = [r[0] for r in conn.execute(
         "SELECT DISTINCT game_pk FROM team_schedule WHERE matchup_period_id=? AND game_date=?",
         (period, date))]
-    hits = []
+    counts = {}
     for pk in pks:
         try:
             for b in mlb.fetch_boxscore(pk)["batters"]:
                 if sim._norm_name(b["name"]) in roster and (b.get(field) or 0) > 0:
-                    hits.append(b["name"].split()[-1])   # last name
+                    counts[b["name"].split()[-1]] = counts.get(b["name"].split()[-1], 0) + (b.get(field) or 0)
         except Exception:
             pass
-    return " + ".join(dict.fromkeys(hits)) if hits else None
+    # Attribute to the single biggest contributor (one name, not a bundle).
+    return max(counts, key=counts.get) if counts else None
 
 
-def build_annotations(conn, mid, *, event_pp=0.08, span_pp=0.12):
+def build_annotations(conn, mid, *, event_pp=0.08, span_pp=0.18):
     """Build {events, spans} for the WP chart. Events = acute swings (merged within
     15 min), each attributed to a player; spans = day-level trends labeled by their
     dominant categories. Reuses the same swing/attribution logic as the write-up."""
@@ -172,7 +173,7 @@ def build_annotations(conn, mid, *, event_pp=0.08, span_pp=0.12):
                       "label": f"{team.split()[0]} {verb}: {', '.join(top)}",
                       "dir": "up" if net > 0 else "down", "wp_delta": round(net, 3)})
     spans.sort(key=lambda s: abs(s["wp_delta"]), reverse=True)
-    spans = sorted(spans[:4], key=lambda s: s["start"])
+    spans = sorted(spans[:3], key=lambda s: s["start"])   # fewer, only the biggest trends
 
     # ── result line (deterministic), for a header above the write-up ──
     last = json.loads(rows[-1]["details_json"] or "{}")

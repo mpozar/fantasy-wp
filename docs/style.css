@@ -629,25 +629,25 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 }
 .annot-btn:hover { background: var(--bat); }
 .annot-btn.active { background: #6b4ea3; color: #fff; border-color: #6b4ea3; }
-.wp-chart .annot-span { opacity: 0.10; }
+/* faint background layer (bands + event guide-lines) — never intercepts pointer */
+.wp-chart .annot-bg { pointer-events: none; }
+.wp-chart .annot-span { opacity: 0.09; }
 .wp-chart .annot-span.up   { fill: #a25617; }   /* away gained ground */
 .wp-chart .annot-span.down { fill: #234c93; }   /* home gained ground */
-.wp-chart .annot-event { cursor: help; }
-.wp-chart .annot-event line { stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.5; }
-.wp-chart .annot-event.away line, .wp-chart .annot-event.away polygon { stroke: #a25617; fill: #a25617; }
-.wp-chart .annot-event.home line, .wp-chart .annot-event.home polygon { stroke: #234c93; fill: #234c93; }
-.annot-caption {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  margin: 5px 0 0 40px;
-}
-.annot-caption span { font-size: 11px; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }
-.annot-trend { background: var(--line); color: var(--fg); }
-.annot-trend.up   { background: var(--pit); color: #a25617; }
-.annot-trend.down { background: var(--bat); color: #234c93; }
-.annot-chip.away { background: var(--pit); color: #a25617; }
-.annot-chip.home { background: var(--bat); color: #234c93; }
+.wp-chart .annot-vline { stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.4; }
+.wp-chart .annot-vline.away { stroke: #a25617; }
+.wp-chart .annot-vline.home { stroke: #234c93; }
+/* interactive top layer: event triangles (top edge) + span handles (bottom) */
+.wp-chart .annot-hit { cursor: pointer; }
+.wp-chart .annot-hit-area { fill: transparent; pointer-events: all; }
+.wp-chart .annot-tri, .wp-chart .annot-span-bar { pointer-events: none; }
+.wp-chart .annot-event.away .annot-tri { fill: #a25617; }
+.wp-chart .annot-event.home .annot-tri { fill: #234c93; }
+.wp-chart .annot-hit:hover .annot-tri { stroke: #1a1f2e; stroke-width: 1; }
+.wp-chart .annot-span-bar { opacity: 0.85; }
+.wp-chart .annot-span-bar.up { fill: #a25617; }
+.wp-chart .annot-span-bar.down { fill: #234c93; }
+.chart-tooltip .tt-annot { font-weight: 500; white-space: nowrap; }
 
 /* ── Weekly write-up (Details) ── */
 .matchup-writeup {

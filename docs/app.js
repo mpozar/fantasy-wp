@@ -172,33 +172,42 @@ function renderChart(history, currentModel, week, scope, ann) {
       </g>`;
   }).join("");
 
-  // Annotation overlay (events + trend spans), only within the visible range.
-  let annotSvg = "", annotCaption = "";
+  // Annotations in two layers: faint span bands + event guide-lines BEHIND the
+  // curves (visual only, no pointer events), and interactive markers ON TOP of
+  // the hover layer so they're reliably hoverable/tappable (the full-height WP
+  // hover strips used to cover the triangles). Detail shows via the chart tooltip
+  // (bindChartHovers binds .annot-hit) — events along the top edge, trend-span
+  // handles along the bottom edge, so neither competes with the WP hover.
+  let annotBg = "", annotTop = "";
   if (ann && (ann.events || ann.spans)) {
     const t0 = tms(pts[0]), tN = tms(pts[pts.length - 1]);
     const vis = (iso) => { const t = new Date(iso).getTime(); return t >= t0 && t <= tN; };
     const spans = (ann.spans || []).filter((s) => vis(s.start) || vis(s.end));
     const events = (ann.events || []).filter((e) => vis(e.at));
-    const spanSvg = spans.map((s) => {
+    const pp = (d) => `${d > 0 ? "+" : ""}${Math.round(d * 100)}pp`;
+    const spanX = (s) => {
       const x0 = Math.max(padL, xt(new Date(s.start).getTime()));
       const x1 = Math.min(W - padR, xt(new Date(s.end).getTime()));
-      return `<rect class="annot-span ${s.dir}" x="${x0.toFixed(1)}" y="${padT}" ` +
-             `width="${Math.max(x1 - x0, 2).toFixed(1)}" height="${innerH}"><title>${escHtml(s.label)}</title></rect>`;
-    }).join("");
-    const evSvg = events.map((e) => {
-      const ex = xt(new Date(e.at).getTime());
-      const cls = e.side === "away" ? "away" : "home";
-      const pp = `${e.wp_delta > 0 ? "+" : ""}${Math.round(e.wp_delta * 100)}pp`;
-      return `<g class="annot-event ${cls}"><line x1="${ex.toFixed(1)}" y1="${padT}" x2="${ex.toFixed(1)}" y2="${padT + innerH}"></line>` +
-             `<polygon points="${(ex - 4).toFixed(1)},${padT - 2} ${(ex + 4).toFixed(1)},${padT - 2} ${ex.toFixed(1)},${padT + 5}"></polygon>` +
-             `<title>${escHtml(e.label)} (${pp})</title></g>`;
-    }).join("");
-    annotSvg = `<g class="annot-layer">${spanSvg}${evSvg}</g>`;
-    // Readable caption below the plot — trends, then acute events (so the story
-    // is legible without hovering; markers stay uncluttered).
-    const chips = spans.map((s) => `<span class="annot-trend ${s.dir}">${escHtml(s.label)}</span>`)
-      .concat(events.map((e) => `<span class="annot-chip ${e.side}">${escHtml(e.label)}</span>`)).join("");
-    if (chips) annotCaption = `<div class="annot-caption">${chips}</div>`;
+      return { x0, w: Math.max(x1 - x0, 2) };
+    };
+    annotBg =
+      spans.map((s) => { const { x0, w } = spanX(s);
+        return `<rect class="annot-span ${s.dir}" x="${x0.toFixed(1)}" y="${padT}" width="${w.toFixed(1)}" height="${innerH}"></rect>`;
+      }).join("") +
+      events.map((e) => { const ex = xt(new Date(e.at).getTime());
+        return `<line class="annot-vline ${e.side}" x1="${ex.toFixed(1)}" y1="${padT}" x2="${ex.toFixed(1)}" y2="${padT + innerH}"></line>`;
+      }).join("");
+    annotTop =
+      spans.map((s) => { const { x0, w } = spanX(s);
+        return `<g class="annot-hit" data-label="${escHtml(s.label + " (" + pp(s.wp_delta) + ")")}" data-x="${(x0 + w / 2).toFixed(1)}">` +
+          `<rect class="annot-hit-area" x="${x0.toFixed(1)}" y="${(padT + innerH - 9).toFixed(1)}" width="${w.toFixed(1)}" height="11"></rect>` +
+          `<rect class="annot-span-bar ${s.dir}" x="${x0.toFixed(1)}" y="${(padT + innerH - 4).toFixed(1)}" width="${w.toFixed(1)}" height="3"></rect></g>`;
+      }).join("") +
+      events.map((e) => { const ex = xt(new Date(e.at).getTime());
+        return `<g class="annot-hit annot-event ${e.side}" data-label="${escHtml(e.label + " (" + pp(e.wp_delta) + ")")}" data-x="${ex.toFixed(1)}">` +
+          `<rect class="annot-hit-area" x="${(ex - 7).toFixed(1)}" y="${(padT - 5).toFixed(1)}" width="14" height="16"></rect>` +
+          `<polygon class="annot-tri" points="${(ex - 4).toFixed(1)},${(padT - 3).toFixed(1)} ${(ex + 4).toFixed(1)},${(padT - 3).toFixed(1)} ${ex.toFixed(1)},${(padT + 4).toFixed(1)}"></polygon></g>`;
+      }).join("");
   }
 
   return `
@@ -206,14 +215,14 @@ function renderChart(history, currentModel, week, scope, ann) {
       <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
         ${gridY}
         ${dividerSvg}
-        ${annotSvg}
+        <g class="annot-bg">${annotBg}</g>
         ${polyline("home_wp", "home")}
         ${polyline("away_wp", "away")}
         ${labelsY}
         ${xLabels}
         <g class="hover-layer">${hoverPoints}</g>
+        <g class="annot-top">${annotTop}</g>
       </svg>
-      ${annotCaption}
       <div class="chart-tooltip" aria-hidden="true"></div>
     </div>`;
 }
@@ -227,6 +236,20 @@ function bindChartHovers(root) {
     const svg = wrap.querySelector(".wp-chart");
     const tooltip = wrap.querySelector(".chart-tooltip");
     if (!svg || !tooltip) return;
+    // Annotation markers: show the label in the chart tooltip on hover AND tap
+    // (so the detail is reachable on mobile too). These sit on top of the WP
+    // hover strips, so they win the pointer in their small zones.
+    wrap.querySelectorAll(".annot-hit").forEach((el) => {
+      const show = () => {
+        tooltip.innerHTML = `<div class="tt-annot">${el.dataset.label}</div>`;
+        const svgRect = svg.getBoundingClientRect();
+        tooltip.style.left = `${(parseFloat(el.dataset.x) / chartW) * svgRect.width}px`;
+        tooltip.classList.add("visible");
+      };
+      el.addEventListener("mouseenter", show);
+      el.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
+      el.addEventListener("click", (e) => { e.stopPropagation(); show(); });
+    });
     wrap.querySelectorAll(".hover-point").forEach((pt) => {
       pt.addEventListener("mouseenter", () => {
         const time = new Date(pt.dataset.time);

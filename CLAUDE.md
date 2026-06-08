@@ -682,9 +682,13 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 - **Chart annotations (the "✦ Annotate" toggle).** Off by default; overlays major
   events + trend spans on the WP chart in *any* scope (placed via the same
   `xt(timestamp)→x` mapping, so they land correctly even in Active's collapsed
-  axis). Acute events = small markers with the label + WP-delta on hover; trend
-  spans = faint shaded bands; both also listed as a readable caption below the
-  plot. Data is **per-matchup** `docs/annotations/<matchup_id>.json` — lazily
+  axis). Two SVG layers: faint span bands + event guide-lines BEHIND the curves
+  (no pointer events), and interactive markers ON TOP of the hover layer
+  (`.annot-top`, painted last) so they're reliably hoverable/tappable — single-
+  player event triangles along the top edge, trend-span handle bars along the
+  bottom edge. Detail shows in the chart tooltip on hover **and** click/tap
+  (`bindChartHovers` binds `.annot-hit`); no caption. Data is **per-matchup**
+  `docs/annotations/<matchup_id>.json` — lazily
   `fetch`ed only when the toggle is on (so **data.json is never touched / no
   payload bloat**), `null`-cached when absent. These files are **generated
   on-demand**, not by `publish`: the `/matchup-summary` skill (or
