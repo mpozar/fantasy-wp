@@ -807,6 +807,14 @@ time and the signatures that explain ~every swing fast:
 8. **Owner-known benign behaviors (don't flag as bugs):** RP-classified pitchers
    can carry a small QS (they spot-start); holds resolve at Final (cause #8); the
    ~07:00 UTC daily settle step; sub-1pp tick-to-tick jitter is Monte Carlo noise.
+9. **Attributing a *past* QS/SVHD:** `live_pitchers` is pruned once a game ages
+   out of the unsettled window, so the exact box line that earned (or missed) a
+   credit is gone after the fact. The write-once **`pitcher_final_lines`** archive
+   (`cli._record_final_lines`, captured the first tick a game reads Final — outs/
+   er/k/sv/hld + `final_at`) is the durable source — query it to answer "was it 17
+   or 18 outs / who got the hold" offline (it's how the 2026-06-07 deGrom
+   double-count was reconstructable). For hitters there's no archive yet; fall
+   back to fetching the MLB box score by date (as `/matchup-summary` does).
 
 ## Operations
 
@@ -851,6 +859,21 @@ Covers `app/ingame.py` (in-progress QS/SVHD), `app/sim.py` cadence + extra-start
 sampling (`test_cadence.py`), the category_state monotonicity guard
 (`test_category_guard.py`), and the validation checks (`test_validate.py`).
 `scripts/ingame_scenarios.py` prints projections for hand-built in-progress states.
+
+### Verifying front-end (`docs/`) changes
+
+There is **no `node`/JS toolchain installed** — you can't `node --check` or lint
+`app.js`. Verify front-end edits **in a real browser** against a static server on
+`docs/` (the page just fetches `data.json` + `annotations/*.json` relatively):
+- Serve `docs/` (e.g. `python3 -m http.server --directory docs`, or the Preview
+  MCP `fantasy-wp` launch config). 
+- Then **check the console for errors** (a syntax slip shows up only at load) and
+  drive the UI: switch weeks/scopes, expand a matchup's **Details**, toggle
+  **✦ Annotate**, hover/click chart points + annotation markers. Inspect the DOM
+  (e.g. confirm `.annot-top` is the last SVG child, tooltips populate) rather than
+  trusting a screenshot — screenshots here are flaky for scroll/layout.
+- **Always bump the `?v=N` cache-bust** for `style.css` / `app.js` in `index.html`
+  on any UI change (see Style notes) or the live site serves stale assets.
 
 ### Validation / anomaly flags (`app validate`) — what it is
 
