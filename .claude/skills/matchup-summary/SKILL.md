@@ -141,3 +141,36 @@ don't support.
 - Never resolve validation flags or touch the DB from this skill.
 - If `--write` fails validation, fix your authored JSON (bad sign, out-of-window
   timestamp) and re-run — don't hand-edit the bundled file.
+
+## Editorial rules (evolving — refined from owner review)
+
+This is the living style guide for these write-ups. **Process:** after the owner
+reviews a summary and gives feedback, decide whether it's a one-off (just fix that
+summary) or a *general* preference. If general, encode it here as a short rule + a
+one-line rationale, and commit — so it's automatically in force on every future
+summary, including in fresh sessions with no memory of the conversation. Read this
+section before writing; treat it as binding. Don't delete a rule without the
+owner's nod (they can veto one that overcorrected).
+
+Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill):
+- **Tallies are tie-aware, always.** Report `X–Y` plus the tied cats; never fold a
+  tie into a team's column. When cats are level, state the hits tiebreaker and that
+  it decided the matchup. (The old script showed m60 as 4–6 when it was a 4–4 hits
+  win.)
+- **Don't pin a banked counter to a player unless the box is unambiguous.** If two
+  rostered players homered that day, say "a <Team> HR", not a guessed name. One
+  real-world event = one marker; never stamp the same player on two swings.
+- **Span/event signs must agree with the curve and with each other.** `wp_delta`
+  positive, from the named team's perspective; a span's label/dir matches the team
+  that *gained*, and matches the events sitting inside it (no "X loses ground" when
+  X gained; no span headlining ERA when a HR was the real mover).
+- **Label a span by what actually moved the WP, not the biggest category-win% delta.**
+  A ratio cat can swing in win-% points while a HR moved the WP more.
+- **Don't build the story on hand-edited / corrupted snapshots.** Check
+  `INCIDENTS.md`; skip swings inside a known bad window (e.g. period-10 2026-06-04).
+- **Reconcile WP vs the scoreboard.** Call out when a 100%-WP win was a one-category
+  nailbiter or a tiebreaker — that contrast is usually the real story.
+- **Scale to the story.** A blowout gets 1 span and no event markers; a comeback
+  gets the collapse span + the recovery span + the decisive plays.
+- **R and SB aren't player-attributable** from the box parse — describe them, don't
+  name a player (until `mlb.parse_boxscore` gains `runs`/`stolenBases`).
