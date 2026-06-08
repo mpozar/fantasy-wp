@@ -110,15 +110,15 @@ don't support.
    right):** `wp_delta` is **POSITIVE**, expressed from the perspective of the team
    named in the label.
    - **events** (acute plays — the markers): `{"at": <exact snapshot timestamp from
-     the facts>, "label": "<Player> <CAT>" e.g. "Neto HR", "side": "away"|"home"
+     the facts>, "label": "<Player> <CAT>" e.g. "Moreno HR", "side": "away"|"home"
      (the team it helped; away=orange, home=blue), "cat": "<CAT>", "wp_delta":
-     <+positive, that side's gain>}`. Keep ~3–6, the ones that matter.
-   - **spans** (day-level trends — the faint bands): `{"start": <ts>, "end": <ts>,
-     "label": "<Team> gains: <CAT, CAT>" — name the team that GAINED and what drove
-     it, "dir": "up" (away gained) | "down" (home gained), "wp_delta": <+positive,
-     that team's gain over the span>}`. Keep ~1–3, only the biggest trends. Make a
-     span's label/dir agree with the events inside it (no "loses ground" when the
-     team gained; no span headlining ERA when a HR was the real mover).
+     <+positive, that side's gain>}`. Keep ~3–6, the ones that matter. Mark only
+     crisp, well-attributed high-swing *plays* — not gradual day-long slides (those
+     belong in the prose; see the no-spans rule below).
+   - **spans**: leave this `[]`. The trend bands are NOT used on the chart anymore
+     (owner, 2026-06-08) — a day-long drift belongs in the write-up prose, not as a
+     faint band fighting the curve. (The writer still accepts the field; just pass
+     an empty array.)
    - **writeup** (markdown, in-panel): body-only, compact — a short **arc**
      paragraph, a **What swung it** list (decisive late events, named players), and
      a one-line **turning point**. Do NOT include a full category breakdown — the
@@ -180,3 +180,16 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
 - **No full category breakdown in the write-up.** The site shows the scoreboard
   beside it, so listing every category is redundant. Weave only the close/decisive
   cats into the prose (the auto result line carries the X–Y). [owner, 2026-06-08]
+- **No spans on the chart.** Author `"spans": []`. Day-level trends go in the prose,
+  not as faint bands. Mark discrete high-swing plays as events instead. [owner, 2026-06-08]
+- **Attribute a swing by the real PLAY timestamp, not the box-score `game_date`.**
+  Fetch the MLB game feed (`/api/v1.1/game/<pk>/feed/live`, play `about.endTime` is
+  UTC) and match the play that banked just before the swing's minute. The `game_date`
+  grouping in the facts can be ~a day off (a US night game's plays land in the next
+  UTC day), so when two rostered players homered on the "same day," timing tells you
+  which HR drove *this* tick. And a swing near **~07:00 UTC is usually the daily
+  settle** banking overnight production in aggregate — not a single play at that
+  minute; don't pin one name to it (prefer to leave it unmarked). [owner, 2026-06-08]
+  - *Worked example:* m58's decisive +42pp swing (06-07 20:50) was **Moreno**'s HR
+    (play 20:45 UTC), not Neto's — Neto homered at 22:39 UTC when Teacher was already
+    ~97%, a ~2pp nudge. The old `max()` script mislabeled it "Neto HR".
