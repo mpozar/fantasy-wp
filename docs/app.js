@@ -44,7 +44,7 @@ const headerCells = (blocks, tbId) =>
 //               per game-day, with a labeled divider between days.
 //   "today"   — clipped to the start of the current day's games (the most recent
 //               active interval), then linear — a live zoom on today.
-function renderChart(history, currentModel, week, scope) {
+function renderChart(history, currentModel, week, scope, ann) {
   if (!history || history.length === 0) return "";
   let pts = history.filter((h) => h.model_version === currentModel);
   if (pts.length === 0) return "";
@@ -172,17 +172,48 @@ function renderChart(history, currentModel, week, scope) {
       </g>`;
   }).join("");
 
+  // Annotation overlay (events + trend spans), only within the visible range.
+  let annotSvg = "", annotCaption = "";
+  if (ann && (ann.events || ann.spans)) {
+    const t0 = tms(pts[0]), tN = tms(pts[pts.length - 1]);
+    const vis = (iso) => { const t = new Date(iso).getTime(); return t >= t0 && t <= tN; };
+    const spans = (ann.spans || []).filter((s) => vis(s.start) || vis(s.end));
+    const events = (ann.events || []).filter((e) => vis(e.at));
+    const spanSvg = spans.map((s) => {
+      const x0 = Math.max(padL, xt(new Date(s.start).getTime()));
+      const x1 = Math.min(W - padR, xt(new Date(s.end).getTime()));
+      return `<rect class="annot-span ${s.dir}" x="${x0.toFixed(1)}" y="${padT}" ` +
+             `width="${Math.max(x1 - x0, 2).toFixed(1)}" height="${innerH}"><title>${escHtml(s.label)}</title></rect>`;
+    }).join("");
+    const evSvg = events.map((e) => {
+      const ex = xt(new Date(e.at).getTime());
+      const cls = e.side === "away" ? "away" : "home";
+      const pp = `${e.wp_delta > 0 ? "+" : ""}${Math.round(e.wp_delta * 100)}pp`;
+      return `<g class="annot-event ${cls}"><line x1="${ex.toFixed(1)}" y1="${padT}" x2="${ex.toFixed(1)}" y2="${padT + innerH}"></line>` +
+             `<polygon points="${(ex - 4).toFixed(1)},${padT - 2} ${(ex + 4).toFixed(1)},${padT - 2} ${ex.toFixed(1)},${padT + 5}"></polygon>` +
+             `<title>${escHtml(e.label)} (${pp})</title></g>`;
+    }).join("");
+    annotSvg = `<g class="annot-layer">${spanSvg}${evSvg}</g>`;
+    // Readable caption below the plot — trends, then acute events (so the story
+    // is legible without hovering; markers stay uncluttered).
+    const chips = spans.map((s) => `<span class="annot-trend ${s.dir}">${escHtml(s.label)}</span>`)
+      .concat(events.map((e) => `<span class="annot-chip ${e.side}">${escHtml(e.label)}</span>`)).join("");
+    if (chips) annotCaption = `<div class="annot-caption">${chips}</div>`;
+  }
+
   return `
     <div class="wp-chart-wrap">
       <svg viewBox="0 0 ${W} ${H}" class="wp-chart" preserveAspectRatio="xMidYMid meet">
         ${gridY}
         ${dividerSvg}
+        ${annotSvg}
         ${polyline("home_wp", "home")}
         ${polyline("away_wp", "away")}
         ${labelsY}
         ${xLabels}
         <g class="hover-layer">${hoverPoints}</g>
       </svg>
+      ${annotCaption}
       <div class="chart-tooltip" aria-hidden="true"></div>
     </div>`;
 }
@@ -366,7 +397,7 @@ function renderDetails(m, cats, week, scope, idx) {
   // WP-over-time renders whenever snapshot history exists — for the live week
   // and for past weeks (upcoming weeks have no history yet).
   const chart = m.history && m.history.length > 1
-    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope)}`
+    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope, chartAnnotate ? annotationCache[m.matchup_id] : null)}`
     : "";
   return `
     <div class="details-inner">
@@ -464,6 +495,37 @@ function fmtDay(dateStr) {
 // so the control can re-render in place.
 let chartScope = "active";
 const active = { data: null, week: null };
+
+// Annotation overlay: off by default, loaded lazily per matchup (separate tiny
+// docs/annotations/<id>.json files — never bloats data.json). `null` cached for a
+// matchup means "fetched, none exist" (ask for a summary to generate them).
+let chartAnnotate = false;
+const annotationCache = {};   // matchup_id -> {events, spans} | null
+
+const escHtml = (s) => String(s).replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function ensureAnnotations(week) {
+  await Promise.all(week.matchups.map(async (m) => {
+    if (m.matchup_id in annotationCache) return;
+    try {
+      const r = await fetch(`annotations/${m.matchup_id}.json`, { cache: "no-store" });
+      annotationCache[m.matchup_id] = r.ok ? await r.json() : null;
+    } catch { annotationCache[m.matchup_id] = null; }
+  }));
+}
+
+// Re-render the current week, preserving which detail panels are expanded.
+function rerenderPreservingPanels() {
+  const openIds = [...document.querySelectorAll('.expand-toggle[aria-expanded="true"]')]
+    .map((b) => b.getAttribute("aria-controls"));
+  if (active.week) renderWeek(active.data, active.week);
+  openIds.forEach((id) => {
+    const panel = document.getElementById(id);
+    const tog = document.querySelector(`.expand-toggle[aria-controls="${id}"]`);
+    if (panel && tog) { panel.hidden = false; tog.setAttribute("aria-expanded", "true"); }
+  });
+}
 const CHART_SCOPES = [
   { id: "full", label: "Full" },
   { id: "matchup", label: "Matchup" },
@@ -541,9 +603,14 @@ function render(data) {
     ).join("") +
     `</span>`;
 
+  const annotControl =
+    `<button id="annot-toggle" class="annot-btn${chartAnnotate ? " active" : ""}" ` +
+    `aria-pressed="${chartAnnotate}" title="Overlay major events & trends (lazily loaded; ` +
+    `generate via /matchup-summary)">✦ Annotate</button>`;
+
   // Primary controls (what you're looking at) in the toolbar; passive metadata
   // on a smaller line below.
-  document.getElementById("toolbar").innerHTML = select + scopeControl;
+  document.getElementById("toolbar").innerHTML = select + scopeControl + annotControl;
   document.getElementById("meta").innerHTML =
     `Updated <time datetime="${data.generated_at}">${ts.toLocaleString()}</time>` +
     ` · Model <code>${firstModel}</code>` +
@@ -552,10 +619,23 @@ function render(data) {
 
   renderWeek(data, defaultWeek);
 
-  document.getElementById("week-select").addEventListener("change", (e) => {
+  document.getElementById("week-select").addEventListener("change", async (e) => {
     const periodId = parseInt(e.target.value, 10);
     const w = data.weeks.find((w) => w.matchup_period_id === periodId);
-    if (w) renderWeek(data, w);
+    if (!w) return;
+    if (chartAnnotate) await ensureAnnotations(w);   // load this week's annotations first
+    renderWeek(data, w);
+  });
+
+  // Annotate toggle: lazily load this week's annotation files, then overlay them
+  // on the chart (whatever scope is selected). Off → instant, no extra fetches.
+  document.getElementById("annot-toggle").addEventListener("click", async (e) => {
+    chartAnnotate = !chartAnnotate;
+    const btn = e.currentTarget;
+    btn.classList.toggle("active", chartAnnotate);
+    btn.setAttribute("aria-pressed", String(chartAnnotate));
+    if (chartAnnotate && active.week) await ensureAnnotations(active.week);
+    rerenderPreservingPanels();
   });
 
   // Segmented graph-scope control: switch x-axis mode and re-render the

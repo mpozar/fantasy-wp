@@ -615,6 +615,39 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   font-size: 9px;
   text-anchor: middle;
 }
+
+/* ── WP-chart annotations (overlay toggle) ── */
+.annot-btn {
+  margin-left: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--muted);
+}
+.annot-btn:hover { background: var(--bat); }
+.annot-btn.active { background: #6b4ea3; color: #fff; border-color: #6b4ea3; }
+.wp-chart .annot-span { opacity: 0.10; }
+.wp-chart .annot-span.up   { fill: #a25617; }   /* away gained ground */
+.wp-chart .annot-span.down { fill: #234c93; }   /* home gained ground */
+.wp-chart .annot-event { cursor: help; }
+.wp-chart .annot-event line { stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.5; }
+.wp-chart .annot-event.away line, .wp-chart .annot-event.away polygon { stroke: #a25617; fill: #a25617; }
+.wp-chart .annot-event.home line, .wp-chart .annot-event.home polygon { stroke: #234c93; fill: #234c93; }
+.annot-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 5px 0 0 40px;
+}
+.annot-caption span { font-size: 11px; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }
+.annot-trend { background: var(--line); color: var(--fg); }
+.annot-trend.up   { background: var(--pit); color: #a25617; }
+.annot-trend.down { background: var(--bat); color: #234c93; }
+.annot-chip.away { background: var(--pit); color: #a25617; }
+.annot-chip.home { background: var(--bat); color: #234c93; }
 .wp-chart .axis {
   fill: var(--muted);
   font-size: 10px;

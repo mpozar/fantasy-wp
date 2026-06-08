@@ -89,7 +89,21 @@ Produce a short, skimmable weekly write-up for one fantasy-wp matchup. Read-only
    Emphasize **late-week** events (the user cares most about what swung it down
    the stretch). Lead with the decisive swing(s); don't list every minor wobble.
 
+5. **Publish chart annotations (optional but default-on).** Generate the overlay
+   the site's "✦ Annotate" toggle reads, and push it so the live chart shows it:
+   ```sh
+   .venv/bin/python scripts/matchup_summary.py <matchup_id> --annotate   # writes docs/annotations/<id>.json
+   git add docs/annotations/<matchup_id>.json && \
+     git commit -m "annotations: matchup <id>" && git push
+   ```
+   The file is tiny and loaded lazily by the front-end only when annotations are
+   toggled on for that matchup, so it never bloats data.json. `--annotate` reuses
+   the same swing/attribution logic (events fully named, incl. box-score hitters;
+   coarse day-level trend spans). Re-run anytime to refresh. Skip this step only
+   if the user just wants the chat write-up.
+
 ## Notes
 - Scale the swing list to the story: a blowout needs 1–2 swings; a comeback needs
   the collapse + the recovery. The script shows up to 8 — pick the ones that matter.
-- Everything is read-only; never write to the DB or resolve flags from this skill.
+- The DB/flags are read-only here; the only writes are the annotations file + its
+  git commit (step 5). Never resolve flags or touch the DB from this skill.

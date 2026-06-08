@@ -71,6 +71,120 @@ def _attribute(a, b, sid):
     return None
 
 
+def _box_attribute(conn, period, team_id, date, sid):
+    """Name rostered players on `team_id` who logged stat `sid` on `date`, from the
+    MLB box score — for banked-counter hitting swings (HR/H/R/SB) the budget diff
+    can't see. Returns a short label like 'Neto + Moreno' or None."""
+    field = {5: "hr", 1: "h", 20: None, 23: None}.get(sid)  # HR/H from boxscore batting
+    if not field:
+        return None
+    roster = {sim._norm_name(p["full_name"]): p["full_name"]
+              for p in sim.load_team_roster(conn, period, team_id)}
+    pks = [r[0] for r in conn.execute(
+        "SELECT DISTINCT game_pk FROM team_schedule WHERE matchup_period_id=? AND game_date=?",
+        (period, date))]
+    hits = []
+    for pk in pks:
+        try:
+            for b in mlb.fetch_boxscore(pk)["batters"]:
+                if sim._norm_name(b["name"]) in roster and (b.get(field) or 0) > 0:
+                    hits.append(b["name"].split()[-1])   # last name
+        except Exception:
+            pass
+    return " + ".join(dict.fromkeys(hits)) if hits else None
+
+
+def build_annotations(conn, mid, *, event_pp=0.08, span_pp=0.12):
+    """Build {events, spans} for the WP chart. Events = acute swings (merged within
+    15 min), each attributed to a player; spans = day-level trends labeled by their
+    dominant categories. Reuses the same swing/attribution logic as the write-up."""
+    m = conn.execute("SELECT matchup_period_id, home_team_id, away_team_id FROM matchups WHERE id=?",
+                     (mid,)).fetchone()
+    period = m["matchup_period_id"]
+    ws, we = mlb.matchup_period_window(period)
+    rows = [r for r in conn.execute(
+        "SELECT computed_at, away_wp, details_json FROM wp_snapshots WHERE matchup_id=? ORDER BY computed_at",
+        (mid,)).fetchall() if r["computed_at"][:10] >= ws.isoformat()]
+    away_name = conn.execute("SELECT name FROM teams WHERE id=?", (m["away_team_id"],)).fetchone()["name"]
+    home_name = conn.execute("SELECT name FROM teams WHERE id=?", (m["home_team_id"],)).fetchone()["name"]
+
+    # ── acute events: merge adjacent same-direction big ticks into one ──
+    raw = []
+    for i in range(1, len(rows)):
+        d = rows[i]["away_wp"] - rows[i - 1]["away_wp"]
+        if abs(d) >= event_pp:
+            raw.append((i, d))
+    events = []
+    for i, d in raw:
+        # merge into the previous event if within 15 min and same sign
+        if events and (events[-1]["sign"] == (d > 0)) and \
+           (_t(rows[i]["computed_at"]) - _t(rows[events[-1]["_j"]]["computed_at"]) <= 900):
+            ev = events[-1]; ev["delta"] += d; ev["_i0"] = min(ev["_i0"], i - 1)
+            if abs(d) > ev["_peakabs"]:
+                ev["_peakabs"] = abs(d); ev["_j"] = i
+            continue
+        events.append({"_i0": i - 1, "_j": i, "delta": d, "sign": d > 0, "_peakabs": abs(d)})
+    out_events = []
+    for ev in events:
+        a = json.loads(rows[ev["_i0"]]["details_json"] or "{}")
+        b = json.loads(rows[ev["_j"]]["details_json"] or "{}")
+        ca, cb = _cat_map(a), _cat_map(b)
+        drv = max((s for s in ca if s in cb),
+                  key=lambda s: abs(cb[s]["away_wins"] - ca[s]["away_wins"]), default=None)
+        if drv is None:
+            continue
+        gained_away = ev["delta"] > 0           # which side this swing helped
+        side_id = m["away_team_id"] if gained_away else m["home_team_id"]
+        date = rows[ev["_j"]]["computed_at"][:10]
+        who = _attribute(a, b, drv)
+        player = who.split(" (")[0] if who else _box_attribute(conn, period, side_id, date, drv)
+        cat = NAMES[drv]
+        label = f"{player} {cat}" if player else f"{cat} swing"
+        out_events.append({
+            "at": rows[ev["_j"]]["computed_at"],
+            "label": label, "cat": cat,
+            "side": "away" if gained_away else "home",
+            "wp_delta": round(ev["delta"], 3),
+        })
+    out_events.sort(key=lambda e: abs(e["wp_delta"]), reverse=True)
+    out_events = sorted(out_events[:6], key=lambda e: e["at"])
+
+    # ── day-level trend spans ──
+    from collections import OrderedDict
+    byday = OrderedDict()
+    for r in rows:
+        byday.setdefault(r["computed_at"][:10], []).append(r)
+    days = list(byday)
+    spans = []
+    for d in days:
+        drows = byday[d]
+        net = drows[-1]["away_wp"] - drows[0]["away_wp"]
+        if abs(net) < span_pp:
+            continue
+        a = json.loads(drows[0]["details_json"] or "{}"); b = json.loads(drows[-1]["details_json"] or "{}")
+        ca, cb = _cat_map(a), _cat_map(b)
+        movers = sorted((s for s in ca if s in cb),
+                        key=lambda s: abs(cb[s]["away_wins"] - ca[s]["away_wins"]), reverse=True)
+        top = [NAMES[s] for s in movers[:2]]
+        team = away_name if net > 0 else home_name
+        verb = "gains" if net > 0 else "loses ground"
+        spans.append({"start": drows[0]["computed_at"], "end": drows[-1]["computed_at"],
+                      "label": f"{team.split()[0]} {verb}: {', '.join(top)}",
+                      "dir": "up" if net > 0 else "down", "wp_delta": round(net, 3)})
+    spans.sort(key=lambda s: abs(s["wp_delta"]), reverse=True)
+    spans = sorted(spans[:4], key=lambda s: s["start"])
+
+    return {"matchup_id": mid, "period": period,
+            "generated_at": rows[-1]["computed_at"], "model_version": "mc-v1",
+            "away": away_name, "home": home_name,
+            "events": out_events, "spans": spans}
+
+
+def _t(iso):
+    from datetime import datetime
+    return datetime.fromisoformat(iso).timestamp()
+
+
 def main(mid):
     conn = db.connect()
     m = conn.execute("SELECT matchup_period_id, home_team_id, away_team_id, winner "
@@ -155,6 +269,20 @@ def main(mid):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(__doc__); sys.exit(1)
-    main(int(sys.argv[1]))
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); sys.exit(0 if args else 1)
+    annotate = "--annotate" in args
+    mid = int(next(a for a in args if not a.startswith("-")))
+    if annotate:
+        from pathlib import Path
+        conn = db.connect()
+        ann = build_annotations(conn, mid)
+        conn.close()
+        out = Path(__file__).resolve().parent.parent / "docs" / "annotations"
+        out.mkdir(exist_ok=True)
+        path = out / f"{mid}.json"
+        path.write_text(json.dumps(ann, separators=(",", ":")))
+        print(f"wrote {path}  ({len(ann['events'])} events, {len(ann['spans'])} spans)")
+    else:
+        main(mid)

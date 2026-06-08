@@ -679,6 +679,19 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   did a one-time estimate fill for weeks 9–10's already-elapsed days (earliest
   first pitch → latest first pitch + ~3h15m) since live tracking only records
   forward; the COALESCE upsert means empirical values always win over the estimate.
+- **Chart annotations (the "✦ Annotate" toggle).** Off by default; overlays major
+  events + trend spans on the WP chart in *any* scope (placed via the same
+  `xt(timestamp)→x` mapping, so they land correctly even in Active's collapsed
+  axis). Acute events = small markers with the label + WP-delta on hover; trend
+  spans = faint shaded bands; both also listed as a readable caption below the
+  plot. Data is **per-matchup** `docs/annotations/<matchup_id>.json` — lazily
+  `fetch`ed only when the toggle is on (so **data.json is never touched / no
+  payload bloat**), `null`-cached when absent. These files are **generated
+  on-demand**, not by `publish`: the `/matchup-summary` skill (or
+  `python scripts/matchup_summary.py <id> --annotate`) writes + commits them. The
+  generator names events from snapshot budgets (QS/SVHD/SP projection swings) and
+  MLB box scores (banked-hitting swings like a HR); spans are day-level category
+  trends. Empty file / 404 → no overlay (ask for a summary to generate it).
 
 ## Investigating "why did this WP change?"
 
