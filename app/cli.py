@@ -537,6 +537,68 @@ def backfill_starts(days: int) -> None:
     )
 
 
+# Shared so the became_final_at stamping logic is tested without re-fetching games.
+# became_final_at = the first tick a game read Final (the credit boundary); COALESCE
+# keeps that first stamp across later ticks, and only sets it when the inserted value
+# (excluded.became_final_at = now iff the new status is Final) is non-null.
+_TEAM_SCHEDULE_UPSERT = """
+    INSERT INTO team_schedule
+        (matchup_period_id, game_pk, game_date, pro_team_id,
+         opponent_pro_team_id, is_home,
+         probable_pitcher_mlbam_id, probable_pitcher_name,
+         game_status, current_inning, inning_state,
+         team_runs, opponent_runs, became_final_at, fetched_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
+        game_status=excluded.game_status,
+        current_inning=excluded.current_inning,
+        inning_state=excluded.inning_state,
+        probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
+        probable_pitcher_name=excluded.probable_pitcher_name,
+        team_runs=excluded.team_runs,
+        opponent_runs=excluded.opponent_runs,
+        became_final_at=COALESCE(team_schedule.became_final_at, excluded.became_final_at),
+        fetched_at=excluded.fetched_at
+"""
+
+
+def _archive_final_lines(conn, lines, status_by_pk, date_by_pk, now) -> int:
+    """Write-once copy of each Final game's pitcher line into `pitcher_final_lines`,
+    so it survives the live_pitchers prune (telemetry for QS/SVHD credit audits).
+    INSERT OR IGNORE keyed by (game_pk, mlbam_id) → the first Final-tick capture
+    wins and later ticks are no-ops. Returns the number of new rows archived."""
+    n = 0
+    for lp in lines:
+        pk = lp["game_pk"]
+        if not (status_by_pk.get(pk, set()) & _FINAL_GAME_STATES):
+            continue   # only archive Final games — in-progress lines still move
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO pitcher_final_lines
+                (game_pk, mlbam_id, name, pro_team_id, game_date, games_started,
+                 outs, er, k, p_h, p_bb, sv, hld, final_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (pk, lp["mlbam_id"], lp["name"], lp["espn_team_id"], date_by_pk.get(pk),
+             lp["games_started"], lp["outs"], lp["er"], lp["k"],
+             lp["p_h"], lp["p_bb"], lp.get("sv") or 0, lp.get("hld") or 0, now),
+        )
+        n += cur.rowcount
+    return n
+
+
+def _live_recon_block(since_date, hdec, adec):
+    """Compact per-snapshot record of the live-component reconciliation, persisted in
+    details_json (investigation telemetry). For QS/SVHD each decision carries
+    scrape/floor/box(qs_added|svhd_added)/result; rate groups carry their accept
+    verdict — so 'why is current QS=N this tick, and was it scrape, floor or box?'
+    is a one-row lookup instead of a reverse-engineering exercise. None when no live
+    games were reconciled (keeps the key absent rather than writing empty noise)."""
+    if not hdec and not adec:
+        return None
+    return {"since_date": since_date, "home": hdec, "away": adec}
+
+
 @cli.command("refresh-live")
 def refresh_live() -> None:
     """Upsert recent + near-future MLB games' status + inning state into
@@ -621,30 +683,14 @@ def refresh_live() -> None:
                 # under the period that just ended.
                 period_id = mlb.period_for_date(date.fromisoformat(g["game_date"]))
                 statuses_by_date.setdefault(g["game_date"], set()).add(g["game_status"])
+                final_at = now if g["game_status"] in _FINAL_GAME_STATES else None
                 conn.execute(
-                    """
-                    INSERT INTO team_schedule
-                        (matchup_period_id, game_pk, game_date, pro_team_id,
-                         opponent_pro_team_id, is_home,
-                         probable_pitcher_mlbam_id, probable_pitcher_name,
-                         game_status, current_inning, inning_state,
-                         team_runs, opponent_runs, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(matchup_period_id, game_pk, pro_team_id) DO UPDATE SET
-                        game_status=excluded.game_status,
-                        current_inning=excluded.current_inning,
-                        inning_state=excluded.inning_state,
-                        probable_pitcher_mlbam_id=excluded.probable_pitcher_mlbam_id,
-                        probable_pitcher_name=excluded.probable_pitcher_name,
-                        team_runs=excluded.team_runs,
-                        opponent_runs=excluded.opponent_runs,
-                        fetched_at=excluded.fetched_at
-                    """,
+                    _TEAM_SCHEDULE_UPSERT,
                     (period_id, g["game_pk"], g["game_date"], g["espn_team_id"],
                      g["opponent_espn_team_id"], g["is_home"],
                      g["probable_pitcher_mlbam_id"], g["probable_pitcher_name"],
                      g["game_status"], g.get("current_inning"), g.get("inning_state"),
-                     g.get("team_runs"), g.get("opponent_runs"), now),
+                     g.get("team_runs"), g.get("opponent_runs"), final_at, now),
                 )
 
             # Observed game-day activity windows. active_start is stamped the
@@ -706,6 +752,8 @@ def refresh_live() -> None:
                      lb["ab"], lb["h"], lb["b2"], lb["b3"], lb["hr"],
                      lb["bb"], lb["hbp"], lb["sf"], now),
                 )
+            # Durable archive of Final pitcher lines (survives the prune above).
+            _archive_final_lines(conn, live_p, status_by_pk, date_by_pk, now)
 
             # Daily lineup snapshots: first snapshot per (day, team, player) wins.
             for gd in lineup_dates:
@@ -841,6 +889,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             for m in ms:
                 home_scores = sim.load_latest_state(conn, m["id"], m["home_team_id"])
                 away_scores = sim.load_latest_state(conn, m["id"], m["away_team_id"])
+                hdec, adec = [], []   # live-recon decisions (telemetry), set below if live
 
                 if model_name == "mc-v1":
                     # Rosters are only stored for the current period; future
@@ -889,6 +938,9 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     )
                     version = model.MODEL_VERSION
 
+                recon = _live_recon_block(settle_boundary, hdec, adec)
+                if recon is not None and isinstance(details, dict):
+                    details["live_recon"] = recon
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO wp_snapshots

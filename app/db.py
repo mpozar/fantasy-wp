@@ -150,6 +150,33 @@ CREATE TABLE IF NOT EXISTS live_pitchers (
 CREATE INDEX IF NOT EXISTS idx_live_pitchers_team
     ON live_pitchers (pro_team_id);
 
+-- ── Durable archive of Final starter/reliever lines (investigation telemetry) ──
+-- live_pitchers is pruned the moment a game ages out of the unsettled window, so
+-- the box line that earned (or missed) a QS/SVHD credit is gone after the fact —
+-- which made the 2026-06-07 deGrom double-count hard to reconstruct. This keeps a
+-- write-once copy (INSERT OR IGNORE, captured the first tick a game reads Final),
+-- so "which exact line was credited / was it 17 or 18 outs" is answerable offline.
+-- Bounded by games/day (~30 rows/day), not by the 5-min tick cadence.
+CREATE TABLE IF NOT EXISTS pitcher_final_lines (
+    game_pk        INTEGER NOT NULL,
+    mlbam_id       INTEGER NOT NULL,
+    name           TEXT,
+    pro_team_id    INTEGER,
+    game_date      TEXT,
+    games_started  INTEGER,
+    outs           INTEGER,
+    er             INTEGER,
+    k              INTEGER,
+    p_h            INTEGER,
+    p_bb           INTEGER,
+    sv             INTEGER,
+    hld            INTEGER,
+    final_at       TEXT,             -- first tick this line was seen Final (≈ went-Final time)
+    PRIMARY KEY (game_pk, mlbam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pitcher_final_lines_date
+    ON pitcher_final_lines (game_date);
+
 -- ── Live per-batter lines for the current week's games (live OPS components) ──
 -- One row per batter who has appeared, for every game in the live window (both
 -- in-progress and recently-Final, until ESPN's once-daily REST settle absorbs
@@ -304,6 +331,7 @@ def init() -> None:
             ("team_schedule", "inning_state", "TEXT"),
             ("team_schedule", "team_runs", "INTEGER"),
             ("team_schedule", "opponent_runs", "INTEGER"),
+            ("team_schedule", "became_final_at", "TEXT"),  # when a game first read Final (credit boundary)
             ("scoring_settings", "lineup_slots_json", "TEXT"),
             # Pitcher hits/walks allowed — added for live WHIP components.
             ("live_pitchers", "p_h", "INTEGER"),
