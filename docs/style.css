@@ -648,6 +648,21 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 .annot-trend.down { background: var(--bat); color: #234c93; }
 .annot-chip.away { background: var(--pit); color: #a25617; }
 .annot-chip.home { background: var(--bat); color: #234c93; }
+
+/* ── Weekly write-up (Details) ── */
+.matchup-writeup {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+  max-width: 70ch;
+}
+.matchup-writeup[hidden] { display: none; }
+.matchup-writeup h4 { margin: 12px 0 4px; font-size: 13px; }
+.matchup-writeup h5, .matchup-writeup h6 { margin: 10px 0 3px; font-size: 12px; color: var(--muted); }
+.matchup-writeup p { margin: 6px 0; }
+.matchup-writeup ul { margin: 4px 0 8px; padding-left: 18px; }
+.matchup-writeup li { margin: 2px 0; }
+.matchup-writeup .wu-result { font-size: 14px; }
 .wp-chart .axis {
   fill: var(--muted);
   font-size: 10px;

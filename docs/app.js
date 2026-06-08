@@ -397,11 +397,20 @@ function renderDetails(m, cats, week, scope, idx) {
   // WP-over-time renders whenever snapshot history exists — for the live week
   // and for past weeks (upcoming weeks have no history yet).
   const chart = m.history && m.history.length > 1
-    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope, chartAnnotate ? annotationCache[m.matchup_id] : null)}`
+    ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope, chartAnnotate ? summaryCache[m.matchup_id] : null)}`
     : "";
+  // Weekly write-up (if a summary has been generated). Filled from cache on
+  // re-render; the expand handler injects it on first open after the lazy fetch.
+  const sum = summaryCache[m.matchup_id];
+  const writeup = sum && sum.writeup
+    ? `<h3>Weekly summary</h3><div class="matchup-writeup" id="writeup-${idx}">` +
+      (sum.result ? `<p class="wu-result"><strong>${escHtml(sum.result)}</strong></p>` : "") +
+      `${mdToHtml(sum.writeup)}</div>`
+    : `<div class="matchup-writeup" id="writeup-${idx}" hidden></div>`;
   return `
     <div class="details-inner">
       ${chart}
+      ${writeup}
       <div class="catwp-panel" id="catwp-${idx}">${categoryPanel(d, cats, m, null)}</div>
       <h3>What's driving the projection</h3>
       <div class="details-grid">
@@ -462,7 +471,7 @@ function renderMatchup(m, cats, tbId, idx, started, week, scope) {
           ${teamRow(away, awayFav)}
         </tbody>
       </table>
-      <button class="expand-toggle" aria-expanded="false" aria-controls="details-${idx}">
+      <button class="expand-toggle" aria-expanded="false" aria-controls="details-${idx}" data-mid="${m.matchup_id}">
         <span class="caret">▸</span> Details
       </button>
       <div class="details" id="details-${idx}" hidden>
@@ -496,23 +505,54 @@ function fmtDay(dateStr) {
 let chartScope = "active";
 const active = { data: null, week: null };
 
-// Annotation overlay: off by default, loaded lazily per matchup (separate tiny
-// docs/annotations/<id>.json files — never bloats data.json). `null` cached for a
-// matchup means "fetched, none exist" (ask for a summary to generate them).
+// Per-matchup summary file (docs/annotations/<id>.json): chart `events`/`spans`
+// for the overlay AND an optional markdown `writeup` shown in Details. Loaded
+// lazily — separate tiny files, never in data.json. `null` cached = fetched, none
+// exist (generate via /matchup-summary). The chart overlay also needs the toggle
+// on (chartAnnotate); the write-up shows whenever a panel is expanded.
 let chartAnnotate = false;
-const annotationCache = {};   // matchup_id -> {events, spans} | null
+const summaryCache = {};   // matchup_id -> {events, spans, writeup, result} | null
 
 const escHtml = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-async function ensureAnnotations(week) {
-  await Promise.all(week.matchups.map(async (m) => {
-    if (m.matchup_id in annotationCache) return;
-    try {
-      const r = await fetch(`annotations/${m.matchup_id}.json`, { cache: "no-store" });
-      annotationCache[m.matchup_id] = r.ok ? await r.json() : null;
-    } catch { annotationCache[m.matchup_id] = null; }
-  }));
+async function fetchSummary(mid) {
+  if (mid in summaryCache) return summaryCache[mid];
+  try {
+    const r = await fetch(`annotations/${mid}.json`, { cache: "no-store" });
+    summaryCache[mid] = r.ok ? await r.json() : null;
+  } catch { summaryCache[mid] = null; }
+  return summaryCache[mid];
+}
+
+async function ensureSummaries(week) {
+  await Promise.all(week.matchups.map((m) => fetchSummary(m.matchup_id)));
+}
+
+// Minimal, safe Markdown → HTML for the persisted write-up (we author it, but
+// escape anyway). Supports headings (#..), **bold**, "- " bullet lists, and
+// blank-line paragraphs — no tables/raw HTML (the chart already shows the arc).
+function mdToHtml(md) {
+  const inline = (s) => escHtml(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const lines = String(md).replace(/\r/g, "").split("\n");
+  let html = "", inList = false, para = [];
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  const flushPara = () => { if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^#{1,6}\s/.test(line)) {
+      flushPara(); closeList();
+      const lvl = Math.min(line.match(/^#+/)[0].length + 3, 5);   // # -> h4, ## / ### -> h5
+      html += `<h${lvl}>${inline(line.replace(/^#+\s/, ""))}</h${lvl}>`;
+    } else if (/^[-*]\s/.test(line)) {
+      flushPara(); if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${inline(line.replace(/^[-*]\s/, ""))}</li>`;
+    } else if (line === "") {
+      flushPara(); closeList();
+    } else { para.push(line); }
+  }
+  flushPara(); closeList();
+  return html;
 }
 
 // Re-render the current week, preserving which detail panels are expanded.
@@ -562,12 +602,29 @@ function renderWeek(data, week) {
 
   // Hook up expand toggles (re-bound on every week switch since DOM is fresh).
   root.querySelectorAll(".expand-toggle").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const id = btn.getAttribute("aria-controls");
       const panel = document.getElementById(id);
       const open = btn.getAttribute("aria-expanded") === "true";
       btn.setAttribute("aria-expanded", open ? "false" : "true");
       panel.hidden = open;
+      if (open) return;   // just collapsed — nothing to load
+      // First open: lazily fetch this matchup's summary and show its write-up.
+      const mid = Number(btn.dataset.mid);
+      const idx = id.replace("details-", "");
+      const sum = await fetchSummary(mid);
+      const wEl = document.getElementById(`writeup-${idx}`);
+      if (wEl && sum && sum.writeup && !wEl.innerHTML) {
+        wEl.innerHTML =
+          (sum.result ? `<p class="wu-result"><strong>${escHtml(sum.result)}</strong></p>` : "") +
+          mdToHtml(sum.writeup);
+        // ensure the "Weekly summary" heading exists (renderDetails omits it when
+        // the summary wasn't cached at render time)
+        if (!wEl.previousElementSibling || wEl.previousElementSibling.textContent !== "Weekly summary") {
+          wEl.insertAdjacentHTML("beforebegin", "<h3>Weekly summary</h3>");
+        }
+        wEl.hidden = false;
+      }
     });
   });
   bindChartHovers(root);
@@ -623,7 +680,7 @@ function render(data) {
     const periodId = parseInt(e.target.value, 10);
     const w = data.weeks.find((w) => w.matchup_period_id === periodId);
     if (!w) return;
-    if (chartAnnotate) await ensureAnnotations(w);   // load this week's annotations first
+    if (chartAnnotate) await ensureSummaries(w);   // load this week's annotations first
     renderWeek(data, w);
   });
 
@@ -634,7 +691,7 @@ function render(data) {
     const btn = e.currentTarget;
     btn.classList.toggle("active", chartAnnotate);
     btn.setAttribute("aria-pressed", String(chartAnnotate));
-    if (chartAnnotate && active.week) await ensureAnnotations(active.week);
+    if (chartAnnotate && active.week) await ensureSummaries(active.week);
     rerenderPreservingPanels();
   });
 

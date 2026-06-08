@@ -174,9 +174,16 @@ def build_annotations(conn, mid, *, event_pp=0.08, span_pp=0.12):
     spans.sort(key=lambda s: abs(s["wp_delta"]), reverse=True)
     spans = sorted(spans[:4], key=lambda s: s["start"])
 
+    # ── result line (deterministic), for a header above the write-up ──
+    last = json.loads(rows[-1]["details_json"] or "{}")
+    cm = _cat_map(last)
+    a_cats = sum(1 for sid in ORDER if sid in cm and cm[sid]["away_wins"] > 5200)
+    h_cats = sum(1 for sid in ORDER if sid in cm and cm[sid]["away_wins"] < 4800)
+    result = f"{away_name} {a_cats}–{h_cats} {home_name}"
+
     return {"matchup_id": mid, "period": period,
             "generated_at": rows[-1]["computed_at"], "model_version": "mc-v1",
-            "away": away_name, "home": home_name,
+            "away": away_name, "home": home_name, "result": result,
             "events": out_events, "spans": spans}
 
 
@@ -273,16 +280,23 @@ if __name__ == "__main__":
     if not args or args[0] in ("-h", "--help"):
         print(__doc__); sys.exit(0 if args else 1)
     annotate = "--annotate" in args
-    mid = int(next(a for a in args if not a.startswith("-")))
+    writeup_path = None
+    if "--writeup" in args:
+        writeup_path = args[args.index("--writeup") + 1]
+        annotate = True   # --writeup implies emitting the file
+    mid = int(next(a for a in args if not a.startswith("-") and a != writeup_path))
     if annotate:
         from pathlib import Path
         conn = db.connect()
         ann = build_annotations(conn, mid)
         conn.close()
+        if writeup_path:
+            ann["writeup"] = Path(writeup_path).read_text()   # markdown prose from the skill
         out = Path(__file__).resolve().parent.parent / "docs" / "annotations"
         out.mkdir(exist_ok=True)
         path = out / f"{mid}.json"
         path.write_text(json.dumps(ann, separators=(",", ":")))
-        print(f"wrote {path}  ({len(ann['events'])} events, {len(ann['spans'])} spans)")
+        print(f"wrote {path}  ({len(ann['events'])} events, {len(ann['spans'])} spans"
+              f"{', +writeup' if writeup_path else ''})")
     else:
         main(mid)

@@ -692,6 +692,13 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   generator names events from snapshot budgets (QS/SVHD/SP projection swings) and
   MLB box scores (banked-hitting swings like a HR); spans are day-level category
   trends. Empty file / 404 → no overlay (ask for a summary to generate it).
+- **Weekly write-up in Details.** The same `docs/annotations/<id>.json` may carry a
+  `writeup` (markdown) + `result` line; when present, Details renders a "Weekly
+  summary" section below the chart (a tiny markdown subset renderer, `mdToHtml` —
+  headings/bold/lists/paragraphs, no tables/raw HTML). Fetched lazily the first
+  time a matchup's panel is expanded (`fetchSummary`), independent of the Annotate
+  toggle. Authored + bundled by `/matchup-summary` (`scripts/matchup_summary.py
+  <id> --annotate --writeup <md>`); absent → the section just doesn't render.
 
 ## Investigating "why did this WP change?"
 

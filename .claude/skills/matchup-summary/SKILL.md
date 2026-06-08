@@ -89,18 +89,28 @@ Produce a short, skimmable weekly write-up for one fantasy-wp matchup. Read-only
    Emphasize **late-week** events (the user cares most about what swung it down
    the stretch). Lead with the decisive swing(s); don't list every minor wobble.
 
-5. **Publish chart annotations (optional but default-on).** Generate the overlay
-   the site's "✦ Annotate" toggle reads, and push it so the live chart shows it:
-   ```sh
-   .venv/bin/python scripts/matchup_summary.py <matchup_id> --annotate   # writes docs/annotations/<id>.json
-   git add docs/annotations/<matchup_id>.json && \
-     git commit -m "annotations: matchup <id>" && git push
-   ```
-   The file is tiny and loaded lazily by the front-end only when annotations are
-   toggled on for that matchup, so it never bloats data.json. `--annotate` reuses
-   the same swing/attribution logic (events fully named, incl. box-score hitters;
-   coarse day-level trend spans). Re-run anytime to refresh. Skip this step only
-   if the user just wants the chat write-up.
+5. **Publish to the site (chart annotations + the write-up).** The site shows two
+   things from the per-matchup file `docs/annotations/<id>.json`: the "✦ Annotate"
+   overlay (events/spans) and a **"Weekly summary" write-up** rendered in Details
+   below the chart. Generate + push it:
+   - Write the **in-panel write-up** to a temp markdown file. Keep it body-only and
+     compact (the chart shows the arc; a `result` line is added automatically):
+     a short **arc** paragraph, a **Final categories** bullet list (call out the
+     close ones), a **What swung it** list (the decisive late events with named
+     players), and a one-line **turning point**. Use `###` sub-headings, `**bold**`,
+     `- ` bullets — **no big H1 title, no markdown tables** (the renderer is a small
+     subset: headings/bold/lists/paragraphs).
+   - Then bundle + commit:
+     ```sh
+     .venv/bin/python scripts/matchup_summary.py <matchup_id> --annotate --writeup /tmp/wu<id>.md
+     git add docs/annotations/<matchup_id>.json && \
+       git commit -m "matchup <id>: summary + annotations" && git push
+     ```
+   The file is tiny and loaded lazily (only when a panel is expanded / annotations
+   toggled on), so it never bloats data.json. `--annotate` reuses the swing/
+   attribution logic (events named, incl. box-score hitters; day-level spans) and
+   adds a deterministic `result` line. Re-run anytime to refresh. Skip only if the
+   user explicitly wants the chat write-up alone.
 
 ## Notes
 - Scale the swing list to the story: a blowout needs 1–2 swings; a comeback needs
