@@ -262,6 +262,8 @@ def parse_boxscore(payload: dict, game_pk: int) -> dict:
                 "bb": bb,
                 "hbp": hbp,
                 "sf": sf,
+                "r": st.get("runs") or 0,
+                "sb": st.get("stolenBases") or 0,
             })
     return {"pitchers": pitchers, "batters": batters}
 

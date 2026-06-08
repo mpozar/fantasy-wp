@@ -81,8 +81,9 @@ don't support.
        (e.g. Moreno *and* Neto on 06-07 m58), and you can't tell which HR moved
        the WP at that minute, say "a Sox Teacher HR" rather than guessing — do NOT
        stamp the same player on two different swings.
-     - R and SB are **not** in the box parse (no per-player line) — describe them
-       ("a Beach Bums steal") without pinning a name.
+     - HR, H, **R, and SB** all have per-player box lines now — name the
+       contributors (e.g. "J-Rod steals ×2", "Wood & Abrams HRs"). Push for names;
+       a vague "(overnight)" or "barrage" label is a miss.
    - **Reconcile WP vs scoreboard.** A 100%-WP win can be a one-category nailbiter
      (m58: HR 12–11, OPS .839–.838) or a tiebreaker (m60: 4–4 on hits). Say so —
      "decisive in probability, razor-thin on the board" is usually the real story.
@@ -188,8 +189,19 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
   nailbiter or a tiebreaker — that contrast is usually the real story.
 - **Scale to the story.** A blowout gets 1 span and no event markers; a comeback
   gets the collapse span + the recovery span + the decisive plays.
-- **R and SB aren't player-attributable** from the box parse — describe them, don't
-  name a player (until `mlb.parse_boxscore` gains `runs`/`stolenBases`).
+- **Name the contributors — including R and SB.** `mlb.parse_boxscore` now carries
+  per-batter `r` and `sb` (added 2026-06-08), so the box dump shows them; a
+  "SB barrage" or "(overnight)" label with no names is a miss. Pin the steal/HR/hit
+  to the player(s). [owner, 2026-06-08]
+- **Pad an owner-given window before judging it — the swing often sits on the edge.**
+  Query a little wider than the stated range (and use inclusive bounds — a tight
+  string upper bound like `...T14:10` lexically excludes `14:10:16`). A flagged
+  window that looks flat is usually a swing parked at the boundary, not a non-event.
+  *Worked example:* m57's "Tue 3:15–4:10pm" looked like net 0 because the +10pp jump
+  landed exactly at the 14:10 UTC edge I'd truncated. [owner, 2026-06-08]
+- **A roster add/drop is a valid swing cause** — diff the budget player-set across
+  the tick (added/removed names), not just per-player projections. m57's +10pp was
+  the Melonheads picking up Arrighetti + Hoffman at the 4-hourly refresh.
 - **No full category breakdown in the write-up.** The site shows the scoreboard
   beside it, so listing every category is redundant. Weave only the close/decisive
   cats into the prose (the auto result line carries the X–Y). [owner, 2026-06-08]

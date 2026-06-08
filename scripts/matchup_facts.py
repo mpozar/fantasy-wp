@@ -59,8 +59,7 @@ DRIVER_EXP = {63: "exp_qs", 83: "exp_svhd", 48: "exp_k", 5: "exp_hr",
               20: "exp_r", 1: "exp_h", 23: "exp_sb", 18: "exp_ops",
               47: "exp_era", 41: "exp_whip"}
 # box-score-attributable counting cats (per-player lines exist) -> batter field.
-# R and SB are NOT in the box parse, so they're left for prose, not pinned.
-BOX_BAT = {5: "hr", 1: "h"}
+BOX_BAT = {5: "hr", 1: "h", 20: "r", 23: "sb"}
 SWING = 0.07                   # |Δ wp| per tick to list as a candidate swing
 BUDGET_MIN = 0.10              # min |Δ exp_<cat>| to report a projection mover
 QS_OUTS, QS_MAX_ER = 18, 3
@@ -164,9 +163,10 @@ def _box_for_day(conn, period, side_team_id, date):
             continue
         for b in box["batters"]:
             nm = sim._norm_name(b["name"])
-            if nm in roster and (b["h"] or b["hr"]):
+            if nm in roster and (b["h"] or b["hr"] or b.get("sb") or b.get("r")):
                 hitters.append({"name": b["name"], "h": b["h"], "hr": b["hr"],
                                 "b2": b.get("b2", 0), "b3": b.get("b3", 0),
+                                "r": b.get("r", 0), "sb": b.get("sb", 0),
                                 "tag": _slot_tag(slots.get(nm), sim.HITTER_SLOT_IDS)})
         for p in box["pitchers"]:
             nm = sim._norm_name(p["name"])
@@ -283,8 +283,8 @@ def facts(conn, mid):
                 if not hitters and not pitchers:
                     continue
                 print(f"  {d}  {label}:")
-                for h in sorted(hitters, key=lambda x: (-x["hr"], -x["h"])):
-                    extra = " ".join(f"{k}={h[k]}" for k in ("hr", "b2", "b3") if h[k])
+                for h in sorted(hitters, key=lambda x: (-x["hr"], -x["sb"], -x["h"])):
+                    extra = " ".join(f"{k.upper()}={h[k]}" for k in ("hr", "sb", "r", "b2", "b3") if h.get(k))
                     print(f"      BAT {h['name']:<22} H={h['h']}" + (f"  {extra}" if extra else "") + h["tag"])
                 for p in sorted(pitchers, key=lambda x: (-x["qs"], -x["svhd"], -x["k"])):
                     tags = []
