@@ -58,8 +58,21 @@ don't support.
      know which swing a given HR caused; that's your call.
 
 2. **Apply judgment — this is the work:**
-   - **Pick the swings that matter.** A blowout needs 1–2; a comeback needs the
-     collapse *and* the recovery. Ignore minor wobbles.
+   - **Preferred input: owner-flagged windows.** The owner reviews the chart and
+     hands you approximate windows (team + day + a clock range, times in **Europe/
+     Oslo** local — convert to UTC yourself, handling DST: UTC+2 in summer). Often
+     with the WP% endpoints from the hover tooltip, which pin the exact swing. Your
+     job per window: (a) pull the matchup's snapshots in that UTC range, (b) **refine
+     to the single most dramatic move** — the steepest contiguous swing (report its
+     tick + the window's net); (c) attribute it (below). If they don't supply
+     windows, fall back to picking the swings yourself.
+   - **Refining a window — three things to check first:** is it inside a known
+     hand-edited / corrupted window (`INCIDENTS.md`, `edited=1`)? → say so, don't
+     annotate. Is the net move ~0 (the eye can misjudge a flat stretch)? → tell the
+     owner there's no real swing there. Is it a gradual bleed vs one sharp tick? →
+     mark the tick for sharp, use the net for gradual.
+   - **Pick the swings that matter** (when self-selecting). A blowout needs 1–2; a
+     comeback needs the collapse *and* the recovery. Ignore minor wobbles.
    - **Attribute each swing to the actual play.** Cross-reference the swing's
      driver category + the side whose `avg` rose against that day's box lines.
      - A projection swing (budget mover present) names itself: "Soroka locked a
