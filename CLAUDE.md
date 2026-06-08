@@ -584,14 +584,35 @@ rate they imply matches ESPN's live scraped rate. Pieces:
 - **QS (counting credit, `_count_qs`).** QS is *not* a rate, so the rate-match guard
   doesn't apply. We count quality starts from **Final** starter lines whose pitcher
   was slotted in a pitching slot (QS = started + ≥`QS_OUTS` outs + ≤`QS_MAX_ER` ER,
-  same definition as `ingame.py`) and **add** them to the banked QS total. Two
-  safeties: **Final-only** (while In Progress, `ingame.py` already supplies the QS
-  in the budget — crediting here too would double-count), and the **unsettled
-  window** (already-settled games leave it, so the add isn't double-counted — same
-  guarantee the rate groups rely on). This closes the QS half of the morning settle
-  jump (e.g. the 2026-06-07 m60 case: Jo Mamas's 3rd QS posting at 07:00).
-- **SVHD (counting credit, `_count_svhd`).** Same Final-only + unsettled-window
-  treatment as QS, summed from `live_pitchers.sv/hld`. **SVHD = SV + HLD** — this
+  same definition as `ingame.py`). **Combined via `max`, NOT added** (fixed
+  2026-06-08, see below): `state[QS] = max(scraped_weekly, settled_floor + box_count)`.
+  Final-only still avoids overlap with the in-progress model.
+  - **Why `max`, not add — the deGrom double-count.** QS/SVHD (unlike the rate
+    *components* ER/OUTS/AB…, which are REST-only and genuinely settle-lagged) are
+    scored **display** cats the live DOM scrape banks the instant a game goes Final —
+    well before the 7h settle boundary. So a naive `baseline + box_count` double-counts
+    any Final game that's *both* scrape-banked *and* still inside the window. On
+    2026-06-07 m60 (Bus vs Mamas, week 10), deGrom's legit QS was scrape-banked
+    (weekly 2→3) **and** re-added by `_count_qs` → sim QS 3→**4** → That Bus 100%;
+    it reverted to the official 3 only when `now−7h` crossed midnight at **07:00** and
+    aged deGrom's game out of the window → **100%→0%** flip (lost the QS-tiebreaker
+    on hits). The "settle revert" was the *window boundary*, not an ESPN correction.
+  - **`settled_floor`** (`sim.load_settled_floor`) is the QS already banked from
+    aged-out games: the running **MIN** of the scraped weekly count over the
+    window-day (`fetched_at >= since_date`). Observation-driven, so it needs no
+    settle-clock assumption (the 07:00 boundary only *buckets* the day; the min value
+    has ~10h of slack) and **self-heals** a downward stat correction (the min follows
+    the scrape down). The `max` is **fail-safe**: never below the authoritative scrape
+    (a lagging scrape can't drop a real credit — preserves the in-progress→Final
+    gap-fill), never the double-count. No floor (isolated callers) ⇒ default
+    floor = scrape ⇒ additive. Residual (accepted, bounded): a downward correction to
+    a *settled* game is masked until the next 07:00 re-min; a buggy box parse can
+    over-credit in-window; both narrow, vs the old guaranteed 7h double-count.
+  - **Caught by validation:** `INV_SITE_QS_OVERCREDIT` (published-site) independently
+    recomputes `max(scrape, floor+box)` and errors if the site shows more;
+    `ANOM_WP_RAIL_FLIP` flags the near-0↔near-100 UX symptom.
+- **SVHD (counting credit, `_count_svhd`).** Same `max`/Final-only treatment as QS,
+  summed from `live_pitchers.sv/hld`. **SVHD = SV + HLD** — this
   league does *not* score blown saves. (An earlier note claimed stat 83 "subtracts
   blown saves," but that was a mis-read of the broken split=6 ROS projection, not the
   actuals; the `stat_id 56` quirk note under "ESPN API quirks" should be taken with
@@ -891,13 +912,15 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `ANOM_STALE_SNAPSHOTS` / `ANOM_STALE_FETCH` | warn | newest wp_snapshot / category_state fetch < `STALE_MINUTES` (20) old | a cron stalled (wedged lock, exception, macOS FDA revoked) — site serves stale data. Legit briefly while `medium.sh` holds the lock (≤5 min). |
 | `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |
 | `INV_SITE_MISSING` / `INV_SITE_UNREADABLE` | error | `data.json` exists and parses | publish never ran / wrote garbage. |
-| `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. |
+| `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. Skips the live-recon cats (ERA/WHIP/OPS, QS/SVHD) — those are guarded by `INV_SITE_QS_OVERCREDIT` / `INV_RATE_RANGE` instead. |
+| `INV_SITE_QS_OVERCREDIT` | error | published QS/SVHD ≤ independently-recomputed `max(scrape, settled_floor + box)` | the site shows a **phantom counting credit** — the QS/SVHD double-count vs the live scrape (the 2026-06-07 deGrom case: site QS 4 where only 3 is supportable). Recomputed from raw `category_state` + box scores (a second implementation, so it catches a regression of the `max`-rule fix, not just publish drift). Live week only; best-effort (skips if the recompute can't load). |
 | `INV_SITE_RECORD_ASYMMETRIC` | error | a matchup's two W-L-T records mirror (home W=away L, etc.) | always a bug — head-to-head category scoring is zero-sum. Was caused by summing per-team stored `result` flags that desync under temporal skew (fixed: `cli._apply_counting_results` derives results from a single home-vs-away score comparison). |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
 | `ANOM_SCRAPE_EMPTY` | warn | games in progress ⇒ the live scrape returns >0 cells | the DOM scrape silently failed (auth wall, expired `.playwright_profile`, selector drift) and `fetch` fell back to laggy REST — display cats rot *while games are live*. Raised at **fetch** time (not `run`), since only `fetch` knows a scrape was attempted. Fix: re-run `scripts/espn_auth_setup.py`. ×N occurrences/day = persistent vs a one-off hiccup. |
 | `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, games going live, or a benign ~07:00-UTC daily component settle (see "Live component reconstruction"). Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
 | `ANOM_LINEUP_SNAPSHOT_MISSING` | warn | a day with live box-score lines has a `daily_lineups` snapshot | the ESPN lineup fetch in `refresh-live` failed (auth hiccup / expired cookies) → live component reconstruction can't attribute and silently falls back to stale ESPN components for every team. Check ESPN auth; verify `espn.fetch_daily_lineups` works. Quiet whenever nothing is live. |
 | `ANOM_WP_FLAPPING` | warn | home_wp doesn't oscillate (≥`FLAP_MIN_REVERSALS` direction flips ≥8pp over the last `FLAP_WINDOW` ticks) | a stat keeps being written then dropped then rewritten (flaky scrape/source regressing a counting cat). Distinct from a one-way swing or a swing-then-recover (those don't reverse repeatedly). Active weeks only. |
+| `ANOM_WP_RAIL_FLIP` | warn | home_wp doesn't touch BOTH rails (≤`RAIL_FLIP` and ≥1−`RAIL_FLIP`, i.e. near-0 AND near-100) within the window | a near-certain-win flipping to near-certain-loss is the worst UX and a fingerprint of a flaky/over-credited stat (the deGrom phantom-QS shape). Fires on *magnitude* (vs `ANOM_WP_FLAPPING`'s reversal count). A genuine decisive resolution can trip it too — hence warn. Active weeks only. |
 | `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within 40% of current once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`); legit if the current sample is small/noisy. |
 
 Thresholds live as constants at the top of `app/validate.py`

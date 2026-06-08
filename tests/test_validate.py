@@ -139,6 +139,25 @@ def test_flapping_skipped_for_decided_week():
     assert v.check_wp_flapping(view) == []
 
 
+# ── rail flip: WP touching BOTH near-0 and near-100 (worst UX; phantom-stat smell) ──
+
+def test_rail_flip_flagged():
+    view = _view(wp_history=[0.97, 0.98, 0.04])   # near-100 then crashes to near-0
+    assert any(x.code == "ANOM_WP_RAIL_FLIP" for x in v.check_wp_rail_flip(view))
+
+def test_rail_flip_quiet_on_one_sided_resolution():
+    view = _view(wp_history=[0.55, 0.72, 0.96])   # decisive, but never near the 0 rail
+    assert v.check_wp_rail_flip(view) == []
+
+def test_rail_flip_quiet_on_mc_noise():
+    view = _view(wp_history=[0.50, 0.52, 0.48, 0.51])
+    assert v.check_wp_rail_flip(view) == []
+
+def test_rail_flip_skipped_for_decided_week():
+    view = _view(wp_history=[0.98, 0.02], winner="HOME")
+    assert v.check_wp_rail_flip(view) == []
+
+
 def test_clean_view_no_findings():
     view = _view(home_state=dict(_FULL_STATE), away_state=dict(_FULL_STATE),
                  cat_avg={48: (31.0, 31.0), sim.STAT_ERA: (4.5, 4.6)})
@@ -431,6 +450,74 @@ def test_site_db_check_skips_reconstructed_cats_compares_counting(tmp_path):
     mm = [x for x in f if x.code == "INV_SITE_DB_MISMATCH"]
     assert any("K" in x.detail for x in mm)            # counting cat flagged
     assert all("ERA" not in x.detail for x in mm)      # reconstructed rate skipped
+
+
+# ── QS/SVHD over-credit guard: site must not exceed max(scrape, floor + box) ──
+
+def _mem_db_qs(tmp_path):
+    """A DB with everything the independent QS recompute needs."""
+    conn = _mem_db()  # category_state + wp_snapshots
+    conn.executescript(
+        """
+        CREATE TABLE team_schedule (matchup_period_id INT, game_pk INT, game_date TEXT,
+            pro_team_id INT, game_status TEXT);
+        CREATE TABLE live_pitchers (game_pk INT, mlbam_id INT, name TEXT, pro_team_id INT,
+            order_idx INT, is_last INT, games_started INT, outs INT, er INT, k INT,
+            p_h INT, p_bb INT, sv INT, hld INT, fetched_at TEXT);
+        CREATE TABLE live_batters (game_pk INT, mlbam_id INT, name TEXT, pro_team_id INT,
+            ab INT, h INT, b2 INT, b3 INT, hr INT, bb INT, hbp INT, sf INT, fetched_at TEXT);
+        CREATE TABLE daily_lineups (game_date TEXT, fantasy_team_id INT, player_id INT,
+            lineup_slot_id INT, fetched_at TEXT);
+        CREATE TABLE players (id INT PRIMARY KEY, full_name TEXT, pro_team_id INT,
+            default_position_id INT, eligible_slots_json TEXT, injury_status TEXT);
+        CREATE TABLE team_rosters (matchup_period_id INT, fantasy_team_id INT,
+            player_id INT, lineup_slot_id INT, status TEXT);
+        CREATE TABLE player_injuries (norm_name TEXT, return_date TEXT);
+        CREATE TABLE player_projections (player_id INT, split_id INT, stat_id INT, value REAL);
+        """
+    )
+    # deGrom: a Final QS start (6 IP, 0 ER) for fantasy team 20, slotted SP.
+    conn.execute("INSERT INTO team_schedule VALUES (10, 9001, '2026-06-07', 26, 'Final')")
+    conn.execute("INSERT INTO live_pitchers VALUES "
+                 "(9001, 1, 'Jacob deGrom', 26, 0, 1, 1, 18, 0, 7, 4, 1, 0, 0, 't')")
+    conn.execute("INSERT INTO players VALUES (101, 'Jacob deGrom', 26, 13, '[]', NULL)")
+    conn.execute("INSERT INTO team_rosters VALUES (10, 20, 101, 13, NULL)")
+    conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-07', 20, 101, 13, 't')")
+    # category_state QS for team 20: settled floor 2 in the morning, scrape banks
+    # deGrom (→3) at night. SVHD steady at 3. Away team 21: QS 2 / SVHD 3 (no live).
+    _put_state(conn, 1, 20, {63: 2.0, 83: 3.0}, "2026-06-07T08:00:00+00:00")
+    _put_state(conn, 1, 20, {63: 3.0, 83: 3.0}, "2026-06-07T21:15:00+00:00")
+    _put_state(conn, 1, 21, {63: 2.0, 83: 3.0}, "2026-06-07T21:15:00+00:00")
+    return conn
+
+_GEN_QS = "2026-06-07T22:00:00+00:00"
+
+def _qs_block(team_id, qs, svhd):
+    s = {1: 30, 5: 5, 20: 18, 23: 4, 18: 0.75, 48: 30, 47: 4.2, 41: 1.25, 63: qs, 83: svhd}
+    return _live_site_block(team_id, s)
+
+def test_site_qs_overcredit_flagged(tmp_path):
+    # The deGrom shape: scrape banked the QS (weekly →3), but publish *also* added
+    # the box-score credit → site shows 4. max(scrape 3, floor 2 + box 1) = 3, so 4
+    # is a phantom double-count → flag.
+    conn = _mem_db_qs(tmp_path)
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _qs_block(20, qs=4, svhd=3),
+         "away": _qs_block(21, qs=2, svhd=3)}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
+                               "2026-06-07T22:01:00+00:00", conn=conn)
+    oc = [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"]
+    assert len(oc) == 1 and oc[0].matchup_id == 1 and "QS" in oc[0].detail
+
+def test_site_qs_no_overcredit_when_correct(tmp_path):
+    # Post-fix value: site shows 3 = max(3, 2+1). No flag. (SVHD 3 also fine.)
+    conn = _mem_db_qs(tmp_path)
+    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
+        {"matchup_id": 1, "home": _qs_block(20, qs=3, svhd=3),
+         "away": _qs_block(21, qs=2, svhd=3)}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
+                               "2026-06-07T22:01:00+00:00", conn=conn)
+    assert [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"] == []
 
 
 # ── read-fix regression guard: an idle partial write must NOT drop banked cats ──

@@ -852,10 +852,12 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     if live_components:
                         home_scores, hdec = sim.apply_live_components(
                             conn, m["home_team_id"], home_scores, home_roster,
-                            unsettled_lines, since_date=settle_boundary)
+                            unsettled_lines, since_date=settle_boundary,
+                            matchup_id=m["id"])
                         away_scores, adec = sim.apply_live_components(
                             conn, m["away_team_id"], away_scores, away_roster,
-                            unsettled_lines, since_date=settle_boundary)
+                            unsettled_lines, since_date=settle_boundary,
+                            matchup_id=m["id"])
                         live_accepts += sum(1 for d in (hdec + adec) if d["accepted"])
                     inputs = sim.MatchupInputs(
                         matchup_id=m["id"],
@@ -1338,7 +1340,8 @@ def _slim_category_wp(details_json: str) -> tuple[list | None, int | None]:
 
 
 def _fold_live_components(conn, home_state, away_state,
-                          home_team_id, away_team_id, period_id) -> None:
+                          home_team_id, away_team_id, period_id,
+                          matchup_id=None) -> None:
     """Fold live box-score components into the published team states so the
     scoreboard's *derived* ERA/WHIP/OPS (and QS/SVHD) reflect today's games — the
     same reconstruction the WP projection uses (`sim.apply_live_components`).
@@ -1357,7 +1360,7 @@ def _fold_live_components(conn, home_state, away_state,
                     if c.get("score") is not None}
         roster = sim.load_team_roster(conn, period_id, tid)
         recon, _ = sim.apply_live_components(conn, tid, baseline, roster, unsettled,
-                                             since_date=settle)
+                                             since_date=settle, matchup_id=matchup_id)
         for sid, val in recon.items():
             if val is not None:
                 state.setdefault(sid, {"score": None, "result": None})["score"] = val
@@ -1380,7 +1383,8 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
     if started:
         if live:   # make the displayed rates match the projection's live view
             _fold_live_components(conn, home_state, away_state,
-                                  home_team_id, away_team_id, m["matchup_period_id"])
+                                  home_team_id, away_team_id, m["matchup_period_id"],
+                                  matchup_id=m["id"])
         _apply_derived_rates(home_state, away_state)
         _apply_counting_results(home_state, away_state)
     wp_row = conn.execute(

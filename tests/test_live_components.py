@@ -346,13 +346,56 @@ def _qs_args(lines, slots):
 
 
 def test_qs_credited_from_final_start():
+    # No floor passed → falls back to additive (scrape hasn't banked it yet).
     baseline = {sim.STAT_QS: 2}
     lines = [_starter("Ace", outs=21, er=2)]          # 7 IP, 2 ER → QS
     slots = {sim._norm_name("Ace"): PITCH_SLOT}
     state, decisions = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
     qs = next(d for d in decisions if d["group"] == "qs")
     assert qs["accepted"] and qs["qs_added"] == 1
-    assert state[sim.STAT_QS] == 3                     # additive to banked
+    assert state[sim.STAT_QS] == 3                     # max(2, 2+1) = 3
+
+
+# ── the double-count guard: scrape already banked the in-window QS ──
+
+def test_qs_no_double_count_when_scrape_already_banked():
+    # The deGrom incident: the scrape already banked this Final QS (weekly 2→3),
+    # so baseline=3; settled_floor (pre-window settled) is 2. The box-score count
+    # must NOT push it to 4 — max(3, 2+1) = 3.
+    baseline = {sim.STAT_QS: 3}
+    lines = [_starter("deGrom", outs=18, er=0)]        # legit QS, already in the scrape
+    slots = {sim._norm_name("deGrom"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(
+        baseline, settled_floor={sim.STAT_QS: 2}, **_qs_args(lines, slots))
+    assert state[sim.STAT_QS] == 3                     # NOT 4 — no phantom
+
+def test_qs_gap_fill_when_scrape_lags():
+    # Box scores see a Final QS the scrape hasn't banked yet: baseline=2 (lagging),
+    # floor=2 → max(2, 2+1) = 3. The real credit still shows immediately.
+    baseline = {sim.STAT_QS: 2}
+    lines = [_starter("Ace", outs=21, er=1)]
+    slots = {sim._norm_name("Ace"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(
+        baseline, settled_floor={sim.STAT_QS: 2}, **_qs_args(lines, slots))
+    assert state[sim.STAT_QS] == 3
+
+def test_qs_never_below_scrape():
+    # Fail-safe: even if the floor is stale-low, the result never drops below the
+    # authoritative scrape — max(scraped=4, floor=1 + box=1) = 4.
+    baseline = {sim.STAT_QS: 4}
+    lines = [_starter("Ace", outs=21, er=1)]
+    slots = {sim._norm_name("Ace"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(
+        baseline, settled_floor={sim.STAT_QS: 1}, **_qs_args(lines, slots))
+    assert state[sim.STAT_QS] == 4
+
+def test_svhd_no_double_count_when_scrape_already_banked():
+    baseline = {sim.STAT_SVHD: 6}
+    lines = [_reliever("Closer", sv=1)]                # already in the scrape
+    slots = {sim._norm_name("Closer"): PITCH_SLOT}
+    state, _ = sim.reconcile_live_components(
+        baseline, settled_floor={sim.STAT_SVHD: 5}, **_qs_args(lines, slots))
+    assert state[sim.STAT_SVHD] == 6                   # max(6, 5+1) = 6, not 7
 
 def test_in_progress_start_not_credited():
     # Same line but game still live → ingame model owns it, reconstruction must skip.
@@ -440,4 +483,42 @@ def test_svhd_additive_over_multiple_relievers():
     lines = [_reliever("A", sv=1), _reliever("B", hld=1)]
     slots = {sim._norm_name(n): PITCH_SLOT for n in ("A", "B")}
     state, _ = sim.reconcile_live_components(baseline, **_qs_args(lines, slots))
-    assert state[sim.STAT_SVHD] == 5 + 2            # SV + HLD
+    assert state[sim.STAT_SVHD] == 5 + 2            # SV + HLD (no floor → additive)
+
+
+# ──────────────────── settled floor (observation-driven) ────────────────────
+
+def _floor_db(rows):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE category_state (matchup_id INT, team_id INT, stat_id INT, "
+                 "score REAL, fetched_at TEXT)")
+    conn.executemany("INSERT INTO category_state VALUES (?,?,?,?,?)", rows)
+    conn.commit()
+    return conn
+
+
+def test_settled_floor_is_running_min_over_the_window_day():
+    # QS across one window-day: settled total 2 all morning, then deGrom's QS banks
+    # to 3 mid-day. The floor (running min) = 2 = the pre-window settled count.
+    conn = _floor_db([
+        (60, 13, 63, 2.0, "2026-06-07T08:00:00+00:00"),
+        (60, 13, 63, 2.0, "2026-06-07T18:00:00+00:00"),
+        (60, 13, 63, 3.0, "2026-06-07T21:15:00+00:00"),
+    ])
+    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {63: 2.0}
+
+
+def test_settled_floor_self_heals_downward_correction():
+    # A retroactive correction drops a settled QS (3→2). The min follows it down,
+    # so the floor self-heals rather than masking the old higher value.
+    conn = _floor_db([
+        (60, 13, 63, 3.0, "2026-06-07T08:00:00+00:00"),
+        (60, 13, 63, 2.0, "2026-06-07T15:00:00+00:00"),   # correction
+    ])
+    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {63: 2.0}
+
+
+def test_settled_floor_excludes_prior_days_and_is_empty_without_history():
+    conn = _floor_db([(60, 13, 63, 9.0, "2026-06-06T23:00:00+00:00")])  # prior day
+    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {}

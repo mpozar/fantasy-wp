@@ -17,13 +17,15 @@ Four layers of check, by scope:
   - **per-matchup** (`_CHECKS`, operate on one `view`): WP range/sum, rate
     components present, all scored cats present, banked totals can't shrink, rate
     sanity bounds, sim accounting, non-empty budgets, projection vs current, unit
-    caps, WP swing, rate divergence.
+    caps, WP swing, WP flapping, WP rail-flip (near-0↔near-100), rate divergence.
   - **league-level** (`_LEAGUE_CHECKS`, operate on all views): correlated swing —
     many matchups moving in one tick is a systemic-data fingerprint.
   - **pipeline freshness** (`check_pipeline_freshness`): newest snapshot/fetch too
     old ⇒ a cron died silently and the site is serving stale data.
   - **published site** (`check_published_site`): the actual `data.json` the site
-    renders — a started week with no scored-cat values is "no stats on the site".
+    renders — a started week with no scored-cat values is "no stats on the site";
+    a cross-source DB mismatch; and an independent QS/SVHD over-credit recompute
+    (`max(scrape, settled_floor + box)`) that catches the phantom double-count.
 
 Design note: most past bugs were *emergent* (a fetch change broke what the sim
 consumes), so unit tests missed them. These checks assert end-to-end properties
@@ -90,6 +92,14 @@ FLAP_WINDOW = 6                # snapshots of WP history to scan for oscillation
 FLAP_LEG = 0.08               # a move ≥8pp counts as "significant" (filters MC jitter)
 FLAP_MIN_REVERSALS = 2         # this many direction flips among significant moves = flapping
                                # (distinct from a one-way swing or a swing-then-recover)
+
+RAIL_FLIP = 0.10               # WP within this of a rail (0 or 1) is "at the rail".
+                               # A series touching BOTH rails in one window is a
+                               # near-0↔near-100 flip — worst-case UX and a fingerprint
+                               # of a flaky/over-credited stat (e.g. a phantom QS).
+
+QS_OVERCREDIT_TOL = 0.5        # published QS/SVHD may exceed the independently-supported
+                               # max(scrape, settled_floor + box) by at most this (rounding)
 
 
 @dataclass
@@ -242,6 +252,28 @@ def check_wp_flapping(view) -> list[Finding]:
     return []
 
 
+def check_wp_rail_flip(view) -> list[Finding]:
+    """home_wp touching BOTH rails (near-0 AND near-100) within the window. Distinct
+    from ANOM_WP_FLAPPING (which counts reversals): this fires on the *magnitude* —
+    a near-certain-win flipping to near-certain-loss (or back) is the worst user
+    experience and a classic fingerprint of a flaky or over-credited stat lifting WP
+    to ~100% until it reverts (the deGrom phantom-QS shape: 100% all night → 0% at
+    the settle). A genuine, decisive resolution can trip it too — hence a warn, not
+    an error — but a near-0↔near-100 move always deserves a human eyeball."""
+    if not _active(view):
+        return []
+    h = [x for x in (view.get("wp_history") or []) if x is not None]
+    if len(h) < 2:
+        return []
+    lo, hi = min(h), max(h)
+    if hi >= 1 - RAIL_FLIP and lo <= RAIL_FLIP:
+        return [Finding("ANOM_WP_RAIL_FLIP", "warn", view["matchup_id"],
+                        f"home_wp spanned both rails ({lo * 100:.0f}% ↔ {hi * 100:.0f}%) "
+                        f"within {len(h)} ticks {[round(x, 2) for x in h]} — a near-0↔near-100 "
+                        f"flip (jarring UX; often a flaky/over-credited stat). Investigate.")]
+    return []
+
+
 def check_rate_divergence(view) -> list[Finding]:
     """A projected rate far from the current one, once a real sample is banked,
     is the '8.37 ERA projecting 3.76' smell."""
@@ -384,7 +416,8 @@ def check_empty_budgets(view) -> list[Finding]:
 _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
            check_banked_not_regressed, check_rate_ranges, check_category_sim_counts,
            check_wp_details_consistency, check_empty_budgets, check_proj_vs_current,
-           check_units, check_wp_swing, check_wp_flapping, check_rate_divergence]
+           check_units, check_wp_swing, check_wp_flapping, check_wp_rail_flip,
+           check_rate_divergence]
 
 # League-level checks operate on *all* views at once (cross-matchup correlations).
 _LEAGUE_CHECKS = []  # populated below (after the functions are defined)
@@ -551,6 +584,31 @@ def resolve(conn, code: str, *, now: str, by: str, note: str | None = None) -> i
         return conn.execute(sql, params).rowcount
 
 
+def _supported_credit(conn, matchup_id, period_id, team_id, sid, *,
+                      scraped, gen, unsettled, since_date) -> float:
+    """The maximum QS(63)/SVHD(83) the published artifact is *allowed* to show for one
+    side, recomputed independently of publish: `max(scraped_weekly, settled_floor +
+    box_count)` — the same rule `cli._fold_live_components` applies, re-derived here
+    from raw category_state + box scores. A publish/fold bug (or a regression of the
+    double-count fix) then surfaces as `published > supported`. Returns `scraped`
+    when no in-window box credit exists (nothing to add), and `None` if the
+    supporting data can't be loaded — the caller then skips, so we never flag on an
+    inability to recompute, only on a genuine over-credit."""
+    try:
+        roster = sim.load_team_roster(conn, period_id, team_id)
+        slots = sim.load_active_slots(conn, team_id, since_date=since_date,
+                                      fallback_roster=roster)
+        counter = sim._count_qs if sid == sim.STAT_QS else sim._count_svhd
+        box, _ = counter(unsettled["pitchers"], slots)
+    except Exception:
+        return None
+    if not box:
+        return scraped
+    floor = sim.load_settled_floor(conn, matchup_id, team_id, (sid,),
+                                   since_date=since_date, as_of=gen).get(sid, scraped)
+    return max(scraped, floor + box)
+
+
 def check_published_site(data_json_path: str | None, now_iso: str | None,
                          *, conn=None) -> list[Finding]:
     """Validate the *actual published artifact* the site renders. Catches the
@@ -577,6 +635,16 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
     if age is not None and age > STALE_MINUTES:
         out.append(Finding("ANOM_SITE_STALE", "warn", None,
                            f"data.json generated_at is {age:.0f} min old — publish may be failing"))
+    # For the independent QS/SVHD over-credit guard: derive the unsettled window
+    # publish saw (as of generated_at) once, up front.
+    unsettled = since_date = None
+    if conn is not None and gen:
+        from datetime import datetime
+        try:
+            since_date = sim.settle_boundary_date(datetime.fromisoformat(gen))
+            unsettled = sim.load_unsettled_lines(conn, since_date=since_date)
+        except Exception:   # best-effort guard — never break the rest of validation
+            unsettled = since_date = None
     scored = _COUNTING + _RATES
     for w in d.get("weeks", []):
         if w.get("state") not in ("live", "final"):
@@ -614,6 +682,30 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                                                f"period {pid} {side} {NAME.get(sid, sid)} "
                                                f"site={pub} vs DB={dbstate[sid]} (as of {gen[:16]}) "
                                                f"— published artifact disagrees with the DB"))
+                    # The live-recon counting cats (QS/SVHD) are skipped above because
+                    # they're derived, not raw category_state — but they're exactly the
+                    # ones prone to the phantom double-count. Guard them with their own
+                    # independent recompute: site must not exceed max(scrape, floor+box).
+                    if unsettled is not None:
+                        pubmap = {c.get("stat_id"): c.get("score") for c in cats}
+                        for sid in (sim.STAT_QS, sim.STAT_SVHD):
+                            pub = pubmap.get(sid)
+                            if pub is None:
+                                continue
+                            scraped_sid = dbstate.get(sid, 0) or 0
+                            expected = _supported_credit(
+                                conn, m.get("matchup_id"), pid, blk["team_id"], sid,
+                                scraped=scraped_sid, gen=gen, unsettled=unsettled,
+                                since_date=since_date)
+                            if expected is None:
+                                continue
+                            if pub - expected > QS_OVERCREDIT_TOL:
+                                out.append(Finding("INV_SITE_QS_OVERCREDIT", "error",
+                                    m.get("matchup_id"),
+                                    f"period {pid} {side} {NAME.get(sid, sid)} site={pub:g} "
+                                    f"> supportable {expected:g} (scrape {scraped_sid:g} + "
+                                    f"box-score in-window) — phantom counting credit, the "
+                                    f"QS/SVHD double-count vs the live scrape"))
             # Records must mirror: head-to-head category scoring means home wins a
             # category ⟺ away loses it. A non-mirror record is the asymmetric-record
             # bug — per-team stored results desynced under temporal skew (see
