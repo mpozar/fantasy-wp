@@ -193,3 +193,13 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
   - *Worked example:* m58's decisive +42pp swing (06-07 20:50) was **Moreno**'s HR
     (play 20:45 UTC), not Neto's — Neto homered at 22:39 UTC when Teacher was already
     ~97%, a ~2pp nudge. The old `max()` script mislabeled it "Neto HR".
+- **Only ACTIVE-slot players score — never credit a benched/IL player's box line.**
+  A rostered player on the bench (slot 16) or IL (17) that day contributes zero to
+  the team total. The box section tags each line: `[BENCH/IL — DID NOT COUNT]`,
+  `[slot? — no lineup snapshot]` (pre-2026-06-06 dates, where `daily_lineups` has no
+  record), or blank (active). For a `[slot?]` line you MUST reconcile against the
+  scored category delta in CANDIDATE SWINGS before crediting it — if the banked avg
+  didn't move by the box amount, the player was benched. [owner, 2026-06-08]
+  - *Worked example:* m59's June-2 Bums barrage — the box showed 4 HR (Lopez, Olson,
+    **Torres**, J-Rod) but the banked HR rose only **+3**: Torres was benched, so the
+    counted homers were Lopez, Olson, J-Rod. The +3 scored delta is authoritative.

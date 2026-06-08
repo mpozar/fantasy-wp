@@ -119,12 +119,40 @@ def _budget_movers(a, b, sid):
     return sorted(out, key=lambda t: -abs(t[2]))
 
 
+def _slots_for_day(conn, fantasy_team_id, date):
+    """{norm_name: lineup_slot_id} from the daily_lineups snapshot for THIS exact
+    date (the locked lineup that actually scored). Empty if none captured — note
+    daily_lineups only exists from ~2026-06-06 forward, so earlier dates can't be
+    bench-filtered and must be reconciled against the scored category delta."""
+    out = {}
+    for r in conn.execute(
+        "SELECT dl.lineup_slot_id slot, p.full_name name FROM daily_lineups dl "
+        "JOIN players p ON p.id = dl.player_id WHERE dl.fantasy_team_id=? AND dl.game_date=?",
+        (fantasy_team_id, date)):
+        nm = sim._norm_name(r["name"])
+        if nm:
+            out[nm] = r["slot"]
+    return out
+
+
+def _slot_tag(slot, slot_set):
+    """'' if the player was in a counting slot, else a flag the LLM must heed."""
+    if slot is None:
+        return "  [slot? — no lineup snapshot; reconcile vs scored delta]"
+    if slot in sim.NON_COUNTING_SLOTS:
+        return "  [BENCH/IL — DID NOT COUNT]"
+    return "" if slot in slot_set else f"  [slot {slot} — not a counting slot]"
+
+
 def _box_for_day(conn, period, side_team_id, date):
-    """Raw rostered-player box lines for one fantasy side on one date.
-    Returns (hitters, pitchers): hitters with hr/h/b2/b3; pitchers with the
-    derived QS flag + svhd/k/outs/er. ALL contributors, no max()."""
+    """Raw rostered-player box lines for one fantasy side on one date, each tagged
+    with its lineup slot for that day so a benched player's stats aren't credited.
+    Returns (hitters, pitchers): hitters with hr/h/b2/b3; pitchers with the derived
+    QS flag + svhd/k/outs/er, plus a `tag` (empty = counted that day). ALL
+    contributors, no max()."""
     roster = {sim._norm_name(p["full_name"]): p["full_name"]
               for p in sim.load_team_roster(conn, period, side_team_id)}
+    slots = _slots_for_day(conn, side_team_id, date)
     pks = [r[0] for r in conn.execute(
         "SELECT DISTINCT game_pk FROM team_schedule WHERE matchup_period_id=? AND game_date=?",
         (period, date))]
@@ -135,17 +163,21 @@ def _box_for_day(conn, period, side_team_id, date):
         except Exception:
             continue
         for b in box["batters"]:
-            if sim._norm_name(b["name"]) in roster and (b["h"] or b["hr"]):
+            nm = sim._norm_name(b["name"])
+            if nm in roster and (b["h"] or b["hr"]):
                 hitters.append({"name": b["name"], "h": b["h"], "hr": b["hr"],
-                                "b2": b.get("b2", 0), "b3": b.get("b3", 0)})
+                                "b2": b.get("b2", 0), "b3": b.get("b3", 0),
+                                "tag": _slot_tag(slots.get(nm), sim.HITTER_SLOT_IDS)})
         for p in box["pitchers"]:
-            if sim._norm_name(p["name"]) not in roster:
+            nm = sim._norm_name(p["name"])
+            if nm not in roster:
                 continue
             qs = int(p.get("games_started") and p["outs"] >= QS_OUTS and p["er"] <= QS_MAX_ER)
             svhd = (p.get("sv", 0) or 0) + (p.get("hld", 0) or 0)
             if qs or svhd or p["k"] or p["outs"]:
                 pitchers.append({"name": p["name"], "qs": qs, "svhd": svhd,
-                                 "k": p["k"], "outs": p["outs"], "er": p["er"]})
+                                 "k": p["k"], "outs": p["outs"], "er": p["er"],
+                                 "tag": _slot_tag(slots.get(nm), sim.PITCHER_SLOTS)})
     return hitters, pitchers
 
 
@@ -240,7 +272,11 @@ def facts(conn, mid):
 
     # ── box scores for swing days (raw, all contributors, both sides) ──
     if swing_dates:
-        print("\nBOX SCORES on swing days (rostered players only; for attributing banked swings):")
+        print("\nBOX SCORES on swing days (rostered players; for attributing banked swings).")
+        print("  ⚠ Only [active-slot] lines count. A [BENCH/IL] line did NOT score (its HR/H/etc")
+        print("    never hit the team total). [slot?] = no lineup snapshot for that date (pre-2026-06-06)")
+        print("    → reconcile against the scored category delta in CANDIDATE SWINGS: a box HR that")
+        print("    didn't raise the banked avg was benched.")
         for d in sorted(swing_dates):
             for label, tid in ((away, m["away_team_id"]), (home, m["home_team_id"])):
                 hitters, pitchers = _box_for_day(conn, period, tid, d)
@@ -249,13 +285,13 @@ def facts(conn, mid):
                 print(f"  {d}  {label}:")
                 for h in sorted(hitters, key=lambda x: (-x["hr"], -x["h"])):
                     extra = " ".join(f"{k}={h[k]}" for k in ("hr", "b2", "b3") if h[k])
-                    print(f"      BAT {h['name']:<22} H={h['h']}" + (f"  {extra}" if extra else ""))
+                    print(f"      BAT {h['name']:<22} H={h['h']}" + (f"  {extra}" if extra else "") + h["tag"])
                 for p in sorted(pitchers, key=lambda x: (-x["qs"], -x["svhd"], -x["k"])):
                     tags = []
                     if p["qs"]: tags.append("QS")
                     if p["svhd"]: tags.append(f"SVHD={p['svhd']}")
                     print(f"      PIT {p['name']:<22} {p['outs']//3}.{p['outs']%3}ip ER={p['er']} K={p['k']} "
-                          + " ".join(tags))
+                          + " ".join(tags) + p["tag"])
 
 
 # ───────────────────────── writer (--write) ─────────────────────────
