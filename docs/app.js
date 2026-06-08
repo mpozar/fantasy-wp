@@ -83,9 +83,20 @@ function renderChart(history, currentModel, week, scope, ann) {
     if (keep.length >= 2) {
       pts = keep;
       xt = (t) => {
-        let seg = segs.find((s) => t >= s.s && t <= s.e);
-        if (!seg) seg = t < segs[0].s ? segs[0] : segs[segs.length - 1];
-        const pos = seg.offset + Math.min(Math.max(t - seg.s, 0), seg.dur);
+        const seg = segs.find((s) => t >= s.s && t <= s.e);
+        let pos;
+        if (seg) {
+          pos = seg.offset + (t - seg.s);
+        } else if (t <= segs[0].s) {
+          pos = 0;                                   // before the first window → left edge
+        } else {
+          // In a dead gap between game-days (or past the last window): snap to the
+          // end of the latest window that began before t — i.e. the divider at the
+          // next day — NOT the last day of the week (which flung pre-game events to
+          // the far right).
+          const prev = segs.filter((s) => s.s <= t).pop() || segs[segs.length - 1];
+          pos = prev.offset + prev.dur;
+        }
         return padL + (pos / total) * innerW;
       };
       // A divider at the start of each day after the first.
