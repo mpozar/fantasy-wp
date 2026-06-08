@@ -165,7 +165,9 @@ This is the living style guide for these write-ups. **Process:** after the owner
 reviews a summary and gives feedback, decide whether it's a one-off (just fix that
 summary) or a *general* preference. If general, encode it here as a short rule + a
 one-line rationale, and commit — so it's automatically in force on every future
-summary, including in fresh sessions with no memory of the conversation. Read this
+summary, including in fresh sessions with no memory of the conversation. **Edit
+this file freely and proactively — never ask permission to add or change a rule;
+just do it and mention it** (owner, 2026-06-08). Read this
 section before writing; treat it as binding. Don't delete a rule without the
 owner's nod (they can veto one that overcorrected).
 
