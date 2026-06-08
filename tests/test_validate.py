@@ -227,6 +227,27 @@ def test_empty_budgets_skipped_for_decided_week():
     view = _view(home_budget_n=0, away_budget_n=0, home_state={1: 30}, winner="HOME")
     assert v.check_empty_budgets(view) == []
 
+def test_empty_budgets_skipped_at_end_of_week_no_active_games():
+    # roster IS fetched but all active players' games are Final (only IL/bench
+    # left) → 0 to budget; UNDECIDED but decided-in-practice. Benign FP, must NOT flag.
+    view = _view(home_budget_n=0, away_budget_n=12, home_state={1: 30},
+                 home_roster_n=24, home_active_remaining=0,
+                 away_roster_n=24, away_active_remaining=3)
+    assert v.check_empty_budgets(view) == []
+
+def test_empty_budgets_real_fetch_failure_still_flags():
+    # empty budgets AND no roster fetched → real failure, must flag.
+    view = _view(home_budget_n=0, away_budget_n=12, home_state={1: 5},
+                 home_roster_n=0, home_active_remaining=0)
+    assert any(x.code == "INV_EMPTY_BUDGETS" for x in v.check_empty_budgets(view))
+
+def test_empty_budgets_roster_present_with_games_remaining_still_flags():
+    # roster fetched and active games remain but produced no budgets → real
+    # projection failure, must flag.
+    view = _view(home_budget_n=0, away_budget_n=12, home_state={1: 5},
+                 home_roster_n=24, home_active_remaining=4)
+    assert any(x.code == "INV_EMPTY_BUDGETS" for x in v.check_empty_budgets(view))
+
 
 # ── league-level: correlated swing (the systemic fingerprint) ──
 

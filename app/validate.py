@@ -348,9 +348,18 @@ def check_wp_details_consistency(view) -> list[Finding]:
 
 
 def check_empty_budgets(view) -> list[Finding]:
-    """A side with no player budgets while the matchup has any banked state means
-    the roster/projection fetch produced nothing — WP degenerates to a coin flip.
-    (Empty before the week has any data is fine — skipped.)"""
+    """A side with no player budgets while the matchup has banked state usually
+    means the roster/projection fetch produced nothing — WP degenerates.
+
+    But at end of week a fully-rostered side legitimately has no budgets once all
+    its *active* players' games are Final (only IL/bench left → nothing to
+    project); that's a decided matchup sitting UNDECIDED until rollover, not a
+    failure, and flagging it spams an error for every matchup every Sun→Mon tick.
+    So fire only when budgets are empty AND either the roster itself is missing
+    (real fetch failure) or the side still has remaining active games to project.
+    `{who}_roster_n` / `{who}_active_remaining` are absent in older callers/tests →
+    default to firing (old behavior). (Empty before any data, or a finished week,
+    skipped as before.)"""
     if view.get("home_budget_n") is None:        # loader didn't populate counts
         return []
     if not _active(view):                        # a finished week has no budgets — fine
@@ -359,10 +368,16 @@ def check_empty_budgets(view) -> list[Finding]:
         return []
     out = []
     for who, n in (("home", view["home_budget_n"]), ("away", view["away_budget_n"])):
-        if n == 0:
-            out.append(Finding("INV_EMPTY_BUDGETS", "error", view["matchup_id"],
-                               f"{who} has no player budgets while the week has data "
-                               f"— roster/projection fetch failed?"))
+        if n != 0:
+            continue
+        # Benign end-of-week: roster IS fetched but 0 active games remain to
+        # budget. A missing roster (roster_n == 0) or remaining active games
+        # still flags — those are the real fetch/projection failures.
+        if view.get(f"{who}_roster_n") and view.get(f"{who}_active_remaining") == 0:
+            continue
+        out.append(Finding("INV_EMPTY_BUDGETS", "error", view["matchup_id"],
+                           f"{who} has no player budgets while the week has data "
+                           f"— roster/projection fetch failed?"))
     return out
 
 
@@ -629,6 +644,25 @@ def _load_state_prev(conn, matchup_id: int, team_id: int) -> dict[int, float]:
     return {sid: v["score"] for sid, v in
             db.latest_category_state(conn, matchup_id, team_id, rank=2).items()}
 
+_FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
+
+
+def _side_remaining(conn, period_id: int, team_id: int, sched: dict) -> tuple[int, int]:
+    """(roster_n, remaining_active_games) for one fantasy side. `roster_n` is the
+    fetched roster size (0 ⇒ a real roster-fetch failure); `remaining_active_games`
+    counts non-Final games for players in active (non-bench/IL) slots — 0 with a
+    fetched roster means the side is done for the week (nothing left to budget),
+    which is benign rather than a failure. Used by check_empty_budgets."""
+    roster = sim.load_team_roster(conn, period_id, team_id)
+    rem = 0
+    for p in roster:
+        if p.get("lineup_slot_id") in sim.NON_COUNTING_SLOTS:   # bench / IL → don't count
+            continue
+        rem += sum(1 for g in sched.get(p["pro_team_id"], [])
+                   if g.get("game_status") not in _FINAL_GAME_STATES)
+    return len(roster), rem
+
+
 def load_view(conn, matchup_id: int) -> dict | None:
     m = conn.execute(
         "SELECT home_team_id, away_team_id, matchup_period_id, winner FROM matchups WHERE id=?",
@@ -642,6 +676,12 @@ def load_view(conn, matchup_id: int) -> dict | None:
     import json
     from app import mlb
     ws, we = mlb.matchup_period_window(m["matchup_period_id"])
+    # Per-side roster size + remaining *active* games — lets check_empty_budgets
+    # tell a real fetch failure (no roster) from the benign end-of-week case
+    # (roster present but all active players' games Final → nothing to budget).
+    sched = sim.load_schedule_by_team(conn, m["matchup_period_id"])
+    h_roster_n, h_rem = _side_remaining(conn, m["matchup_period_id"], m["home_team_id"], sched)
+    a_roster_n, a_rem = _side_remaining(conn, m["matchup_period_id"], m["away_team_id"], sched)
     d = json.loads(snaps[0]["details_json"] or "{}")
     cat_wp = d.get("category_wp", [])
     have_tally = all(k in d for k in ("home_wins", "away_wins", "ties"))
@@ -658,6 +698,10 @@ def load_view(conn, matchup_id: int) -> dict | None:
         "budgets": (d.get("home_budgets", []) + d.get("away_budgets", [])),
         "home_budget_n": len(d.get("home_budgets", [])),
         "away_budget_n": len(d.get("away_budgets", [])),
+        "home_roster_n": h_roster_n,
+        "away_roster_n": a_roster_n,
+        "home_active_remaining": h_rem,
+        "away_active_remaining": a_rem,
         "n_sims": d.get("n_sims"),
         "tally": (d.get("home_wins"), d.get("away_wins"), d.get("ties")) if have_tally else None,
         "cat_counts": [{"stat_id": c["stat_id"], "home_wins": c.get("home_wins", 0),
