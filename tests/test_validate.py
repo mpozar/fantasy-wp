@@ -85,6 +85,27 @@ def test_rate_divergence_quiet_on_small_sample():
     assert v.check_rate_divergence(view) == []
 
 
+def test_rate_range_skips_current_off_tiny_sample():
+    # Monday rollover: WHIP=inf at 0 IP, or an extreme rate off <3 IP, must NOT
+    # flag the *current* rate (this is the early-week spam guard).
+    view = _view(home_state={sim.STAT_WHIP: float("inf"), sim.STAT_OUTS: 0},
+                 away_state={sim.STAT_WHIP: 9.0, sim.STAT_OUTS: 5})
+    assert v.check_rate_ranges(view) == []
+
+
+def test_rate_range_flags_current_once_innings_banked():
+    # With real innings banked (10 IP), a WHIP of 9.0 is genuine garbage → flag.
+    view = _view(home_state={sim.STAT_WHIP: 9.0, sim.STAT_OUTS: 30})
+    assert any(x.code == "INV_RATE_RANGE" for x in v.check_rate_ranges(view))
+
+
+def test_rate_range_projected_always_checked():
+    # Projections are full-week, so an out-of-range projected rate flags regardless
+    # of banked innings.
+    view = _view(cat_avg={sim.STAT_WHIP: (9.0, 1.2)}, home_state={}, away_state={})
+    assert any(x.code == "INV_RATE_RANGE" for x in v.check_rate_ranges(view))
+
+
 # ── other invariants/anomalies ──
 
 def test_proj_below_current_flagged():
@@ -184,7 +205,9 @@ def test_banked_regressed_quiet_when_growing():
 # ── rate sanity bounds ──
 
 def test_rate_range_flagged():
-    view = _view(home_state={47: 412.0})   # ERA 412 = div-by-zero/derivation blowup
+    # ERA 412 with real innings banked = a derivation blowup → flag. (At 0 IP it's
+    # intentionally skipped now as early-week noise; see the tiny-sample tests above.)
+    view = _view(home_state={47: 412.0, sim.STAT_OUTS: 60})
     assert any(x.code == "INV_RATE_RANGE" for x in v.check_rate_ranges(view))
 
 def test_rate_range_ok():

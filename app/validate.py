@@ -74,6 +74,11 @@ BANKED_REGRESS_FRAC = 0.10     # … AND more than this fraction of the prior va
 # components lands far outside these; the 8.37→3.76 bug stayed *in* range, so this is
 # a coarse backstop for the gross case, not a replacement for ANOM_RATE_DIVERGENCE).
 RATE_BOUNDS = {18: (0.0, 2.0), 47: (0.0, 30.0), 41: (0.0, 6.0)}  # OPS, ERA, WHIP
+# A *current* ERA/WHIP off <3 IP (or OPS off a tiny AB sample) is statistical noise
+# — e.g. WHIP=inf at 0 IP at every week's Monday rollover. Only range-check the
+# current rate once this much is banked; projected (full-week) rates always checked.
+MIN_OUTS_FOR_RANGE = 9   # 3 IP
+MIN_AB_FOR_RANGE = 10
 
 # A simultaneous swing across many matchups in one compute is a systemic-data
 # fingerprint, not coincident roster moves — the signature both 2026-06-04
@@ -322,7 +327,16 @@ def check_rate_ranges(view) -> list[Finding]:
     for sid, (lo, hi) in RATE_BOUNDS.items():
         for who, st in (("home", view["home_state"]), ("away", view["away_state"])):
             v = st.get(sid)
-            if v is not None and not (lo <= v <= hi):
+            if v is None:
+                continue
+            # Skip the *current* rate when too little is banked — an early-week
+            # ERA/WHIP off <3 IP (inf at 0 IP) or OPS off a few ABs is meaningless.
+            if sid in (sim.STAT_ERA, sim.STAT_WHIP):
+                if (st.get(sim.STAT_OUTS) or 0) < MIN_OUTS_FOR_RANGE:
+                    continue
+            elif (st.get(sim.STAT_AB) or 0) < MIN_AB_FOR_RANGE:        # OPS
+                continue
+            if not (lo <= v <= hi):
                 out.append(Finding("INV_RATE_RANGE", "error", view["matchup_id"],
                                    f"{who} current {NAME[sid]}={v:.2f} outside [{lo:g},{hi:g}]"))
         avg = view["cat_avg"].get(sid)
