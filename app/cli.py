@@ -1133,8 +1133,29 @@ def _last_regular_season_period(conn) -> int | None:
     return row["p"] if row else None
 
 
+def _week_stamp(conn, period_id: int, ms, state: str) -> str:
+    """Cheap change-signal for a week's published block — rebuild only when it moves.
+    Keys off `wp_snapshots.computed_at` (frozen for settled weeks, 4-hourly for
+    future, per-tick for current), the `edited` flag (so a hand-smoothing edit forces
+    a rebuild), winners, and state. Deliberately NOT category_state.fetched_at: fetch
+    re-writes settled weeks' state every tick with identical values, which would
+    defeat the cache (see db.published_week_cache)."""
+    mids = [m["id"] for m in ms]
+    winners = "|".join((m["winner"] or "?") for m in ms)
+    if not mids:
+        return f"{state}|none|{winners}"
+    ph = ",".join("?" * len(mids))
+    r = conn.execute(
+        f"SELECT MAX(computed_at) c, MAX(edited) e FROM wp_snapshots WHERE matchup_id IN ({ph})",
+        mids).fetchone()
+    return f"{state}|{r['c']}|{r['e']}|{winners}"
+
+
 @cli.command()
-def publish() -> None:
+@click.option("--rebuild", is_flag=True,
+              help="Ignore the per-week block cache and rebuild every week (run "
+                   "daily to pick up rare late stat corrections to settled weeks).")
+def publish(rebuild: bool) -> None:
     """Write docs/data.json with one entry per remaining regular-season week."""
     from app import mlb  # local import — only publish needs date-window math
 
@@ -1183,20 +1204,30 @@ def publish() -> None:
         # dropdown so prior sims/graphs remain viewable. Whether a week is
         # "started" (has real scores) is data-driven: derived from its games'
         # statuses, not from the date or ESPN's current-period number.
+        # Per-week block cache: only the current week changes per fast tick (settled
+        # weeks are frozen; future weeks change only on the 4-hourly medium run), so
+        # reuse the cached block for any week whose change-stamp is unchanged instead
+        # of re-deriving it (a latest_category_state read per team). --rebuild bypasses.
+        cache = {} if rebuild else {
+            r["period_id"]: (r["stamp"], r["block_json"])
+            for r in conn.execute("SELECT period_id, stamp, block_json FROM published_week_cache")
+        }
+        fresh_blocks: dict[int, tuple[str, str]] = {}   # period_id -> (stamp, block_json), to upsert
         weeks_out = []
         for period_id in range(first, last_reg + 1):
             state = _week_state(conn, period_id)
-            started = state != "upcoming"
-            start, end = mlb.matchup_period_window(period_id)
             ms = conn.execute(
                 "SELECT * FROM matchups WHERE matchup_period_id=? ORDER BY id",
                 (period_id,),
             ).fetchall()
-            matchups_out = [
-                _matchup_block(conn, teams, m, started=started, live=(state == "live"))
-                for m in ms
-            ]
-            weeks_out.append({
+            stamp = _week_stamp(conn, period_id, ms, state)
+            hit = cache.get(period_id)
+            if hit is not None and hit[0] == stamp:
+                weeks_out.append(json.loads(hit[1]))
+                continue
+            started = state != "upcoming"
+            start, end = mlb.matchup_period_window(period_id)
+            week = {
                 "matchup_period_id": period_id,
                 "label": f"Week {period_id}",
                 "start": start.isoformat(),
@@ -1205,8 +1236,13 @@ def publish() -> None:
                 "state": state,
                 # Observed game-day windows for the chart's "Active" x-axis.
                 "active_intervals": _active_intervals(conn, period_id, now),
-                "matchups": matchups_out,
-            })
+                "matchups": [
+                    _matchup_block(conn, teams, m, started=started, live=(state == "live"))
+                    for m in ms
+                ],
+            }
+            weeks_out.append(week)
+            fresh_blocks[period_id] = (stamp, json.dumps(week, separators=(",", ":")))
 
         out = {
             "league": {
@@ -1230,9 +1266,18 @@ def publish() -> None:
         # fetched on every page load; pretty-printing ~doubled the payload, which
         # matters now that the live week carries per-point category history.
         out_path.write_text(json.dumps(out, separators=(",", ":")))
+        # Persist the per-week cache only after the write succeeds (a failed write
+        # must not leave the cache claiming a week is current when data.json isn't).
+        if fresh_blocks:
+            conn.executemany(
+                "INSERT OR REPLACE INTO published_week_cache (period_id, stamp, block_json) "
+                "VALUES (?,?,?)",
+                [(pid, stamp, bj) for pid, (stamp, bj) in fresh_blocks.items()])
+            conn.commit()
         click.echo(
             f"Wrote {out_path} ({out_path.stat().st_size} bytes) — "
-            f"{len(weeks_out)} weeks (periods {first}..{last_reg})"
+            f"{len(weeks_out)} weeks (periods {first}..{last_reg}); "
+            f"{len(fresh_blocks)} week(s) rebuilt, {len(weeks_out) - len(fresh_blocks)} cached"
         )
     finally:
         conn.close()
@@ -1478,8 +1523,9 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
     """
     home_team_id = m["home_team_id"]
     away_team_id = m["away_team_id"]
-    home_state = _latest_score_rows(conn, m["id"], home_team_id)
-    away_state = _latest_score_rows(conn, m["id"], away_team_id)
+    # Upcoming weeks emit null scores anyway — skip the category_state read for them.
+    home_state = _latest_score_rows(conn, m["id"], home_team_id) if started else {}
+    away_state = _latest_score_rows(conn, m["id"], away_team_id) if started else {}
     if started:
         if live:   # make the displayed rates match the projection's live view
             _fold_live_components(conn, home_state, away_state,
