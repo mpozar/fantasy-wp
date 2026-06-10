@@ -177,6 +177,27 @@ CREATE TABLE IF NOT EXISTS pitcher_final_lines (
 CREATE INDEX IF NOT EXISTS idx_pitcher_final_lines_date
     ON pitcher_final_lines (game_date);
 
+-- ── Per-reliever live appearance state (for in-game SVHD save/hold judging) ──
+-- A save/hold is determined by the conditions WHEN the reliever entered and
+-- exited — not the current score. `live_pitchers` is rewritten every tick and
+-- carries no run margin, so this persists each reliever's *entry* margin (the
+-- first tick we see him pitching) and *exit* margin (the first tick he's no
+-- longer pitching) across ticks. That lets `ingame.project_svhd` LOCK an earned
+-- hold from those conditions, instead of flickering off when the lead later
+-- grows past a save (a blowout) or a *later* reliever coughs it up — the bug
+-- behind the 2026-06-10 Melton case. Pruned with the game (see refresh-live).
+CREATE TABLE IF NOT EXISTS reliever_appearances (
+    game_pk      INTEGER NOT NULL,
+    mlbam_id     INTEGER NOT NULL,
+    name         TEXT,
+    pro_team_id  INTEGER,
+    entry_margin INTEGER,            -- team margin (runs − opp) the first tick seen pitching
+    exit_margin  INTEGER,            -- team margin the first tick seen exited (NULL while in)
+    entered_at   TEXT,
+    exited_at    TEXT,
+    PRIMARY KEY (game_pk, mlbam_id)
+);
+
 -- ── Live per-batter lines for the current week's games (live OPS components) ──
 -- One row per batter who has appeared, for every game in the live window (both
 -- in-progress and recently-Final, until ESPN's once-daily REST settle absorbs

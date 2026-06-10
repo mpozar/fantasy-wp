@@ -587,6 +587,34 @@ def _archive_final_lines(conn, lines, status_by_pk, date_by_pk, now) -> int:
     return n
 
 
+def _track_reliever_appearances(conn, lines, margin_by_game_team, now) -> None:
+    """Persist each reliever's entry/exit run-margin across ticks, so the in-game
+    SVHD model can judge a save/hold from the conditions WHEN HE PITCHED rather than
+    the live score (see db.reliever_appearances). Entry margin is recorded once — the
+    first tick we see him pitching (`is_last`); exit margin once — the first tick he's
+    no longer pitching. Starters (`games_started`) are skipped: they can't earn SV/HLD.
+    A reliever first seen already exited (entry tick missed) gets no row, and the
+    override falls back to the live margin (no regression)."""
+    for lp in lines:
+        if lp.get("games_started"):
+            continue
+        pk, tid = lp["game_pk"], lp["espn_team_id"]
+        margin = margin_by_game_team.get((pk, tid))
+        if margin is None:
+            continue
+        if lp.get("is_last"):
+            conn.execute(
+                "INSERT OR IGNORE INTO reliever_appearances "
+                "(game_pk, mlbam_id, name, pro_team_id, entry_margin, entered_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (pk, lp["mlbam_id"], lp["name"], tid, margin, now))
+        else:  # exited — stamp the exit margin once (first tick no longer pitching)
+            conn.execute(
+                "UPDATE reliever_appearances SET exit_margin=?, exited_at=? "
+                "WHERE game_pk=? AND mlbam_id=? AND exit_margin IS NULL",
+                (margin, now, pk, lp["mlbam_id"]))
+
+
 def _live_recon_block(since_date, hdec, adec):
     """Compact per-snapshot record of the live-component reconciliation, persisted in
     details_json (investigation telemetry). For QS/SVHD each decision carries
@@ -754,6 +782,18 @@ def refresh_live() -> None:
                 )
             # Durable archive of Final pitcher lines (survives the prune above).
             _archive_final_lines(conn, live_p, status_by_pk, date_by_pk, now)
+
+            # Track reliever entry/exit margins for the in-game SVHD model, then
+            # prune appearances for games that have aged out of the window.
+            margin_by_game_team = {
+                (g["game_pk"], g["espn_team_id"]):
+                    (g.get("team_runs") or 0) - (g.get("opponent_runs") or 0)
+                for g in games if g.get("team_runs") is not None}
+            _track_reliever_appearances(conn, live_p, margin_by_game_team, now)
+            appr_pks = {r[0] for r in conn.execute(
+                "SELECT DISTINCT game_pk FROM reliever_appearances")}
+            for pk in appr_pks - unsettled_pks:
+                conn.execute("DELETE FROM reliever_appearances WHERE game_pk=?", (pk,))
 
             # Daily lineup snapshots: first snapshot per (day, team, player) wins.
             for gd in lineup_dates:

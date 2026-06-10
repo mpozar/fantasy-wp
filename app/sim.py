@@ -1084,19 +1084,37 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
     svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
     appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
+    # A pitcher *starting* today can't earn a save or hold — skip the reliever
+    # override entirely (it's keyed off the fantasy RP role; an RP-classified spot
+    # starter would otherwise get a phantom SV/HLD). The QS path handles his start.
+    if live and live.get("games_started"):
+        return
     for game_pk, g in ip_games.items():
         factor = _rp_factor(g)
         if factor <= 0:
             continue
         base_share = svhd_rate * appearance_per_factor * factor   # rate-based share
         cur = budget.expected.get(STAT_SVHD, 0.0)
-        margin = _team_margin(g)
+        margin = _team_margin(g)   # current margin — used for the not-yet-pitched gate
         if live and live["game_pk"] == game_pk:
+            exited = not live["is_last"]
+            # Judge the save/hold from the conditions WHEN HE PITCHED, not the live
+            # score: a hold is earned by entering in a save situation and leaving with
+            # the lead — and stays earned if the lead is later padded (blowout) or a
+            # *later* reliever blows it. Use the locked entry/exit margins; fall back
+            # to the live margin only when they weren't captured (entry tick missed).
+            entry_m = live.get("entry_margin")
+            exit_m = live.get("exit_margin")
+            entered_ss = _is_save_situation(entry_m if entry_m is not None else margin)
+            if exited:
+                lead_intact = (exit_m if exit_m is not None else margin) > 0
+            else:
+                lead_intact = margin > 0   # still pitching — hasn't surrendered it yet
             state = ingame.RelieverState(
                 game_status="In Progress", appeared=True,
-                exited=not live["is_last"],
-                entered_save_situation=_is_save_situation(margin),
-                lead_intact=margin > 0,
+                exited=exited,
+                entered_save_situation=entered_ss,
+                lead_intact=lead_intact,
                 recorded_out=live["outs"] >= 1,
                 svhd_rate=svhd_rate,
             )
@@ -1715,8 +1733,11 @@ def load_live_pitchers(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
     rows = conn.execute(
         """
         SELECT lp.game_pk, lp.name, lp.pro_team_id, lp.is_last, lp.games_started,
-               lp.outs, lp.er, lp.k
+               lp.outs, lp.er, lp.k,
+               ra.entry_margin, ra.exit_margin
         FROM live_pitchers lp
+        LEFT JOIN reliever_appearances ra
+               ON ra.game_pk = lp.game_pk AND ra.mlbam_id = lp.mlbam_id
         WHERE EXISTS (SELECT 1 FROM team_schedule ts
                       WHERE ts.game_pk = lp.game_pk AND ts.game_status = 'In Progress')
         """

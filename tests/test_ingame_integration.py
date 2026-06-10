@@ -116,6 +116,74 @@ def test_svhd_not_entered_blowout_gated_down():
     assert base < ungated
 
 
+# ── save/hold judged from ENTRY/EXIT margins, not the live score (Bugs 1–3) ──
+
+def _rp_live(**kw):
+    base = dict(game_pk=999, name="Test Closer", is_last=0, games_started=0,
+                outs=3, er=0, k=2)
+    base.update(kw)
+    return {TEAM: {sim._norm_name(base["name"]): base}}
+
+
+def test_svhd_hold_locked_despite_later_blowout():
+    # Entered in a save situation (margin 2), exited still leading; the team THEN
+    # pads it to a blowout (live margin 8). The earned hold must stay 1.0 — padding a
+    # lead never un-earns it (Bug 1: was judged from the live margin → dropped to 0).
+    live = _rp_live(is_last=0, entry_margin=2, exit_margin=4)
+    svhd = _svhd([_reliever()], {TEAM: [_game(inning=9, probable=None,
+                                              team_runs=10, opp_runs=2)]}, live)
+    assert svhd == 1.0
+
+
+def test_svhd_hold_locked_when_later_reliever_blows_lead():
+    # Exited with the lead (exit_margin 2); a LATER reliever then loses it (live
+    # margin −1). A hold is credited even if the team later loses → must stay 1.0
+    # (Bug 2: lead_intact was read from the live margin → wrongly erased).
+    live = _rp_live(is_last=0, entry_margin=2, exit_margin=2)
+    svhd = _svhd([_reliever()], {TEAM: [_game(inning=9, probable=None,
+                                              team_runs=4, opp_runs=5)]}, live)
+    assert svhd == 1.0
+
+
+def test_svhd_not_credited_if_entered_outside_save_situation():
+    # Entered with a 6-run lead (not a save situation) → no hold, judged from the
+    # ENTRY margin even though he exited leading.
+    live = _rp_live(is_last=0, entry_margin=6, exit_margin=6)
+    svhd = _svhd([_reliever()], {TEAM: [_game(inning=9, probable=None,
+                                              team_runs=8, opp_runs=2)]}, live)
+    assert svhd == 0.0
+
+
+def test_svhd_not_credited_if_exited_trailing():
+    # Entered in a save spot but surrendered the lead before exiting (exit_margin −1).
+    live = _rp_live(is_last=0, entry_margin=2, exit_margin=-1)
+    svhd = _svhd([_reliever()], {TEAM: [_game(inning=9, probable=None,
+                                              team_runs=3, opp_runs=4)]}, live)
+    assert svhd == 0.0
+
+
+def test_svhd_spot_starter_skips_save_hold_override():
+    # The Melton case: an RP-classified pitcher making a SPOT START (games_started=1)
+    # must NOT get a phantom SV/HLD. Same exited-with-lead line: as a reliever it's a
+    # 1.0 hold; flip games_started and the override is skipped (no in-game credit).
+    g = {TEAM: [_game(inning=9, probable=None, team_runs=5, opp_runs=3)]}
+    as_reliever = _svhd([_reliever()], g,
+                        _rp_live(is_last=0, games_started=0, entry_margin=2, exit_margin=2))
+    as_starter = _svhd([_reliever()], g,
+                       _rp_live(is_last=0, games_started=1, outs=15, entry_margin=2, exit_margin=2))
+    assert as_reliever == 1.0
+    assert as_starter < as_reliever     # guard suppressed the phantom save/hold
+
+
+def test_svhd_falls_back_to_live_margin_without_appearance_record():
+    # No entry/exit captured (entry tick missed) → fall back to the live margin so
+    # behavior never regresses below today's. Live margin 2 = save spot, exited → 1.0.
+    live = _rp_live(is_last=0)   # no entry_margin/exit_margin keys
+    svhd = _svhd([_reliever()], {TEAM: [_game(inning=9, probable=None,
+                                              team_runs=3, opp_runs=1)]}, live)
+    assert svhd == 1.0
+
+
 # ── seam: a deep in-progress starter (units≈0) must keep his earned QS ──
 
 def test_deep_inprogress_starter_keeps_qs_credit():

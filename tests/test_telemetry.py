@@ -103,3 +103,44 @@ def test_became_final_at_stamps_on_insert_if_already_final():
     conn = _sched_db()
     _upsert(conn, "Final", "t5")
     assert _stamp(conn) == "t5"
+
+
+# ── reliever entry/exit margin tracking (for the in-game SVHD save/hold fix) ──
+
+def _ra_db():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE reliever_appearances (game_pk INT, mlbam_id INT, name TEXT,
+           pro_team_id INT, entry_margin INT, exit_margin INT, entered_at TEXT,
+           exited_at TEXT, PRIMARY KEY (game_pk, mlbam_id))"""
+    )
+    return conn
+
+def _rp(mlbam, is_last, gs=0, team=26):
+    return {"game_pk": 1, "mlbam_id": mlbam, "name": f"R{mlbam}", "espn_team_id": team,
+            "is_last": is_last, "games_started": gs, "outs": 3}
+
+def _row(conn):
+    return conn.execute("SELECT entry_margin, exit_margin FROM reliever_appearances").fetchone()
+
+def test_track_entry_recorded_once_then_exit_recorded_once():
+    conn = _ra_db()
+    cli._track_reliever_appearances(conn, [_rp(50, is_last=1)], {(1, 26): 2}, "t0")
+    assert tuple(_row(conn)) == (2, None)                      # entry stamped
+    cli._track_reliever_appearances(conn, [_rp(50, is_last=1)], {(1, 26): 5}, "t1")
+    assert _row(conn)["entry_margin"] == 2                     # entry NOT overwritten
+    cli._track_reliever_appearances(conn, [_rp(50, is_last=0)], {(1, 26): 8}, "t2")
+    assert tuple(_row(conn)) == (2, 8)                         # exit stamped (blowout margin)
+    cli._track_reliever_appearances(conn, [_rp(50, is_last=0)], {(1, 26): 9}, "t3")
+    assert _row(conn)["exit_margin"] == 8                      # exit NOT overwritten
+
+def test_track_skips_starters():
+    conn = _ra_db()
+    cli._track_reliever_appearances(conn, [_rp(60, is_last=1, gs=1)], {(1, 26): 2}, "t0")
+    assert conn.execute("SELECT COUNT(*) FROM reliever_appearances").fetchone()[0] == 0
+
+def test_track_skips_when_margin_unknown():
+    conn = _ra_db()
+    cli._track_reliever_appearances(conn, [_rp(50, is_last=1)], {}, "t0")   # no margin
+    assert conn.execute("SELECT COUNT(*) FROM reliever_appearances").fetchone()[0] == 0

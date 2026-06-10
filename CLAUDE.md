@@ -296,30 +296,28 @@ no-ops — behavior is identical to before. Tested in `tests/test_ingame.py`
 (model) and `tests/test_ingame_integration.py` (the build_budgets wiring on mock
 in-progress lines); `scripts/ingame_scenarios.py` prints the model over scenarios.
 
-**Caveats / follow-ups:** the SVHD "entered a save situation / blew it" check uses
-the *current* margin (`_is_save_situation` = leading by 1–3), not the score at
-entry — so an exited reliever or a lead that's changed since they pitched can be
-misjudged; the accurate version tracks entry score across ticks. Also still worth
-a one-time confirm that ESPN's live totals exclude in-progress QS/SVHD (the
-"banked at Final" assumption); if they don't, exited-while-live would double-count.
+**Save/hold judged from entry/exit margins (fixed 2026-06-10).** The SVHD model
+used to read `_is_save_situation` / `lead_intact` from the **current** live margin
+every tick, so an exited reliever's earned hold flickered — dropping to 0 the moment
+the lead grew past a save (a blowout) or a *later* reliever blew it, and only landing
+at Final via `_count_svhd`. Now `refresh-live` persists each reliever's **entry
+margin** (first tick seen pitching) and **exit margin** (first tick seen exited) in
+`reliever_appearances`, and `_override_rp_svhd` judges the save/hold from those —
+locked once he exits (insurance runs or a later blown lead can't move it). Falls back
+to the live margin only when the entry tick was missed (no regression). A reliever
+who *entered* outside a save situation, or exited trailing, still gets 0. Saves by a
+closer pitching the 9th are handled live as before. Still worth a one-time confirm
+that ESPN's live totals exclude in-progress QS/SVHD (the "banked at Final"
+assumption); if they don't, exited-while-live would double-count.
 
-**Known limitation — holds resolve at Final → a discrete WP jump (accepted, not fixed).**
-A consequence of the current-margin check above: a *hold* is frequently projected
-~0 for the whole game and only credited when the game finalizes (via the live
-`_count_svhd` reconstruction reading MLB's `holds` field). A reliever earns a hold
-by leaving *with the lead*, but the lead is often extended past 3 or blown after he
-exits, so at compute time `_is_save_situation(current_margin)` / `lead_intact` are
-False and the in-game model gives 0 — even though he's locked in for the hold. When
-the game ends, `_count_svhd` credits the +1, the reliever's SVHD category can flip,
-and the matchup WP steps up suddenly. Saves by a closer pitching the 9th in a 1–3
-lead are handled fine live; **holds** (middle relief, already exited, margin moved)
-are the weak spot. Worked examples 2026-06-07: Eduard Bazardo and Jose Ferrer each
-earned a hold in a 4–5 *loss* — current margin −1 → projected 0 all game → +1 at
-Final → a one-tick WP jump for the Bums (83%→98.5%) and a smaller one for Bear
-Nation (0.1%→1.25%). **Owner decision: leave it** — the Final-time reconstruction
-catches it within minutes; the proper fix (track each reliever's entry/exit margin
-across `refresh-live` ticks so the hold is credited at exit) isn't worth the
-complexity for a few-minute-early credit. Revisit only if it becomes a nuisance.
+**RP-classified spot starters skip the SVHD path (fixed 2026-06-10).** The in-game
+override is selected by fantasy role, so an RP-classified pitcher making a *spot
+start* (`games_started=1` in the live line) used to get a phantom save/hold (the
+2026-06-10 Troy Melton case: projected ~1.0 SVHD mid-game for a pitcher who was
+actually *starting*, then 0 when the game blew open — wrong at every step).
+`_override_rp_svhd` now returns early when the live line shows `games_started`, since
+a starter can't earn SV/HLD. (Mirror of the Roki Sasaki QS case — an RP genuinely
+starting; there we *keep* the QS, here we *drop* the impossible save/hold.)
 
 Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
 save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
