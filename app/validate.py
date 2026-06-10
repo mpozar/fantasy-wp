@@ -490,15 +490,30 @@ def _minutes_old(stamp_iso: str | None, now_iso: str | None) -> float | None:
 def check_pipeline_freshness(conn, now_iso: str | None) -> list[Finding]:
     """The crons can die silently (lock wedged, exception, macOS FDA revoked) and
     the site then serves stale data with no error. Flag when the newest snapshot or
-    fetch is too old to be live."""
+    fetch is too old to be live.
+
+    Scoped to the **current** week's matchups (the earliest *undecided* period — past
+    weeks are decided, future weeks aren't fetched). Those are the rows the crons
+    write every tick, so they're the freshness signal — and scoping lets the
+    `MAX(...)` use idx_category_state_recent (its leading column) instead of
+    full-scanning the 8.8M-row category_state table (~10s → ~10ms, the validate
+    hotspot). No undecided week ⇒ season over / nothing live ⇒ nothing to flag."""
     if not now_iso:
         return []
+    cur = [r["id"] for r in conn.execute(
+        "SELECT id FROM matchups WHERE matchup_period_id = "
+        "(SELECT MIN(matchup_period_id) FROM matchups WHERE winner='UNDECIDED' OR winner IS NULL)"
+    )]
+    if not cur:
+        return []
+    ph = ",".join("?" * len(cur))
     out = []
-    for label, code, q in (
-        ("wp_snapshot", "ANOM_STALE_SNAPSHOTS", "SELECT MAX(computed_at) m FROM wp_snapshots"),
-        ("category_state fetch", "ANOM_STALE_FETCH", "SELECT MAX(fetched_at) m FROM category_state"),
+    for label, code, col, table in (
+        ("wp_snapshot", "ANOM_STALE_SNAPSHOTS", "computed_at", "wp_snapshots"),
+        ("category_state fetch", "ANOM_STALE_FETCH", "fetched_at", "category_state"),
     ):
-        row = conn.execute(q).fetchone()
+        row = conn.execute(
+            f"SELECT MAX({col}) m FROM {table} WHERE matchup_id IN ({ph})", cur).fetchone()
         age = _minutes_old(row["m"] if row else None, now_iso)
         if age is not None and age > STALE_MINUTES:
             out.append(Finding(code, "warn", None,

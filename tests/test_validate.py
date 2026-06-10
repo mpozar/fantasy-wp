@@ -322,7 +322,15 @@ def _mem_db():
     conn.execute("CREATE TABLE wp_snapshots (matchup_id INT, computed_at TEXT, home_wp REAL, "
                  "away_wp REAL, model_version TEXT, details_json TEXT, "
                  "PRIMARY KEY (matchup_id, computed_at))")
+    conn.execute("CREATE TABLE matchups (id INT PRIMARY KEY, matchup_period_id INT, "
+                 "home_team_id INT, away_team_id INT, winner TEXT)")
     return conn
+
+def _put_matchup(conn, mid, period=10, winner="UNDECIDED"):
+    """Register a matchup so check_pipeline_freshness (scoped to the current week)
+    sees it as the live period."""
+    conn.execute("INSERT OR REPLACE INTO matchups VALUES (?,?,?,?,?)", (mid, period, 20, 21, winner))
+    conn.commit()
 
 def _put_state(conn, mid, tid, stats, at):
     for sid, sc in stats.items():
@@ -331,6 +339,7 @@ def _put_state(conn, mid, tid, stats, at):
 
 def test_pipeline_freshness_flags_stale():
     conn = _mem_db()
+    _put_matchup(conn, 1)   # current (undecided) week
     conn.execute("INSERT INTO wp_snapshots VALUES (1,?,0.5,0.5,'mc-v1','{}')",
                  ("2026-06-04T21:00:00+00:00",))
     _put_state(conn, 1, 20, {1: 30}, "2026-06-04T21:00:00+00:00")
@@ -339,9 +348,28 @@ def test_pipeline_freshness_flags_stale():
 
 def test_pipeline_freshness_quiet_when_fresh():
     conn = _mem_db()
+    _put_matchup(conn, 1)
     conn.execute("INSERT INTO wp_snapshots VALUES (1,?,0.5,0.5,'mc-v1','{}')",
                  ("2026-06-04T21:28:00+00:00",))
     _put_state(conn, 1, 20, {1: 30}, "2026-06-04T21:29:00+00:00")
+    assert v.check_pipeline_freshness(conn, "2026-06-04T21:30:00+00:00") == []
+
+def test_pipeline_freshness_scopes_to_current_week_not_future():
+    # Stale data lives on the CURRENT (earliest-undecided) week; a future undecided
+    # week with no category_state must not mask it (the MAX-vs-MIN-undecided bug).
+    conn = _mem_db()
+    _put_matchup(conn, 1, period=11, winner="UNDECIDED")   # current
+    _put_matchup(conn, 9, period=22, winner="UNDECIDED")   # far-future, no data
+    conn.execute("INSERT INTO wp_snapshots VALUES (1,?,0.5,0.5,'mc-v1','{}')",
+                 ("2026-06-04T21:00:00+00:00",))
+    _put_state(conn, 1, 20, {1: 30}, "2026-06-04T21:00:00+00:00")
+    f = v.check_pipeline_freshness(conn, "2026-06-04T21:30:00+00:00")
+    assert {x.code for x in f} == {"ANOM_STALE_SNAPSHOTS", "ANOM_STALE_FETCH"}
+
+def test_pipeline_freshness_quiet_when_season_over():
+    # All weeks decided → no current week → nothing to flag (don't false-alarm).
+    conn = _mem_db()
+    _put_matchup(conn, 1, period=11, winner="HOME")
     assert v.check_pipeline_freshness(conn, "2026-06-04T21:30:00+00:00") == []
 
 def test_pipeline_freshness_skipped_without_now():
