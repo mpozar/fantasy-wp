@@ -113,6 +113,14 @@ def _record_starts(conn, games: list[dict], now: str) -> int:
 @click.group()
 def cli() -> None:
     """fantasy-wp commands."""
+    # Ensure the schema matches the running code before any subcommand runs. With
+    # the editable install a code edit goes live on the next cron tick immediately,
+    # but migrations only ran on demand — so a schema-touching change could crash a
+    # tick that referenced a not-yet-created table/column (it did, 2026-06-10: the
+    # reliever_appearances rollout). This idempotent init (CREATE IF NOT EXISTS +
+    # guarded ALTERs, a few ms) closes that window so code and schema can't drift,
+    # even for a single tick.
+    db.init()
 
 
 @cli.command("init-db")

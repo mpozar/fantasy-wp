@@ -144,3 +144,26 @@ def test_track_skips_when_margin_unknown():
     conn = _ra_db()
     cli._track_reliever_appearances(conn, [_rp(50, is_last=1)], {}, "t0")   # no margin
     assert conn.execute("SELECT COUNT(*) FROM reliever_appearances").fetchone()[0] == 0
+
+
+# ── migration-drift safeguard: the CLI group ensures schema before any subcommand ──
+
+def test_cli_group_ensures_schema_before_subcommand(tmp_path, monkeypatch):
+    """A schema-touching code change must not crash a cron tick that runs before the
+    migration (the 2026-06-10 reliever_appearances window). The group callback runs
+    db.init() first, so a missing table is (re)created on any invocation."""
+    from pathlib import Path
+    from click.testing import CliRunner
+    from app import db
+    from app.cli import cli
+    dbfile = Path(tmp_path / "drift.db")
+    monkeypatch.setattr(db, "DB_PATH", dbfile)
+
+    def _has_table():
+        return sqlite3.connect(str(dbfile)).execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='reliever_appearances'"
+        ).fetchone()[0]
+
+    assert _has_table() == 0                      # fresh DB, no tables
+    CliRunner().invoke(cli, ["validate"])         # any subcommand → group callback inits
+    assert _has_table() == 1                      # schema ensured
