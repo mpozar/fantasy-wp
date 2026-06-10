@@ -5,6 +5,76 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-06-10 — in-game SVHD phantom save/hold (model bug, fixed; no data edit)
+
+**TL;DR.** The in-game SVHD model judged "entered a save situation / lead intact"
+from the game's **current** run margin every tick, and was routed purely by fantasy
+role — three bugs that made an earned hold flicker and gave starters phantom saves.
+Surfaced on **Troy Melton** (Scarlet Knights, m63, 2026-06-10): `exp_svhd` projected
+**1.0 at 02:30 → 0 at 02:40**, swinging the matchup ~12pp.
+
+**Root cause (three compounding bugs).**
+1. `entered_save_situation = _is_save_situation(current_margin)` — a hold earned by
+   entering in a 1–3 run save spot and exiting with the lead dropped to 0 the moment
+   the team **padded** the lead past 3 (a blowout). Padding a lead never un-earns it.
+2. `lead_intact = current_margin > 0` — if a **later** reliever blew the lead, the
+   already-exited reliever's hold was wrongly erased (a hold survives the team losing).
+3. The override is picked by fantasy role, with no `games_started` check — so an
+   RP-classified pitcher making a **spot start** (Melton: `games_started=1`, 5 IP, 4
+   ER, 0 SV/HLD) got a phantom save/hold he could never earn. (Surfaced via the new
+   `pitcher_final_lines` archive — the line would otherwise have been pruned.)
+Root: the model had no memory of each reliever's appearance; it re-derived the
+verdict from the current snapshot every tick.
+
+**Fix (commit `6be9cff`).** New `reliever_appearances` table; `refresh-live` persists
+each reliever's **entry margin** (first tick seen pitching) and **exit margin** (first
+tick seen exited). `_override_rp_svhd` judges the save/hold from those locked
+conditions — insurance runs or a later blown lead can't move it — falling back to the
+live margin only if the entry tick was missed. Skips entirely when the live line shows
+`games_started`. This is the proper fix for the previously-deferred "holds resolve at
+Final" limitation. Guarded by `tests/test_ingame_integration.py`.
+
+---
+
+## 2026-06-10 — migration-drift crash (ops, fixed; one missed tick)
+
+**TL;DR.** During the `reliever_appearances` rollout, the editable-install code went
+live on the 09:35 cron tick *before* the migration was applied → `refresh-live` died
+on "no such table: reliever_appearances", left a stale `.app.lock` (dead PID). The
+hardened `acquire_lock` would have stolen it; it was cleared manually and 09:40 ran
+clean. Net cost: one skipped 5-min tick. No data corrupted.
+
+**Fix (commit `4b3a4c7`).** The CLI group callback now runs `db.init()` before any
+subcommand (idempotent), so code and schema can't drift even for a single tick — new
+schema just needs to be in `db.SCHEMA`/the migration list, no separate apply step.
+See CLAUDE.md "Schema is ensured before every subcommand".
+
+---
+
+## 2026-06-08 — QS double-count → 100%→0% flip at the settle (model bug, fixed; no data edit)
+
+**TL;DR.** The live QS/SVHD reconstruction **added** the box-score count on top of the
+banked baseline. That's safe for the REST-only rate components but **wrong for QS/SVHD**
+— they're scored display cats the live DOM scrape banks the instant a game goes Final,
+well before the 7h settle boundary. So a Final game that was both scrape-banked *and*
+still inside the window was counted twice. On **m60 (That Bus vs Jo Mamas, week 10)**,
+deGrom's legit QS was scrape-banked (weekly 2→3) **and** re-added by `_count_qs` → sim
+QS **3→4 → That Bus 100%**; it reverted to the official 3 only when `now−7h` crossed
+midnight at **07:00** and aged deGrom's game out of the window → **100%→0%** (lost the
+4-4 tiebreaker on hits). The "settle revert" was the **window boundary**, not an ESPN
+correction. The final settled result (Jo Mamas) was correct; the 100% was the artifact.
+
+**Fix (commit `83ab98b`).** `reconcile_live_components` now uses
+`state[QS] = max(scraped_weekly, settled_floor + box_count)` for QS and SVHD (not
+additive). `settled_floor` (`sim.load_settled_floor`) is the running **MIN** of the
+scraped weekly count over the window-day — observation-driven (no settle-clock
+assumption; self-heals a downward correction). The `max` is fail-safe: never below the
+authoritative scrape (preserves the in-progress→Final gap-fill), never the
+double-count. Guarded by `INV_SITE_QS_OVERCREDIT` (independent recompute) +
+`ANOM_WP_RAIL_FLIP` (the near-0↔near-100 UX symptom), and `tests/test_live_components.py`.
+
+---
+
 ## 2026-06-06 — host-local `date.today()` lurch (model bug, fixed; no data edit)
 
 **TL;DR.** The hitter lineup optimizer (`_hitter_days_slotted`) floored slotted days

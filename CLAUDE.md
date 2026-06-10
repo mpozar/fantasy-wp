@@ -467,6 +467,22 @@ Three tiers, all hold a shared `.app.lock` (in `_common.sh`):
 
 The fast tier is the only one that publishes; medium/daily just update the DB and the next fast tick picks it up.
 
+### Schema is ensured before every subcommand (editable-install drift guard)
+
+The CLI group callback (`cli()` in `app/cli.py`) calls `db.init()` before *any*
+subcommand runs — idempotent `CREATE TABLE IF NOT EXISTS` + guarded `ALTER`s, a few
+ms. This exists because of the **editable install** (`.venv/bin/app` runs the
+working-tree source, so an `app/` edit goes live on the *next* cron tick
+immediately) while migrations historically ran only on demand: a schema-touching
+change could land code that referenced a table/column the DB didn't have yet, and
+crash the tick. That bit the 2026-06-10 `reliever_appearances` rollout (one
+`refresh-live` tick died on "no such table" before the migration was applied). With
+the group-level `db.init()`, code and schema can't drift even for a single tick — so
+**new tables/columns just need to be in `db.SCHEMA` / the migration list; no separate
+"apply the migration" step is required** before the edit goes live. (Don't remove the
+callback init; `tests/test_telemetry.py::test_cli_group_ensures_schema_before_subcommand`
+guards it.)
+
 ### Why some commands are slow
 
 - `compute --future` recomputes 78 matchups (13 weeks × 6) × 10k sims each. Takes ~3-5 min.
@@ -749,6 +765,11 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - Lockout periods (medium.sh holds the lock for 3-5 min every 4h, on `*/4` hour boundaries in local time) — fast.sh skips and pushes resume after. Big jumps often line up with the first fast.sh tick after medium.sh finishes.
    - 5-min boundary fast.sh fires every `*/5` minute. New live data lands every tick.
    - GitHub Pages rebuild lag — pushes appear ~30-90s later on the live site.
+6. **Investigation telemetry** (added 2026-06-10 — closes the gaps that made the deGrom/Melton digs slow):
+   - **`details_json.live_recon`** (per snapshot, live week) — the live-component reconciliation that fed *that* tick: per team, QS/SVHD `{scrape, floor, box, result}` and the rate-group verdicts + `since_date`. Answers "why is current QS=N this tick, and was it scrape, floor, or box?" without reverse-engineering from `category_wp`. A QS/SVHD `result` above `scrape` with `box=0` is a phantom (the bug `INV_SITE_QS_OVERCREDIT` guards).
+   - **`pitcher_final_lines`** table — write-once archive of every Final starter/reliever line (`outs/er/k/p_h/p_bb/sv/hld`, `games_started`, `final_at`), durable past the `live_pitchers` prune. The line that earned/missed a QS/SVHD credit, answerable offline (this is how the Melton spot-start surfaced).
+   - **`team_schedule.became_final_at`** — the first tick a game read Final (the credit boundary), instead of inferring it from `category_state` steps.
+   - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
 
@@ -763,9 +784,10 @@ time and the signatures that explain ~every swing fast:
    avg that jumps by exactly +1.0 = a discrete counting event was banked.**
    - **QS +1.0** → a starter completed a quality start (6 IP, ≤3 ER), credited at
      Final (or in-progress once he passes 18 outs). e.g. deGrom's 6 IP / 0 ER.
-   - **SVHD +1.0 right as a rostered reliever's game goes Final** → a save/hold
-     credited. Usually a *hold* that projected ~0 all game and only surfaces at
-     Final (see "holds resolve at Final" — cause #8 below). e.g. Bazardo, Ferrer.
+   - **SVHD +1.0 as a rostered reliever's situation resolves** → a save/hold
+     credited. Since the 2026-06-10 entry/exit-margin fix this is credited *live*
+     (once he exits with the lead), not deferred to Final, so the old all-game-0
+     →+1-at-Final flicker is largely gone (cause #8). e.g. Bazardo, Ferrer.
 
 2. **NEVER read "current" rates off raw `category_state` / `load_latest_state`.**
    `derive_ops`/`derive_era`/`derive_whip` on the raw banked state mixes
@@ -807,16 +829,18 @@ time and the signatures that explain ~every swing fast:
    raw `team_schedule` query — filter to the period's Mon–Sun window.
 
 8. **Owner-known benign behaviors (don't flag as bugs):** RP-classified pitchers
-   can carry a small QS (they spot-start); holds resolve at Final (cause #8); the
-   ~07:00 UTC daily settle step; sub-1pp tick-to-tick jitter is Monte Carlo noise.
+   can carry a small QS (they spot-start); the ~07:00 UTC daily settle step; sub-1pp
+   tick-to-tick jitter is Monte Carlo noise. (Holds used to "resolve at Final" here —
+   fixed 2026-06-10, now credited live from entry/exit margins.)
 9. **Attributing a *past* QS/SVHD:** `live_pitchers` is pruned once a game ages
    out of the unsettled window, so the exact box line that earned (or missed) a
    credit is gone after the fact. The write-once **`pitcher_final_lines`** archive
-   (`cli._record_final_lines`, captured the first tick a game reads Final — outs/
-   er/k/sv/hld + `final_at`) is the durable source — query it to answer "was it 17
-   or 18 outs / who got the hold" offline (it's how the 2026-06-07 deGrom
-   double-count was reconstructable). For hitters there's no archive yet; fall
-   back to fetching the MLB box score by date (as `/matchup-summary` does).
+   (`cli._archive_final_lines`, captured the first tick a game reads Final — outs/
+   er/k/p_h/p_bb/sv/hld + `games_started` + `final_at`) is the durable source —
+   query it to answer "was it 17 or 18 outs / who got the hold / was he the
+   starter" offline (it's how the Melton spot-start surfaced). For hitters there's
+   no archive yet; fall back to fetching the MLB box score by date (as
+   `/matchup-summary` does).
 
 ## Operations
 
@@ -1036,16 +1060,18 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Reliever leverage: an RP appearance in a save spot counts the same as one in a blowout
 - Off-days, platoon splits, weather, lineup card details — assumed away
 - Probable-pitcher matching is by name (rare misses on spelling variations)
-- **Spot starts by reliever-classified pitchers are missed.** SP-vs-RP is decided
-  by season ROS ratio (`GS/GP`), and only the SP branch reads probables — so a
-  reliever/swingman who draws a spot start (e.g. Kai-Wei Teng, GS 1 / GP 33,
-  probable on 2026-06-04) is modeled as relief appearances, not a start. The
-  probable IS in the data (the ESPN overlay catches it); the role gate just
-  ignores it. Can't be fixed by flipping him to SP — his per-start rates would be
-  `season_total / GS` (e.g. 70 K / 1 GS). Proper fix: honor announced probables
-  for any pitcher and estimate the start from per-out rates × a spot-start length
-  (~12-15 outs). Impact is modest (under-counts that day's outs/K, over-counts
-  SVHD, ~no QS either way); deferred until spot-starts come up often enough to matter.
+- **Spot starts by reliever-classified pitchers are partly missed (SVHD half now
+  fixed).** SP-vs-RP is decided by season ROS ratio (`GS/GP`), and only the SP
+  branch reads probables — so a reliever/swingman who draws a spot start (e.g.
+  Kai-Wei Teng GS 1 / GP 33; Troy Melton 2026-06-10) is modeled as relief
+  appearances, not a start, for the *projection*. The **phantom SVHD** that used to
+  give such a pitcher a save/hold he can't earn is now suppressed: the in-game SVHD
+  override skips any live line with `games_started` (2026-06-10). Still open: the
+  spot start's **outs/K aren't modeled** and its QS chance isn't either (he stays on
+  the RP path). Can't be fixed by flipping him to SP — per-start rates would be
+  `season_total / GS` (e.g. 70 K / 1 GS). Proper fix: honor announced probables for
+  any pitcher and estimate the start from per-out rates × a spot-start length
+  (~12-15 outs). Modest impact; deferred until spot-starts come up often enough.
 
 ## When the user asks about a WP swing
 
@@ -1061,12 +1087,13 @@ Read this file's "Investigating WP changes" section first. The most common cause
    component reconstruction (see that section) now smooths most of this by
    rebuilding components from box-scores during the slate; a residual step can
    remain if reconstruction was falling back (e.g. `ANOM_LINEUP_SNAPSHOT_MISSING`).
-8. **A reliever's hold crediting at game-end** — a hold projected ~0 all game
-   (the in-game model judges the save situation off the current margin, which has
-   moved since he pitched) then lands as +1 SVHD when the game finalizes, flipping
-   the SVHD category and stepping the WP up. Expected behavior — see the "holds
-   resolve at Final" limitation under in-game QS/SVHD. Tell-tale: the jump is
-   entirely in SVHD, projected SVHD rises by exactly 1.0, right as a rostered
-   reliever's game goes Final.
+8. **A reliever's save/hold resolving** — projected SVHD steps by ~1.0 when a
+   rostered reliever's outcome firms up. Since the 2026-06-10 fix this is judged
+   **live** from his entry/exit margins (`reliever_appearances`), so it's credited
+   when he exits with the lead — not deferred to Final, and it no longer flickers
+   off when the lead is later padded/blown. A residual one-tick effect can still
+   occur if the entry tick was missed (fallback to the live margin) or via the
+   `_count_svhd` Final reconciliation. Tell-tale: the jump is entirely in SVHD,
+   projected SVHD ±1.0, around a reliever entering/exiting a save situation.
 
 Always **compare the budgets before vs after** the transition. The "what changed" is usually obvious from the diff. For a swing isolated to ERA/WHIP/OPS/QS with the counting cats unchanged, suspect the component settle (cause 7).
