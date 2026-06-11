@@ -229,16 +229,37 @@ ER_VMR_BY_ROLE = {"SP": 1.60, "RP": 1.83}
 
 # ── name matching for probable pitchers ──
 
+# Generational suffixes dropped during name matching (one source carries them, the
+# other often doesn't): "Daniel Lynch IV" ⇄ "Daniel Lynch".
+_NAME_SUFFIXES = {"jr", "jnr", "sr", "snr", "ii", "iii", "iv", "v"}
+
+
 def _norm_name(s: str | None) -> str:
+    """Normalize a player name to a match key. There's no ESPN↔MLBAM player-id
+    crosswalk, so box-score lines are attributed to fantasy slots by this key — it
+    must collapse the spelling differences between the two feeds:
+
+      - **Diacritics:** MLB uses accents ("Cristopher Sánchez"), ESPN often doesn't.
+      - **Middle initials:** MLB may carry one the roster omits — "José A. Ferrer"
+        ⇄ "Jose Ferrer" (2026-06-09: this exact mismatch left Ferrer's relief line
+        unmatched, so the live ERA/WHIP reconstruction came up short of the scrape
+        and the rate guard rejected the whole side until the daily settle).
+      - **Suffixes:** "Daniel Lynch IV" ⇄ "Daniel Lynch".
+
+    The transform is applied to *both* sides, so it only ever adds correct matches;
+    it leaves first + last name intact (drops only single-letter *middle* tokens and
+    suffixes), so distinct players don't collapse together."""
     if not s:
         return ""
-    # Strip diacritics first so accented spellings match ASCII ones — MLB's
-    # probable-pitcher feed uses accents ("Cristopher Sánchez") while ESPN's
-    # roster names often don't ("Cristopher Sanchez"). Without this they fail
-    # to match and the SP loses credit for a confirmed start.
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    return "".join(c for c in s.lower() if c.isalnum())
+    toks = ["".join(c for c in t if c.isalnum()) for t in s.lower().split()]
+    toks = [t for t in toks if t and t not in _NAME_SUFFIXES]
+    # Drop single-letter *middle* tokens (middle initials); keep first + last so two
+    # players sharing a surname (e.g. "J.D. Martinez" vs "Nick Martinez") stay distinct.
+    if len(toks) > 2:
+        toks = [toks[0]] + [t for t in toks[1:-1] if len(t) > 1] + [toks[-1]]
+    return "".join(toks)
 
 
 # ── Samplers ──

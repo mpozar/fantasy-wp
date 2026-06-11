@@ -14,6 +14,35 @@ from datetime import datetime, timezone
 from app import mlb, sim
 
 
+# ───────────────────────── _norm_name matching ─────────────────────────
+
+def test_norm_name_drops_middle_initial():
+    # The 2026-06-09 José A. Ferrer case: MLB carries a middle initial the ESPN
+    # roster omits — must still match (or his line goes unmatched in reconstruction).
+    assert sim._norm_name("José A. Ferrer") == sim._norm_name("Jose Ferrer") == "joseferrer"
+
+def test_norm_name_drops_suffix():
+    assert sim._norm_name("Daniel Lynch IV") == sim._norm_name("Daniel Lynch") == "daniellynch"
+    assert sim._norm_name("Lourdes Gurriel Jr.") == sim._norm_name("Lourdes Gurriel")
+
+def test_norm_name_strips_diacritics():
+    assert sim._norm_name("Cristopher Sánchez") == sim._norm_name("Cristopher Sanchez")
+
+def test_norm_name_keeps_full_middle_name():
+    # only single-letter middle tokens are dropped, not real middle names
+    assert sim._norm_name("Hyun Jin Ryu") == "hyunjinryu"
+
+def test_norm_name_does_not_collapse_distinct_players():
+    # surname-sharing players must stay distinct — first name is preserved, and a
+    # multi-letter initials token ("J.D.") is not treated as a droppable middle init.
+    assert sim._norm_name("J.D. Martinez") != sim._norm_name("Nick Martinez")
+    assert sim._norm_name("J.D. Martinez") == "jdmartinez"
+
+def test_norm_name_plain_and_empty():
+    assert sim._norm_name("Gerrit Cole") == "gerritcole"
+    assert sim._norm_name(None) == "" and sim._norm_name("") == ""
+
+
 # ───────────────────────── parse_boxscore ─────────────────────────
 
 def _mlbam_team():
