@@ -1,0 +1,44 @@
+name: Deploy docs to GitHub Pages
+
+# Replaces the legacy "deploy from a branch" Pages builder, which has a soft limit
+# of ~10 builds/hour — and fast.sh pushes docs/data.json every 5 min (12/hour),
+# so ~2/hour were throttled with a `401 Requires authentication` on the deploy step
+# (the site still self-healed on the next success, but the runs were red). A custom
+# Actions workflow isn't subject to that limit. fast.sh only ever commits
+# docs/data.json, so the path filter means code commits don't trigger a deploy.
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["docs/**"]
+  workflow_dispatch:        # manual trigger for verification
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only the latest published snapshot matters, so cancel an in-flight deploy when a
+# newer 5-min tick lands — keeps rapid ticks from queueing up.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload docs/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "docs"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
