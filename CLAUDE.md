@@ -518,6 +518,58 @@ trap 'rm -f .app.lock' EXIT
 
 ## Live data freshness — DOM scraping with Playwright
 
+> ### The whole picture (read this first)
+>
+> We want a near-real-time win probability for live H2H matchups, but **no single
+> ESPN source gives fresh + complete + projectable data**, so the live-data layer is
+> a stack of compensations — each closes one gap, and each has a past incident that
+> motivated it. This is the map; the subsections below are the detail.
+>
+> **Three sources, three different lags:**
+>
+> | Source | Gives | Freshness |
+> |---|---|---|
+> | **DOM scrape** (`espn_scrape.py`) | the 10 **scored display cats** per team (incl. the *displayed* ERA/WHIP/OPS values) | ~live, but **only while games are in progress** |
+> | **ESPN REST** (`mMatchupScore`) | raw **rate components** (ER, OUTS, P_H, P_BB; AB, 2B, BB…) the scoreboard never shows | **settles ~once a day (~07:00 UTC)** |
+> | **MLB box scores** (`statsapi`) | per-pitcher/batter lines = the components, live | live, but matched to rosters **by name** |
+>
+> **Why rate cats are the hard case.** Counting cats (H/HR/R/SB/K) are scored values
+> the scrape reads and owns live. But **ERA/WHIP/OPS are *projected* from components**
+> (numerator + denominator) — and the scrape only sees the *displayed rate*, which
+> can't be projected forward (5.40 ERA over 5 IP vs 50 IP project differently). The
+> components are REST-only and settle-lagged. **Nearly every rate-cat surprise traces
+> back to this split.**
+>
+> **The compensation stack** (layer → what it fixes → where):
+> 1. **Split-source `category_state` + per-stat reads** — scrape owns the scored
+>    cats, REST writes only components, readers load latest *per (matchup,team,stat)*
+>    (never a global `MAX(fetched_at)`). *Fixes the stale-REST clobber (~20pp flip) &
+>    the idle-fetch scored-cat drop (2026-06-04). `db.latest_category_state`.*
+> 2. **Monotonicity write guard** — banked counting stats can't decrease; a lower
+>    read is a stale/partial source, rejected. *`cli._write_category_score`.*
+> 3. **Live component reconstruction** — rebuild rate components from MLB box scores
+>    during the slate, attributed to the day's lineup. *`sim.reconcile_live_components`.*
+>    - **Name match (`_norm_name`)** strips accents, **middle initials, suffixes** so
+>      MLB ⇄ ESPN spellings match. *Fixes unmatched relievers — "José A. Ferrer" ⇄
+>      "Jose Ferrer" (2026-06-09).*
+>    - **Rate guard (`_judge_group`)** — verdicts **`matched` / `closer` / `baseline`**:
+>      commit the reconstruction when it matches the scrape, *or* is at least closer
+>      to it than the stale baseline; keep the baseline only when it's genuinely
+>      closer/unverifiable. *Fixes the settle-bound ERA/WHIP & OPS swings (2026-06-09/11).*
+> 4. **In-progress QS/SVHD model (`ingame.py`)** — threshold/context stats; SVHD judged
+>    from **entry/exit margins**, spot-starters skip the SVHD path. *Fixes flickering
+>    holds / phantom saves (2026-06-10).*
+> 5. **Settle-window QS/SVHD credit** = `max(scraped, settled_floor + box)`, never
+>    additive. *Fixes the deGrom QS double-count → 100%→0% flip (2026-06-08).*
+>
+> **Debugging a wrong-looking projection — the telemetry names the layer:**
+> `details_json.live_recon` (per tick: scraped vs reconstructed vs baseline rate + the
+> `matched/closer/baseline` verdict), `pitcher_final_lines` (the durable box line
+> behind a credit), `team_schedule.became_final_at` (the credit boundary). And note
+> the cron runs on a laptop that **dark-wake-sleeps**: a ~1h tick gap dumps a slate's
+> worth of change onto one post-wake tick (often at the ~07:00 settle), so a drop can
+> *look* like one big step when it's really accumulated. Incidents: `INCIDENTS.md`.
+
 ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. The UI loads an initial REST snapshot then receives real-time updates via a **FastCast WebSocket** (`fastcast.semfs.engsvc.go.com`). The REST endpoint we use is updated by ESPN's backend on a slower aggregation cycle, so we can't get true real-time data from it.
 
 We work around this by **scraping the rendered DOM** with headless Chromium via Playwright. `app/espn_scrape.py` opens `fantasy.espn.com/baseball/league/scoreboard`, waits for tables + WebSocket settle, then reads cat-by-cat values straight from the matchup tables. `cli.fetch` overrides the REST `cumulativeScore.scoreByStat` values with the scraped ones for the current period. Falls back to REST data silently if the scrape errors.
@@ -585,16 +637,29 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   {13,14,15}**, batting lines a **hitter slot ({0–12,19})**; bench (16) / IL (17)
   never count. This is what correctly handles two-way players (Ohtani counts on
   the side he's slotted) and lineup changes.
-- **The guard (`sim.reconcile_live_components`, pure).** For each rate group
-  (pitching = ERA+WHIP over OUTS/ER/P_H/P_BB; OPS over AB/2B/3B/B_BB/HBP/SF —
-  `H`/`HR` stay at baseline since the scrape owns those scored cats live, so adding
-  a delta would double-count), reconstructed = ESPN baseline + summed unsettled
-  delta. We commit the reconstruction **only if** every derived rate is within
-  `LIVE_RATE_TOL` of the live *scraped* rate; otherwise we keep the stale-but-safe
-  ESPN baseline. The scraped rate is authoritative for current standings, so this
-  makes the whole thing fail-safe: a wrong attribution (lineup drift, name-match
-  miss) or a double-count simply fails the check and falls back — never produces a
-  number that disagrees with what ESPN shows.
+- **The guard (`_judge_group`, pure).** For each rate group (pitching = ERA+WHIP
+  over OUTS/ER/P_H/P_BB; OPS over AB/2B/3B/B_BB/HBP/SF — `H`/`HR` stay at baseline
+  since the scrape owns those scored cats live, so adding a delta would
+  double-count), reconstructed = ESPN baseline + summed unsettled delta. The
+  governing rule: **always move the current rate toward the live scraped rate, never
+  to a number further from it.** Three verdicts:
+  - **`matched`** — every derived rate within `LIVE_RATE_TOL` of the scrape → commit
+    (the confident case).
+  - **`closer`** — out of tolerance, but the reconstruction is *nearer the scrape*
+    than the stale REST baseline (summed abs error) → commit it anyway. An imperfect
+    reconstruction (a missing/partial box line) still beats a ~24h-stale baseline.
+    **This is the fix for the settle-bound swings** (2026-06-09 Bear Nation ERA/WHIP,
+    2026-06-11 WAR OPS): there the baseline was *further* from the scrape than the
+    reconstruction, so the old "reject → baseline" rule held the projection on a
+    badly-off number (ERA 3.76 vs ~4.5; OPS 0.95 vs ~0.86) until the 07:00 settle.
+  - **`baseline`** — no matched lines, no scraped rate to judge against, or the
+    baseline is already at least as close → keep the baseline.
+
+  The scraped rate is authoritative for current standings, so this stays fail-safe
+  (a wrong attribution that lands *further* from the scrape than baseline is still
+  rejected) while no longer discarding a good-enough reconstruction over a stale one.
+  The decision (verdict + scraped/reconstructed/baseline rates) is recorded in
+  `details_json.live_recon` for debugging.
 - **QS (counting credit, `_count_qs`).** QS is *not* a rate, so the rate-match guard
   doesn't apply. We count quality starts from **Final** starter lines whose pitcher
   was slotted in a pitching slot (QS = started + ≥`QS_OUTS` outs + ≤`QS_MAX_ER` ER,

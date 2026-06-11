@@ -5,6 +5,40 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-06-09 / 06-11 — settle-bound rate swings (ERA/WHIP, OPS) (model bug, fixed; no data edit)
+
+**TL;DR.** Two matchups dropped sharply on the first tick after a daily ~07:00 UTC
+settle, not during the games: **Bear Nation** (m62, 06-09→06-10) ERA/WHIP cratered
+(projected ERA 3.76→4.54, WHIP 1.15→1.39); **WAR** (m64, 06-11) OPS fell 0.95→0.81.
+In both, the live component reconstruction *had* the data hours earlier but it was
+being **rejected by the rate guard**, so the projection ran on the stale REST
+baseline until the settle. The `live_recon` telemetry showed `accepted: False` with
+the reconstruction actually *closer* to the scrape than the baseline.
+
+**Two compounding root causes.**
+1. **Name-match miss → incomplete reconstruction.** `_norm_name` stripped accents but
+   not middle initials/suffixes, so "José A. Ferrer" (MLB box) ≠ "Jose Ferrer" (ESPN
+   roster). Ferrer's relief line (1 IP, 2 ER) went unmatched, so the reconstructed
+   ERA came up short of ESPN's scrape. (Fixed `7769163`: `_norm_name` now drops
+   single-letter middle tokens + generational suffixes.)
+2. **All-or-nothing guard fell back to a *worse* number.** `_judge_group` committed
+   the reconstruction only if it matched the scrape within `LIVE_RATE_TOL`, else kept
+   the REST baseline — which was *further* from the scrape than the (imperfect)
+   reconstruction. So a single unmatched line sidelined the whole rate group onto a
+   ~24h-stale value until the settle. WAR's OPS showed the same shape on the hitting
+   side: a lagging AB denominator (66 banked vs 109 real, 32 H) inflated projected
+   OPS to 0.95 while the reconstruction (0.886, near the 0.864 scrape) was rejected.
+   (Fixed: `_judge_group` now has verdicts **`matched`/`closer`/`baseline`** — commit
+   the reconstruction when it matches *or is closer to the scrape than the baseline*.)
+
+**Aggravator.** The cron laptop dark-wake-sleeps, so the overnight tick gap dumped a
+whole slate's banked components onto one post-wake tick right at the ~07:00 settle —
+which is why the corrections *looked* like one discrete drop. (Telemetry: `live_recon`
+carries scraped/reconstructed/baseline + verdict; `pitcher_final_lines` retained
+Ferrer's line for the post-hoc attribution.)
+
+---
+
 ## 2026-06-10 — in-game SVHD phantom save/hold (model bug, fixed; no data edit)
 
 **TL;DR.** The in-game SVHD model judged "entered a save situation / lead intact"

@@ -447,24 +447,59 @@ def _count_svhd(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[i
 def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
                  components: tuple[int, ...], derivers: dict[int, callable],
                  scraped: dict[int, float], n_matched: int) -> dict:
-    """Commit `recon`'s `components` into `state` IFF every rate derived from
-    `recon` matches its live scraped value within tolerance — i.e. our component
-    reconstruction is provably consistent with what ESPN is showing live. On any
-    mismatch (or no live lines, or a missing scraped rate) leave `state` on the
-    ESPN baseline. Returns a decision record for logging/validation. Pure (aside
-    from mutating the passed-in `state`, which is a per-team working copy)."""
-    ok = n_matched > 0
+    """Decide whether to swap `recon`'s `components` into `state` (a per-team working
+    copy that starts on the ESPN **REST baseline**). The governing rule: always move
+    the current rate **toward the live scraped rate**, never to a number further from
+    it. The live scrape's displayed ERA/WHIP/OPS is the authoritative *current* value;
+    the box-score reconstruction's only job is to supply the components (numerator +
+    denominator) the sim needs to *project* it. Three verdicts:
+
+      - **`matched`** — every reconstructed rate is within `LIVE_RATE_TOL` of the
+        scrape → the reconstruction is provably consistent → commit it. Confident case.
+      - **`closer`** — a rate is *out* of tolerance, but the reconstruction is still
+        nearer the scrape than the stale REST baseline → commit it anyway. The REST
+        baseline lags ~a day; an imperfect reconstruction (a missing/partial box line,
+        e.g. an unmatched reliever) is the better estimate of the current rate, so we
+        don't fall back to a *worse* number. This is the fix for the settle-bound
+        ERA/WHIP & OPS swings — see INCIDENTS.md 2026-06-09/06-11.
+      - **`baseline`** — no matched lines, no scraped rate to judge against, or the
+        baseline is already at least as close → leave `state` on the baseline.
+
+    Returns a decision record (`verdict`, plus scraped/reconstructed/baseline rates
+    for telemetry). Pure aside from mutating `state`."""
+    if n_matched <= 0:
+        return {"group": name, "accepted": False, "verdict": "no_lines",
+                "matched_lines": n_matched, "rates": {}}
     rates: dict[int, dict] = {}
+    within_tol = True
+    have_scrape = False
+    recon_err = base_err = 0.0
     for stat_id, fn in derivers.items():
         scr = scraped.get(stat_id)
-        rec_rate = fn(recon)
-        rates[stat_id] = {"scraped": scr, "reconstructed": round(rec_rate, 4)}
-        if scr is None or abs(rec_rate - scr) > LIVE_RATE_TOL[stat_id]:
-            ok = False
-    if ok:
+        rec_rate, base_rate = fn(recon), fn(state)   # state == baseline (recon not committed yet)
+        rates[stat_id] = {"scraped": scr, "reconstructed": round(rec_rate, 4),
+                          "baseline": round(base_rate, 4)}
+        if scr is None:
+            within_tol = False        # can't validate this rate
+            continue
+        have_scrape = True
+        recon_err += abs(rec_rate - scr)
+        base_err += abs(base_rate - scr)
+        if abs(rec_rate - scr) > LIVE_RATE_TOL[stat_id]:
+            within_tol = False
+    if not have_scrape:
+        verdict = "no_scrape"
+    elif within_tol:
+        verdict = "matched"
+    elif recon_err < base_err:
+        verdict = "closer"            # reconstruction nearer the scrape than the stale baseline
+    else:
+        verdict = "baseline"
+    if verdict in ("matched", "closer"):
         for c in components:
             state[c] = recon[c]
-    return {"group": name, "accepted": ok, "matched_lines": n_matched, "rates": rates}
+    return {"group": name, "accepted": verdict in ("matched", "closer"),
+            "verdict": verdict, "matched_lines": n_matched, "rates": rates}
 
 
 def reconcile_live_components(

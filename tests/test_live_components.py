@@ -154,19 +154,38 @@ def test_pitching_accepted_when_rate_matches_scrape():
     assert state[sim.STAT_P_H] == 65 and state[sim.STAT_P_BB] == 28
 
 
-def test_pitching_rejected_falls_back_to_baseline():
-    baseline = {sim.STAT_OUTS: 60, sim.STAT_ER: 8,
+def test_pitching_keeps_baseline_when_baseline_closer():
+    # A reconstruction that lands FURTHER from the live scrape than the (stale)
+    # baseline is suspect (likely bad attribution) → keep the baseline.
+    baseline = {sim.STAT_OUTS: 60, sim.STAT_ER: 8,        # ERA 3.6, WHIP 3.25
                 sim.STAT_P_H: 45, sim.STAT_P_BB: 20}
-    lines = [_pitcher("Counted Ace", 30, 4, 20, 8)]
+    lines = [_pitcher("Counted Ace", 30, 8, 20, 8)]      # recon 90 outs/16 ER → ERA 4.8
     slots = {sim._norm_name("Counted Ace"): PITCH_SLOT}
-    # scraped ERA wildly different from reconstructed 3.6 → attribution suspect.
-    scraped = {sim.STAT_ERA: 6.0, sim.STAT_WHIP: 3.10, sim.STAT_OPS: None}
+    scraped = {sim.STAT_ERA: 3.5, sim.STAT_WHIP: 3.2, sim.STAT_OPS: None}  # baseline 3.6 closer than recon 4.8
     state, decisions = sim.reconcile_live_components(
         baseline, pitcher_lines=lines, batter_lines=[],
         slot_by_norm_name=slots, scraped=scraped)
     pit = next(d for d in decisions if d["group"] == "pitching")
-    assert pit["accepted"] is False
+    assert pit["verdict"] == "baseline" and pit["accepted"] is False
     assert state[sim.STAT_OUTS] == 60 and state[sim.STAT_ER] == 8  # unchanged
+
+
+def test_pitching_committed_when_closer_than_baseline():
+    # The settle-bound fix (Bear Nation / WAR): the reconstruction missed a line so
+    # it's outside tolerance, but it's still much nearer the live scrape than the
+    # stale REST baseline → commit it rather than fall back to the worse number.
+    baseline = {sim.STAT_OUTS: 30, sim.STAT_ER: 3,       # ERA 2.7 (stale, way low)
+                sim.STAT_P_H: 8, sim.STAT_P_BB: 2}
+    lines = [_pitcher("Counted Ace", 30, 6, 12, 4)]      # recon 60 outs/9 ER → ERA 4.05
+    slots = {sim._norm_name("Counted Ace"): PITCH_SLOT}
+    # scrape ERA 4.8 (truth, incl. a line the recon missed); recon 4.05 ≪ baseline 2.7 in distance.
+    scraped = {sim.STAT_ERA: 4.8, sim.STAT_WHIP: (20 + 6) * 3 / 60, sim.STAT_OPS: None}
+    state, decisions = sim.reconcile_live_components(
+        baseline, pitcher_lines=lines, batter_lines=[],
+        slot_by_norm_name=slots, scraped=scraped)
+    pit = next(d for d in decisions if d["group"] == "pitching")
+    assert pit["verdict"] == "closer" and pit["accepted"] is True
+    assert state[sim.STAT_OUTS] == 60 and state[sim.STAT_ER] == 9  # reconstruction committed
 
 
 def test_missing_scraped_rate_falls_back():
