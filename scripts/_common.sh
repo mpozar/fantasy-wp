@@ -8,20 +8,6 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export LANG="${LANG:-en_US.UTF-8}"
 export HOME="${HOME:-/Users/mpozar}"
 
-# Keep the Mac awake for the duration of this tick. The cron host is a laptop that
-# dark-wake-sleeps on battery, which has repeatedly thrashed ticks: compute throttled
-# ~7x on efficiency cores during a dark-wake (a 28s sim took 189s), mid-tick fetches
-# failed with DNS errors (network not up on wake), and whole slates got lumped onto
-# one post-wake tick. `caffeinate -ims` holds idle/disk/system-sleep assertions for
-# this script's lifetime, so a tick that started can't sleep/throttle under itself.
-# (Caveat: the `-s` system assertion is AC-only; with the lid closed on battery,
-# clamshell sleep can still win and skip a tick entirely — keep the host on AC for
-# full coverage.) Re-exec once under caffeinate; the env guard prevents recursion.
-if [ -z "${FWP_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
-    export FWP_CAFFEINATED=1
-    exec caffeinate -ims "$0" "$@"
-fi
-
 REPO="/Users/mpozar/git/fantasy-wp"
 LOGS="$REPO/logs"
 APP="$REPO/.venv/bin/app"
