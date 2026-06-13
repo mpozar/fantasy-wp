@@ -8,6 +8,22 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export LANG="${LANG:-en_US.UTF-8}"
 export HOME="${HOME:-/Users/mpozar}"
 
+# Keep the Mac awake for the duration of this tick — a running tick shouldn't sleep
+# or throttle under itself (dark-wake on battery had thrashed ticks: a 28s sim took
+# 189s; mid-tick fetches hit DNS errors). Re-exec once under caffeinate.
+#   *** Use ${ZSH_ARGZERO:-$0}, NOT $0. *** This file is *sourced*, and the tiers run
+#   under zsh (their shebang). In a sourced file under zsh, $0 is THIS file
+#   (_common.sh) — re-exec'ing that tried to execute the non-executable _common.sh,
+#   gave "Permission denied" (exit 126), and silently killed every cron tick (the
+#   2026-06-13 outage). ZSH_ARGZERO is the invoked script (fast.sh) under zsh; $0 is
+#   already correct under bash. Verified by running a tier cron-style (env -i, zsh).
+# The real lid-closed-on-AC fix is `sudo pmset -c disablesleep 1`; this is a backstop,
+# mainly for the battery case (where -s is a no-op but -i still helps a running tick).
+if [ -z "${FWP_CAFFEINATED:-}" ] && [ -x /usr/bin/caffeinate ]; then
+    export FWP_CAFFEINATED=1
+    exec /usr/bin/caffeinate -ims "${ZSH_ARGZERO:-$0}" "$@"
+fi
+
 REPO="/Users/mpozar/git/fantasy-wp"
 LOGS="$REPO/logs"
 APP="$REPO/.venv/bin/app"
