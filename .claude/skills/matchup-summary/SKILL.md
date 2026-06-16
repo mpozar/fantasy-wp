@@ -126,7 +126,11 @@ don't support.
    - **events** (acute plays — the markers): `{"at": <exact snapshot timestamp from
      the facts>, "label": "<Player> <CAT>" e.g. "Moreno HR", "side": "away"|"home"
      (the team it helped; away=orange, home=blue), "cat": "<CAT>", "wp_delta":
-     <+positive, that side's gain>}`. Keep ~3–6, the ones that matter. Mark only
+     <+positive **FRACTION 0–1**, that side's gain>}`. **Unit footgun (bit a real
+     publish):** `wp_delta` is a fraction, NOT percentage points — the chart renders
+     it as `Math.round(wp_delta*100)pp`, so an 18.6pp swing is `0.186`, not `18.6`
+     (which would display as "+1860pp"). The `--write` writer does NOT range-check
+     this. Keep ~3–6, the ones that matter. Mark only
      crisp, well-attributed high-swing *plays* — not gradual day-long slides (those
      belong in the prose; see the no-spans rule below).
    - **spans**: leave this `[]`. The trend bands are NOT used on the chart anymore
