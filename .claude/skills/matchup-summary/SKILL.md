@@ -230,3 +230,24 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
   - *Worked example:* m59's June-2 Bums barrage — the box showed 4 HR (Lopez, Olson,
     **Torres**, J-Rod) but the banked HR rose only **+3**: Torres was benched, so the
     counted homers were Lopez, Olson, J-Rod. The +3 scored delta is authoritative.
+- **Don't lead the result line with the final WP when it's ~100%.** Nearly every
+  decisive win finishes at 100% WP, so "**Result:** 100% WP · …" is noise on almost
+  every summary — drop it and lead with the hook. Quote a WP figure only when it's
+  genuinely *not* a near-lock (a true nailbiter that stayed live to the end), where
+  the number actually tells the reader something. [owner, 2026-06-16]
+- **No pipeline-internal jargon in the prose.** Words like "banked", "banked into
+  ERA", "banked counter", "the settle", "projection mover", "category_state" describe
+  how the model *computes*, not what happened on the field — they leak implementation
+  into a reader-facing recap. Write the baseball event instead: "Sasaki's 7-ER start
+  dragged the Bus's ERA up", NOT "Sasaki banked into their ERA". (These terms are fine
+  in *investigation* chat and CLAUDE.md — just not in the published write-up.) [owner, 2026-06-16]
+- **Be precise about the category split — don't mislabel counting vs rate.** The
+  pitching cats are **K and QS (counting)** plus **ERA and WHIP (rate)**; the hitting
+  cats are R/HR/H/SB (counting) plus OPS (rate); SVHD is its own. When you characterize
+  who-won-what, get the grouping right — e.g. don't write "lost every pitching *rate*
+  cat" when two of the conceded cats (K, QS) are counting stats. If a clean grouping is
+  awkward, just name the conceded cats outright ("conceded all four starter cats — K,
+  QS, ERA, WHIP"). [owner, 2026-06-16]
+- **Name the team in the hook, not just a generic phrase.** Prefer "a pitching sweep
+  Saturday sealed it for Jo Mamas" over "a pitching sweep sealed Saturday" — the recap
+  may be read on its own, so the subject should be explicit. [owner, 2026-06-16]

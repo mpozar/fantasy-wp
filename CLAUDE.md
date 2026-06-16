@@ -906,6 +906,53 @@ time and the signatures that explain ~every swing fast:
    starter" offline (it's how the Melton spot-start surfaced). For hitters there's
    no archive yet; fall back to fetching the MLB box score by date (as
    `/matchup-summary` does).
+10. **Use the canonical `stat_id` map — never hardcode it from memory.** The scored
+    cats are `1=H, 5=HR, 18=OPS, 20=R, 23=SB, 34=OUTS, 41=WHIP, 47=ERA, 48=K,
+    63=QS, 83=SVHD` (authoritative source: the dict at the top of `app/stats.py`;
+    `import app.stats` and read it, don't retype). The footguns that have actually
+    bitten: **OPS is 18, not 41** (41 is WHIP), and **QS is 63, not 53**. When
+    diffing `details_json.category_wp`, label rows from this map — a wrong label
+    caused a real misattribution (an *H* swing reported as an *R* swing). Sanity
+    check: if a "category" you've labeled R shows a projected avg ~52, it's H, not R
+    (weekly R tops out ~40); if a rate cat's `home_avg` is >1.0 it can't be OPS as
+    displayed (see #11).
+11. **`category_wp[].home_avg`/`away_avg` are trustworthy for counting cats but NOT
+    the displayed value for rate cats.** For OPS/ERA/WHIP the stored `avg` is an
+    internal/derived scale (OPS showed ~1.0–1.6, not ~.800) and won't match the
+    site or the `FINAL CATEGORIES` block. Use it for *direction/relative* movement
+    only; for an actual rate quote use the scraped value or `matchup_facts.py`'s
+    final-category output. The **win%** (`home_wins/n_sims`) is always reliable.
+12. **Reconcile against the *downsampled* site history before explaining "what the
+    user saw."** `publish` thins each matchup to `MAX_HISTORY_POINTS` (200) for
+    `data.json` (≈ one point every couple of hours over a season), so a brief
+    raw-DB blip (a 15–20 min dip across 3–4 five-minute snapshots) is invisible on
+    the live chart. Don't anchor a narrative on a transient `wp_snapshots` value the
+    user could never have seen — load the matchup's published `history` from
+    `docs/data.json` and check whether the point survived downsampling. (This burned
+    a "Knights were at 48%" explanation: 48% was a real 20-min raw dip that the site
+    never plotted; at the time the user referenced, the chart showed 64%.)
+13. **A banked lead's category win% is about *projected end-of-week* totals, so
+    "leading ⇒ favored" only holds for high-event cats.** A big counting lead is a
+    lock (a 9-run R lead sat ~99% all of the final day — correctly). But a slim lead
+    in a **low-event cat (SB, HR, QS, SVHD)** can sit *below* 50% if the opponent
+    *projects* to add more of that event — e.g. Knights led SB 6–5 entering the last
+    day yet were ~44% because the model projected the opponent (rostered better
+    base-stealers) to out-steal them; from a 6–6 live tie it was Opp 52% / tie 31% /
+    lead-holder 17%. So these slim-lead, low-event categories are the most
+    projection-sensitive and look far more volatile than a tidy 1–1 final suggests —
+    expect hard intraday whipsaws driven purely by *which side banks the next event
+    first*, not by a real change in who's "ahead." Don't call this a bug.
+
+> **Meta-lesson from a multi-swing investigation (parallel weekend matchups):** the
+> recurring live-week swing pattern is **overshoot-and-correct** — a side's WP drops
+> (or spikes) hard as the *opponent's* offense banks counters live during a
+> Fri/Sat-night slate, then reverts as those games go Final and the inflated
+> remaining-projection mean-reverts. A within-night dip-then-recover with no roster/
+> probable change is almost always this, concentrated in the offensive cats
+> (H/HR/R/OPS). Confirm by diffing the banked `category_state` deltas for the
+> *opponent* across the window (timestamped), not just the WP curve. And: timestamps
+> are UTC; the owner reasons in local time — in summer that's **CEST = UTC+2** (he
+> says "CET" but means CEST in June), so convert before quoting "8:15 PM".
 
 ## Operations
 
