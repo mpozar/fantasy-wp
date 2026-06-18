@@ -738,8 +738,10 @@ function render(data) {
       const next = btn.dataset.scope;
       if (next === chartScope) return;
       chartScope = next;
-      // renderWeek (via rerenderPreservingPanels) rebuilds the scope buttons with
-      // the active class derived from chartScope, so no manual toggle is needed.
+      // rerenderPreservingPanels re-renders only #matchups (the charts), not the
+      // #toolbar where these buttons live, so move the selected state here.
+      document.querySelectorAll(".scope-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.scope === next));
       rerenderPreservingPanels();
     });
   });
