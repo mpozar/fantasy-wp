@@ -1387,7 +1387,7 @@ def _active_intervals(conn, period_id: int, now: str) -> list[dict]:
         """,
         (period_id,),
     ).fetchall()
-    return [
+    ivs = [
         {
             "date": r["game_date"],
             "start": r["active_start"],
@@ -1395,6 +1395,26 @@ def _active_intervals(conn, period_id: int, now: str) -> list[dict]:
         }
         for r in rows
     ]
+    return _clamp_active_intervals(ivs)
+
+
+def _clamp_active_intervals(ivs: list[dict]) -> list[dict]:
+    """Make consecutive game-day windows disjoint by clamping each day's `end`
+    to no later than the next day's `start`.
+
+    A game that finalizes very late (e.g. a suspended game that resumes the next
+    day) can leave `active_end` ~a day long, so the window overlaps the next
+    day's window. The "Active" x-axis assigns each point to the *first* interval
+    containing it (app.js), so an overlap steals the next day's early points and
+    renders the next segment's lead-in as a blank horizontal gap. Clamping keeps
+    the segments ordered and non-overlapping (input is ordered by start). `end`
+    is never pushed below its own `start` (app.js floors duration at 1 anyway).
+    """
+    for i in range(len(ivs) - 1):
+        nxt_start = ivs[i + 1]["start"]
+        if ivs[i]["end"] > nxt_start >= ivs[i]["start"]:
+            ivs[i]["end"] = nxt_start
+    return ivs
 
 
 # Display decimals for the derived rate cats (deriver routing lives in
