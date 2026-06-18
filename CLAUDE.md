@@ -322,12 +322,19 @@ starting; there we *keep* the QS, here we *drop* the impossible save/hold.)
 Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
 save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
 in-game QS path on two live starters (a cruising 0-ER start projected ~0.82 and
-fell as runs scored). One latent quirk surfaced: `game_script_gate(margin, inning)`
-returned **1.0 for a −5 margin** (a 5-run *deficit*). It's harmless today because a
-reliever who has *entered* with no lead short-circuits to 0 before the gate — but
-on the *not-yet-entered* path the gate apparently doesn't damp large deficits, so a
-rostered reliever projected into a blowout-loss game he hasn't entered could get
-undeserved SVHD credit. Worth a look when revisiting the SVHD model.
+fell as runs scored). One latent quirk remains in `game_script_gate(margin, inning)`,
+the gate on the *not-yet-entered* SVHD path (a reliever who has *entered* with no
+lead already short-circuits to 0 before the gate, so this only touches the
+not-yet-pitched case). **Late** deficits/blowouts are damped — `margin ≤ −4 → 0.1`,
+`|margin| ≥ 6 → 0.3` — but `inning < 6` returns **1.0 unconditionally**, so a
+rostered reliever in an *early* blowout-loss game he hasn't entered (down 8–0 in the
+4th) still gets his full per-game season-rate SVHD share. Bounded (~0.1–0.3 SVHD/game,
+innings 1–5 only) and self-healing: the margin gate engages from the 6th and the
+entry/exit-margin logic takes over once he pitches. The early branch is *deliberately*
+1.0 ("too early to tell" — early scores are noisy and comebacks happen), so the fix
+isn't another hard threshold but a softer early-deficit discount (or a continuous
+gate); worth measuring real save-situation probability vs. (margin, inning) before
+tuning, since the docstring rightly calls this the fuzziest piece.
 
 ### Variance / overdispersion
 
