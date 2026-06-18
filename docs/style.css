@@ -6,6 +6,10 @@
   --line: #e5e7eb;
   --bat: #e8f1ff;
   --pit: #fff1e6;
+  /* The two accent colors: blue = home / batting / hitter, orange = away /
+     pitching / SP (one shared palette across the chart, tables, and pills). */
+  --home: #234c93;
+  --away: #a25617;
   --win-bg: #e6f6e6;
   --win-fg: #1f7a36;
   --loss-fg: #b22a2a;
@@ -201,8 +205,8 @@ col.c-pit    { background: rgba(255,241,230,.5); }
   text-align: center;
   padding: .55rem 0 .35rem;
 }
-.group-row .g-batting  { background: var(--bat);  color: #234c93; }
-.group-row .g-pitching { background: var(--pit);  color: #a25617; }
+.group-row .g-batting  { background: var(--bat);  color: var(--home); }
+.group-row .g-pitching { background: var(--pit);  color: var(--away); }
 .group-row .spacer { background: transparent; }
 
 .cat-row th {
@@ -373,9 +377,9 @@ ol.contrib .role {
   text-transform: uppercase;
   align-self: center;
 }
-ol.contrib .role-SP { background: #ffe9d4; color: #a25617; }
+ol.contrib .role-SP { background: #ffe9d4; color: var(--away); }
 ol.contrib .role-RP { background: #ffd8d8; color: #a82c2c; }
-ol.contrib .role-HIT { background: #dceaff; color: #234c93; }
+ol.contrib .role-HIT { background: #dceaff; color: var(--home); }
 
 ol.contrib .m {
   font-variant-numeric: tabular-nums;
@@ -526,8 +530,8 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   stroke-width: 1.5;
 }
 .hover-dot { stroke-width: 2; fill: #fff; }
-.hover-dot.home { stroke: #234c93; }
-.hover-dot.away { stroke: #a25617; }
+.hover-dot.home { stroke: var(--home); }
+.hover-dot.away { stroke: var(--away); }
 .hover-rect {
   fill: transparent;
   cursor: pointer;
@@ -591,8 +595,8 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   height: .6em;
   border-radius: 50%;
 }
-.chart-tooltip .tt-swatch.home { background: #234c93; }
-.chart-tooltip .tt-swatch.away { background: #a25617; }
+.chart-tooltip .tt-swatch.home { background: var(--home); }
+.chart-tooltip .tt-swatch.away { background: var(--away); }
 .wp-chart .grid {
   stroke: var(--line);
   stroke-width: 1;
@@ -629,21 +633,21 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 /* faint background layer (bands + event guide-lines) — never intercepts pointer */
 .wp-chart .annot-bg { pointer-events: none; }
 .wp-chart .annot-span { opacity: 0.09; }
-.wp-chart .annot-span.up   { fill: #a25617; }   /* away gained ground */
-.wp-chart .annot-span.down { fill: #234c93; }   /* home gained ground */
+.wp-chart .annot-span.up   { fill: var(--away); }   /* away gained ground */
+.wp-chart .annot-span.down { fill: var(--home); }   /* home gained ground */
 .wp-chart .annot-vline { stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.4; }
-.wp-chart .annot-vline.away { stroke: #a25617; }
-.wp-chart .annot-vline.home { stroke: #234c93; }
+.wp-chart .annot-vline.away { stroke: var(--away); }
+.wp-chart .annot-vline.home { stroke: var(--home); }
 /* interactive top layer: event triangles (top edge) + span handles (bottom) */
 .wp-chart .annot-hit { cursor: pointer; }
 .wp-chart .annot-hit-area { fill: transparent; pointer-events: all; }
 .wp-chart .annot-tri, .wp-chart .annot-span-bar { pointer-events: none; }
-.wp-chart .annot-event.away .annot-tri { fill: #a25617; }
-.wp-chart .annot-event.home .annot-tri { fill: #234c93; }
+.wp-chart .annot-event.away .annot-tri { fill: var(--away); }
+.wp-chart .annot-event.home .annot-tri { fill: var(--home); }
 .wp-chart .annot-hit:hover .annot-tri { stroke: #1a1f2e; stroke-width: 1; }
 .wp-chart .annot-span-bar { opacity: 0.85; }
-.wp-chart .annot-span-bar.up { fill: #a25617; }
-.wp-chart .annot-span-bar.down { fill: #234c93; }
+.wp-chart .annot-span-bar.up { fill: var(--away); }
+.wp-chart .annot-span-bar.down { fill: var(--home); }
 .chart-tooltip .tt-annot { font-weight: 500; white-space: nowrap; }
 
 /* ── Weekly write-up (Details) ── */
@@ -669,12 +673,12 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 .wp-chart polyline.home,
 .wp-chart .dot.home {
   fill: none;
-  stroke: #234c93;
+  stroke: var(--home);
 }
 .wp-chart polyline.away,
 .wp-chart .dot.away {
   fill: none;
-  stroke: #a25617;
+  stroke: var(--away);
 }
 .wp-chart polyline {
   stroke-width: 2;

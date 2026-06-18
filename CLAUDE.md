@@ -228,7 +228,7 @@ projection at 00:00 CEST — the midnight WP lurch in `INCIDENTS.md`.) Regressio
 
 **Real return dates from ESPN.** `refresh-rosters` pulls ESPN's public injuries feed (`espn_public.fetch_injuries`, excludes Day-To-Day) into the `player_injuries` table; `load_team_roster` attaches each rostered player's `return_date` as `injury_return_override`. That overrides the fixed-days heuristic above with an actual estimated activation date — and also catches IL moves/activations the fantasy `injury_status` hasn't reflected yet (e.g. status `ACTIVE` but ESPN has them out until tomorrow → benched until then). The heuristic remains the fallback when ESPN has no entry. Far-future return dates (e.g. a 60-day IL returning in September) naturally exclude the player from the current week.
 
-The fallback estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_hitter_remaining_units`, `_rp_remaining_units`, and the hitter optimizer.
+The fallback estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_rp_remaining_units`, and the hitter optimizer.
 
 IL slot (17) is also a hard filter — manager-stashed players in IL slot stay excluded even if their status is "ACTIVE". BE slot (16) is included for pitchers (managers cycle SPs and RPs through bench day-to-day); hitters in BE go through the optimizer.
 

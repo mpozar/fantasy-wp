@@ -8,6 +8,13 @@ async function load() {
 // bindChartHovers (pixel-space hover mapping) so they can't drift apart.
 const CHART_VIEWBOX_W = 600;
 
+// "Mon 3:05 PM" — used for the chart x-axis labels and the hover tooltip.
+const fmtWeekdayTime = (iso) => {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+         d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+};
+
 function fmtStat(statId, val) {
   if (val == null) return "—";
   if (statId === 18) return val.toFixed(4).replace(/^0\./, ".");
@@ -157,14 +164,9 @@ function renderChart(history, currentModel, week, scope, ann) {
   ).join("");
 
   // X-axis labels: first + last timestamp
-  const fmtT = (iso) => {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
-           d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  };
   const xLabels = `
-    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtT(pts[0].computed_at)}</text>
-    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtT(pts[pts.length - 1].computed_at)}</text>`;
+    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtWeekdayTime(pts[0].computed_at)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(pts[pts.length - 1].computed_at)}</text>`;
 
   // Hover targets — one invisible vertical strip per data point.
   const stripHalfW = pts.length > 1
@@ -265,10 +267,7 @@ function bindChartHovers(root) {
     });
     wrap.querySelectorAll(".hover-point").forEach((pt) => {
       pt.addEventListener("mouseenter", () => {
-        const time = new Date(pt.dataset.time);
-        const timeStr =
-          time.toLocaleDateString(undefined, { weekday: "short" }) + " " +
-          time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        const timeStr = fmtWeekdayTime(pt.dataset.time);
         const homePct = (parseFloat(pt.dataset.home) * 100).toFixed(1);
         const awayPct = (parseFloat(pt.dataset.away) * 100).toFixed(1);
         tooltip.innerHTML = `

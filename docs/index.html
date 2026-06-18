@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>Quintonia Baseball — Win Probability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css?v=18">
+  <link rel="stylesheet" href="style.css?v=19">
   <!-- GoatCounter: privacy-friendly, anonymous visit counts (no cookies/PII). Dashboard: https://mpozar.goatcounter.com -->
   <script data-goatcounter="https://mpozar.goatcounter.com/count"
           async src="//gc.zgo.at/count.js"></script>
@@ -34,7 +34,11 @@
       <li>How many games each MLB team has left in the matchup week.</li>
       <li>Probable pitchers for each remaining game — so a stud SP with
         one start this week counts very differently from a stud SP with
-        two starts.</li>
+        two starts. For games no pitcher has been announced for yet, the
+        model estimates whether each starter's next turn in the rotation
+        falls inside the week (and treats the count as uncertain), so a
+        likely second start isn't missed just because MLB hasn't posted
+        the probable.</li>
     </ul>
     <p>
       Rate stats (OPS, ERA, WHIP) are always rebuilt from their underlying
@@ -68,6 +72,17 @@
       Games not yet started are projected as full games. Games that have
       ended drop out entirely — their actual stats are already in the
       live totals.
+    </p>
+    <p>
+      Two pitching categories are handled specially while a game is live:
+      <strong>quality starts</strong> and <strong>saves + holds</strong>
+      aren't simply time-scaled, because they're all-or-nothing outcomes
+      that hinge on context, not steady accumulation. A quality start
+      needs 6+ innings with 3 or fewer earned runs — so a starter cruising
+      through 5 scoreless projects <em>up</em>, while one already charged 5
+      runs projects to zero. A save or hold only happens in a close,
+      winnable game late, so the model weighs the score and inning rather
+      than just how much time is left.
     </p>
 
     <h3>What it doesn't account for</h3>
@@ -116,6 +131,6 @@
     </p>
   </section>
   <main id="matchups"></main>
-  <script src="app.js?v=26"></script>
+  <script src="app.js?v=27"></script>
 </body>
 </html>

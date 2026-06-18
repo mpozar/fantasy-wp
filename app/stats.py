@@ -16,6 +16,10 @@ STAT_NAMES = {
 
 REVERSED_STATS = {41, 47}
 
+# Rate categories (derived ratios, not cumulative counters): OPS, ERA, WHIP.
+# Superset of REVERSED_STATS (OPS is higher-is-better, so not reversed).
+RATE_STATS = (18, 47, 41)
+
 # ESPN scoreboard column order
 BATTING_STAT_IDS = [1, 20, 5, 23, 18]      # H, R, HR, SB, OPS
 PITCHING_STAT_IDS = [48, 63, 47, 41, 83]   # K, QS, ERA, WHIP, SVHD

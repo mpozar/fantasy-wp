@@ -19,7 +19,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from app import LEAGUE_ID
-from app.stats import is_reversed
+from app.stats import BATTING_STAT_IDS, PITCHING_STAT_IDS, is_reversed
 
 # Persistent Chromium profile that's been pre-authenticated by
 # scripts/espn_auth_setup.py. The cron-driven scraper launches against this
@@ -29,8 +29,9 @@ REPO = Path(__file__).resolve().parent.parent
 PROFILE_DIR = REPO / ".playwright_profile"
 
 # Column order in ESPN's scoreboard matchup table — the th cells are
-# H R HR SB OPS K QS ERA WHIP SVHD. Maps directly to our stat_ids.
-COLUMN_STAT_IDS = [1, 20, 5, 23, 18, 48, 63, 47, 41, 83]
+# H R HR SB OPS K QS ERA WHIP SVHD, which is exactly the canonical batting+
+# pitching display order from app.stats (kept single-sourced so they can't drift).
+COLUMN_STAT_IDS = BATTING_STAT_IDS + PITCHING_STAT_IDS
 
 
 def _parse_score(s: str, stat_id: int) -> float | None:

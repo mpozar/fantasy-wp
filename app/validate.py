@@ -41,13 +41,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from app import db, sim
+from app import db, sim, stats
 
 # League category stat ids, split by kind.
 _COUNTING = [1, 5, 20, 23, 48, 63, 83]   # H, HR, R, SB, K, QS, SVHD (cumulative)
-_RATES = [18, 47, 41]                     # OPS, ERA, WHIP (ratios)
-NAME = {1: "H", 5: "HR", 20: "R", 23: "SB", 48: "K", 63: "QS", 83: "SVHD",
-        18: "OPS", 47: "ERA", 41: "WHIP"}
+_RATES = list(stats.RATE_STATS)           # OPS, ERA, WHIP (ratios) — canonical
+NAME = stats.STAT_NAMES                    # canonical stat_id -> name (single source)
 
 # Cats whose *displayed* value publish derives from the live box-score
 # reconstruction (cli._fold_live_components → _apply_derived_rates / _count_qs etc.),
@@ -762,7 +761,7 @@ def _load_state_prev(conn, matchup_id: int, team_id: int) -> dict[int, float]:
     return {sid: v["score"] for sid, v in
             db.latest_category_state(conn, matchup_id, team_id, rank=2).items()}
 
-_FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
+_FINAL_GAME_STATES = sim.FINAL_GAME_STATES
 
 
 def _side_remaining(conn, period_id: int, team_id: int, sched: dict) -> tuple[int, int]:

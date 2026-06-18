@@ -207,8 +207,9 @@ REST_DAY_WEIGHTS = {5: 0.340, 6: 0.544, 7: 0.101, 8: 0.014}
 # A SP gets at most ~2 starts in a 7-day scoring period.
 MAX_EXTRA_STARTS = 2
 
-# MLB statsapi detailedState values that mean a game is over.
-_GAME_FINISHED = {"Final", "Game Over", "Completed Early"}
+# MLB statsapi detailedState values that mean a game is over. Canonical set —
+# cli.py and validate.py alias this rather than re-declaring the literal.
+FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
 
 # Cap on per-appearance SV+HLD rate. The ROS SVHD value is derived from the
 # player's actual season-to-date rate (with a fallback to ESPN's full-season
@@ -700,14 +701,6 @@ def _game_after_return(g: dict, return_date: date | None) -> bool:
         return True
 
 
-def _hitter_remaining_units(team_id: int,
-                            schedule_by_team: dict[int, list[dict]],
-                            return_date: date | None = None) -> float:
-    return sum(_hitter_factor(g)
-               for g in schedule_by_team.get(team_id, [])
-               if _game_after_return(g, return_date))
-
-
 def _rp_remaining_units(team_id: int,
                         schedule_by_team: dict[int, list[dict]],
                         return_date: date | None = None) -> float:
@@ -811,7 +804,7 @@ def _cadence_extra_start_dist(player_name: str, team_id: int,
     for g in sched:
         if g.get("probable_pitcher_name"):
             continue
-        if g.get("game_status") in _GAME_FINISHED:
+        if g.get("game_status") in FINAL_GAME_STATES:
             continue
         if g.get("current_inning") is not None:
             continue
@@ -1217,7 +1210,6 @@ def build_budgets(roster: list[dict],
     last_start_by_pitcher = last_start_by_pitcher or {}
     as_of = as_of or _utc_today()
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts, as_of)
-    today = as_of
 
     out: list[Budget] = []
     for p in roster:
@@ -1228,8 +1220,8 @@ def build_budgets(roster: list[dict],
         team_id = p["pro_team_id"]
         # Estimated return for IL'd players — filters games before they
         # can play. None when player is healthy now (no filter).
-        ret = _est_return_date(p, today)
-        if ret is not None and ret <= today:
+        ret = _est_return_date(p, as_of)
+        if ret is not None and ret <= as_of:
             ret = None  # healthy → no game filter needed
 
         # Estimated (un-probabled) SP starts for this player. Subtracted from a

@@ -31,6 +31,9 @@ _CATEGORY_STATE_UPSERT = (
     "(matchup_id, team_id, stat_id, score, result, fetched_at) VALUES (?,?,?,?,?,?)"
 )
 
+# MLB detailedState values that mean a game is over (canonical set lives in sim).
+_FINAL_GAME_STATES = sim.FINAL_GAME_STATES
+
 
 def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
                           score, result, now: str) -> bool:
@@ -1283,10 +1286,6 @@ def publish(rebuild: bool) -> None:
         )
     finally:
         conn.close()
-
-
-# MLB detailedState values that mean a game is over.
-_FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
 
 # Max WP-over-time points embedded per matchup, per model version, in
 # data.json. The DB keeps every snapshot (so no history is ever lost); we

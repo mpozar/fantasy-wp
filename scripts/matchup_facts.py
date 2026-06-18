@@ -47,22 +47,19 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 
-from app import db, mlb, sim
+from app import db, ingame, mlb, sim, stats
 
-NAMES = {20: "R", 5: "HR", 1: "H", 23: "SB", 18: "OPS",
-         48: "K", 63: "QS", 47: "ERA", 41: "WHIP", 83: "SVHD"}
-ORDER = [20, 5, 1, 23, 18, 48, 63, 47, 41, 83]
-RATE = {18, 47, 41}
+NAMES = stats.STAT_NAMES       # canonical stat_id -> name (single source)
+ORDER = [20, 5, 1, 23, 18, 48, 63, 47, 41, 83]  # recap display order (R-first)
+RATE = set(stats.RATE_STATS)   # OPS/ERA/WHIP (single source)
 HITS = 1                       # tiebreaker category in this league
 # driving stat_id -> the per-player budget field that explains a projection swing
 DRIVER_EXP = {63: "exp_qs", 83: "exp_svhd", 48: "exp_k", 5: "exp_hr",
               20: "exp_r", 1: "exp_h", 23: "exp_sb", 18: "exp_ops",
               47: "exp_era", 41: "exp_whip"}
-# box-score-attributable counting cats (per-player lines exist) -> batter field.
-BOX_BAT = {5: "hr", 1: "h", 20: "r", 23: "sb"}
 SWING = 0.07                   # |Δ wp| per tick to list as a candidate swing
 BUDGET_MIN = 0.10              # min |Δ exp_<cat>| to report a projection mover
-QS_OUTS, QS_MAX_ER = 18, 3
+QS_OUTS, QS_MAX_ER = ingame.QS_OUTS, ingame.QS_MAX_ER  # canonical QS thresholds
 
 
 def _fmt(sid, v):
@@ -88,7 +85,6 @@ def _winner_of(c):
 
 
 def _load_rows(conn, mid, include_edited=False):
-    ws, we = None, None
     m = conn.execute("SELECT matchup_period_id FROM matchups WHERE id=?", (mid,)).fetchone()
     ws, we = mlb.matchup_period_window(m["matchup_period_id"])
     rows = conn.execute(
