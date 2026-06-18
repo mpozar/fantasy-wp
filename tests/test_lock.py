@@ -12,10 +12,16 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _run(body: str) -> str:
-    script = (f'source "{REPO}/scripts/_common.sh"\n'
-              'set +e\n'                       # override _common.sh `set -e` for the test
-              'LOCKFILE="$(mktemp /tmp/applock.XXXXXX)"; rm -f "$LOCKFILE"\n'
-              + body)
+    script = (
+        # Skip _common.sh's caffeinate re-exec — without this it `exec`s a new
+        # process while sourcing and the test body never runs (empty stdout, so
+        # every assertion fails). We're exercising the lock helpers here, not the
+        # keep-awake wrapper.
+        'export FWP_CAFFEINATED=1\n'
+        f'source "{REPO}/scripts/_common.sh"\n'
+        'set +e\n'                       # override _common.sh `set -e` for the test
+        'LOCKFILE="$(mktemp /tmp/applock.XXXXXX)"; rm -f "$LOCKFILE"\n'
+        + body)
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     return r.stdout
 

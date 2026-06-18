@@ -26,7 +26,7 @@ app/
   espn_scrape.py# Playwright DOM scrape of live matchup cat totals (REST lags)
   mlb.py        # MLB statsapi client + calendar-absolute period windows.
                 # matchup_period_window / period_for_date (SEASON_ANCHOR_MONDAY),
-                # monday_of, fetch_schedule
+                # monday_of, fetch_schedule, parse_boxscore/fetch_boxscore
   sim.py        # Monte Carlo simulator (model mc-v1). build_budgets, simulate
   model.py      # Legacy ratio-v0 model — kept as fallback via `app compute --model ratio-v0`
   db.py         # SQLite schema + migrations
