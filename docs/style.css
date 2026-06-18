@@ -5,14 +5,11 @@
   --muted: #6b7280;
   --line: #e5e7eb;
   --bat: #e8f1ff;
-  --bat-h: #d3e4ff;
   --pit: #fff1e6;
-  --pit-h: #ffe0c7;
   --win-bg: #e6f6e6;
   --win-fg: #1f7a36;
   --loss-fg: #b22a2a;
   --tie-fg: #7c8190;
-  --fav-bg: #eaf6ee;
   --fav-fg: #157a35;
   --accent: #1a56db;
   --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(15,23,42,0.06);
@@ -86,7 +83,7 @@ main {
 }
 .about-toggle:hover { text-decoration: underline; }
 
-/* Segmented control for the WP-chart x-axis (Full / Matchup / Active) */
+/* Segmented control for the WP-chart x-axis (Full / Matchup / Active / Today) */
 .chart-scope {
   display: inline-flex;
   align-items: center;
@@ -524,7 +521,7 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   stroke-dasharray: 2 2;
 }
 .hover-point.selected .hover-cursor {
-  stroke: var(--text, #222);
+  stroke: var(--fg);
   stroke-dasharray: none;
   stroke-width: 1.5;
 }
@@ -547,10 +544,10 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   font-size: .85rem;
   color: var(--muted);
 }
-.catwp-asof strong { color: var(--text, #222); }
+.catwp-asof strong { color: var(--fg); }
 .catwp-live {
-  border: 1px solid var(--border, #ccc);
-  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  background: var(--card-bg);
   color: inherit;
   border-radius: 5px;
   padding: .15rem .55rem;

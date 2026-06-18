@@ -18,12 +18,11 @@ import json
 import math
 import random
 import sqlite3
-import string
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from app import db, ingame, mlb
+from app.names import norm_name as _norm_name
 
 MODEL_VERSION = "mc-v1"
 DEFAULT_SIMS = 10_000
@@ -106,7 +105,6 @@ CATEGORIES = [
 TIEBREAKER_STAT_ID = STAT_H
 
 # ESPN lineup slot IDs we care about.
-BENCH_SLOT = 16
 IL_SLOT = 17
 
 # Hitter slot IDs ESPN exposes for MLB leagues. The set is intentionally
@@ -228,38 +226,8 @@ ER_VMR_BY_ROLE = {"SP": 1.60, "RP": 1.83}
 
 
 # ── name matching for probable pitchers ──
-
-# Generational suffixes dropped during name matching (one source carries them, the
-# other often doesn't): "Daniel Lynch IV" ⇄ "Daniel Lynch".
-_NAME_SUFFIXES = {"jr", "jnr", "sr", "snr", "ii", "iii", "iv", "v"}
-
-
-def _norm_name(s: str | None) -> str:
-    """Normalize a player name to a match key. There's no ESPN↔MLBAM player-id
-    crosswalk, so box-score lines are attributed to fantasy slots by this key — it
-    must collapse the spelling differences between the two feeds:
-
-      - **Diacritics:** MLB uses accents ("Cristopher Sánchez"), ESPN often doesn't.
-      - **Middle initials:** MLB may carry one the roster omits — "José A. Ferrer"
-        ⇄ "Jose Ferrer" (2026-06-09: this exact mismatch left Ferrer's relief line
-        unmatched, so the live ERA/WHIP reconstruction came up short of the scrape
-        and the rate guard rejected the whole side until the daily settle).
-      - **Suffixes:** "Daniel Lynch IV" ⇄ "Daniel Lynch".
-
-    The transform is applied to *both* sides, so it only ever adds correct matches;
-    it leaves first + last name intact (drops only single-letter *middle* tokens and
-    suffixes), so distinct players don't collapse together."""
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    toks = ["".join(c for c in t if c.isalnum()) for t in s.lower().split()]
-    toks = [t for t in toks if t and t not in _NAME_SUFFIXES]
-    # Drop single-letter *middle* tokens (middle initials); keep first + last so two
-    # players sharing a surname (e.g. "J.D. Martinez" vs "Nick Martinez") stay distinct.
-    if len(toks) > 2:
-        toks = [toks[0]] + [t for t in toks[1:-1] if len(t) > 1] + [toks[-1]]
-    return "".join(toks)
+# `_norm_name` is imported from app.names (shared with espn_public) so the
+# write-key and read-key for name matching can never diverge.
 
 
 # ── Samplers ──
@@ -902,11 +870,6 @@ def _has_hitter_ros(ros: dict) -> bool:
     return (ros.get(STAT_HIT_G, 0) or 0) > 0
 
 
-def _is_two_way(p: dict) -> bool:
-    ros = p.get("ros_stats") or {}
-    return _has_pitcher_ros(ros) and _has_hitter_ros(ros)
-
-
 def _is_probable_starter_on(p: dict, game_date: str,
                             schedule_by_team: dict[int, list[dict]]) -> bool:
     """Is this player the probable pitcher for one of their team's games on
@@ -1180,6 +1143,19 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
             budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + base_share * gate
 
 
+def _cap_svhd_rate(stat_id: int, rate: float) -> float:
+    """Bound the per-appearance SVHD rate at a realistic ceiling — see
+    MAX_SVHD_RATE for context on ESPN's projection quirks. No-op for other stats."""
+    if stat_id == STAT_SVHD and rate > MAX_SVHD_RATE:
+        return MAX_SVHD_RATE
+    return rate
+
+
+def _expected_extra_starts(dist: list[float] | None) -> float:
+    """E[k] for an extra-start distribution `[P(0), P(1), …]` (= Σ i·P(i))."""
+    return sum(i * pk for i, pk in enumerate(dist or []))
+
+
 def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
     """Per-start stat rates (`ros_v / denom`) for the pitcher counters — the
     multipliers used to scale a SP's sampled extra starts. Mirrors the `rate`
@@ -1191,10 +1167,7 @@ def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
         ros_v = ros.get(stat_id)
         if ros_v is None or ros_v <= 0:
             continue
-        rate = ros_v / denom
-        if stat_id == STAT_SVHD and rate > MAX_SVHD_RATE:
-            rate = MAX_SVHD_RATE
-        rates[stat_id] = rate
+        rates[stat_id] = _cap_svhd_rate(stat_id, ros_v / denom)
     return rates
 
 
@@ -1327,7 +1300,7 @@ def build_budgets(roster: list[dict],
                     # subtraction and the displayed start count.
                     sp_extra_dist = extra_dist
                     sp_extra_per_start = _per_start_rates(ros, gs_ros)
-                    sp_est_units = sum(i * pk for i, pk in enumerate(extra_dist))
+                    sp_est_units = _expected_extra_starts(extra_dist)
                 units_p = probable_units
                 denom_p = gs_ros
                 role_p = "SP"
@@ -1406,11 +1379,7 @@ def _make_budget(p: dict, ros: dict, units: float, denom: float,
         ros_v = ros.get(stat_id)
         if ros_v is None or ros_v <= 0:
             continue
-        rate = ros_v / denom
-        # Bound the per-appearance SVHD rate at a realistic ceiling — see
-        # MAX_SVHD_RATE for context on ESPN's projection quirks.
-        if stat_id == STAT_SVHD and rate > MAX_SVHD_RATE:
-            rate = MAX_SVHD_RATE
+        rate = _cap_svhd_rate(stat_id, ros_v / denom)
         expected[stat_id] = rate * units
     if not expected:
         return None
@@ -1431,7 +1400,7 @@ def _display_expected(b: Budget) -> dict[int, float]:
     samples the two pieces separately."""
     if not b.extra_dist or not b.extra_per_start:
         return b.expected
-    e_extra = sum(i * pk for i, pk in enumerate(b.extra_dist))
+    e_extra = _expected_extra_starts(b.extra_dist)
     if e_extra <= 0:
         return b.expected
     merged = dict(b.expected)
@@ -1663,9 +1632,12 @@ def simulate(inputs: MatchupInputs,
 
 def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
                      fantasy_team_id: int) -> list[dict]:
+    # NB: team_rosters.status is stored by refresh-rosters but intentionally not
+    # selected here — IL/bench logic keys off players.injury_status and
+    # lineup_slot_id, never the ESPN roster-entry status, so it's left unread.
     rows = conn.execute(
         """
-        SELECT tr.player_id, tr.lineup_slot_id, tr.status,
+        SELECT tr.player_id, tr.lineup_slot_id,
                p.full_name, p.pro_team_id, p.default_position_id,
                p.eligible_slots_json, p.injury_status
         FROM team_rosters tr
@@ -1708,7 +1680,6 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
         roster.append({
             "player_id": r["player_id"],
             "lineup_slot_id": r["lineup_slot_id"],
-            "status": r["status"],
             "full_name": r["full_name"],
             "pro_team_id": r["pro_team_id"],
             "default_position_id": r["default_position_id"],

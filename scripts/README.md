@@ -8,10 +8,11 @@ https://mpozar.github.io/fantasy-wp/ only updates when **fast.sh** pushes a new
 | ------------- | --------------------------------------------------------------- | ----------------- |
 | `fast.sh`     | `refresh-live` + `fetch` + `compute` (current week) + `publish` + push | every 5 min       |
 | `medium.sh`   | `refresh-rosters` + `compute --future` (all remaining weeks)    | every 4 hours     |
-| `daily.sh`    | `refresh-schedule` (MLB games + probable pitchers, full season) | once a day        |
+| `daily.sh`    | `refresh-schedule` (MLB games + probable pitchers, full season) + `publish --rebuild` (no push) | once a day        |
 
-Medium and daily only write to the local SQLite DB — the next fast-tier run
-picks up the new data and pushes the result. So if `medium.sh` fails, the
+Medium and daily only write locally (daily also rebuilds `docs/data.json` but
+doesn't push) — the next fast-tier run picks up the new data and pushes the
+result. So if `medium.sh` fails, the
 public site keeps working with the previous projection snapshot.
 
 Future-week WPs only change when projections or the MLB schedule change, so

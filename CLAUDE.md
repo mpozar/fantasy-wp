@@ -63,7 +63,7 @@ Each `Budget` has:
 - `expected[stat_id]` — projected counter values for the week, computed as `(ros_v / denom) * units`
 - `extra_dist` / `extra_per_start` (SP only, else `None`) — the stochastic extra-start piece: `extra_dist` is `[P(0 extra starts), P(1), …]` and `extra_per_start[stat_id]` is the per-start rate. `_simulate_team` samples `k ~ extra_dist` per sim and adds `Poisson(extra_per_start·k)` to each pitching counter (NB for ER). See "SP start estimation". For these budgets `expected` holds only the *fixed* piece; `_display_expected` merges in `E[k]·rate` for reporting.
 
-Rate stats (OPS, ERA, WHIP) are *never* sampled directly — they're derived from the underlying counter sums (AB, H, BB, HBP, SF, HR, 2B, 3B for OPS; ER, OUTS for ERA; P_H, P_BB, OUTS for WHIP). See `derive_ops`, `derive_era`, `derive_whip` in `sim.py`. The category decision and the "average per category" in publish use `_cat_value` which routes to these derivations.
+Rate stats (OPS, ERA, WHIP) are *never* sampled directly — they're derived from the underlying counter sums (AB, H, BB, HBP, SF, HR, 2B, 3B for OPS; ER, OUTS for ERA; P_H, P_BB, OUTS for WHIP). See `derive_ops`, `derive_era`, `derive_whip` in `sim.py`. The category decision and the "average per category" in publish use `cat_value` which routes to these derivations.
 
 ### Role classification (not by ESPN's `default_position_id`)
 
@@ -194,7 +194,7 @@ Day-conflict resolution (so a two-way isn't counted batting *and* pitching the s
 2. List rostered hitters whose MLB team plays that day, who aren't IL'd, who aren't pitching that day (two-way), and who have eligible slots
 3. Sort by `_hitter_per_game_impact` (R + 0.6·H + 0.3·SB + 0.5·HR per game)
 4. **Optimal bipartite matching** (`_max_slot_assignment`, Kuhn's augmenting paths) assigns hitters to slot instances — impact-sorted, so a capacity-bound day seats the highest-impact subset
-5. Each hitter who wins a slot gets `+1 × hitter_in_progress_factor(today's game)` toward their `units`
+5. Each hitter who wins a slot gets `+1 × _hitter_factor(today's game)` toward their `units`
 
 Step 4 was greedy first-fit until 2026-06-05. Greedy could spend a *flexible*
 bat on an early slot and then waste a *scarce* slot only that bat could fill —
@@ -449,7 +449,7 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 
 ### Probable pitchers — name-matching
 
-`_probable_starts_for` matches by normalized name (`_norm_name`: strip diacritics → lowercase → alphanumeric only). Diacritic stripping matters — MLB's probable feed accents names ("Cristopher Sánchez") while ESPN's rosters often don't ("Sanchez"); without normalization they miss and the SP loses credit for a confirmed start (and with the hybrid estimate, the announced game is *also* excluded from the open-game weight, so the start vanishes entirely). Remaining mismatch risk is genuinely different spellings (nicknames, Jr./Sr., punctuation) — rare. The reverse, two names colliding after normalization, is also possible but rare.
+`_probable_starts_for` matches by normalized name (`_norm_name`: strip diacritics → lowercase → alphanumeric only → drop generational suffixes and single-letter middle-initial tokens; see line 552). It lives in `app/names.py` (`norm_name`) and is imported by both `sim.py` and `espn_public.py` so the write-key and read-key for name matching can never diverge. Diacritic stripping matters — MLB's probable feed accents names ("Cristopher Sánchez") while ESPN's rosters often don't ("Sanchez"); without normalization they miss and the SP loses credit for a confirmed start (and with the hybrid estimate, the announced game is *also* excluded from the open-game weight, so the start vanishes entirely). Remaining mismatch risk is genuinely different spellings (nicknames, punctuation) — rare. The reverse, two names colliding after normalization, is also possible but rare.
 
 When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
 
@@ -463,9 +463,9 @@ Three tiers, all hold a shared `.app.lock` (in `_common.sh`):
 |---|---|---|---|
 | `fast.sh` | every 5 min | `refresh-live` + `fetch` + `compute` (current week) + `publish` + git push | Skip if lock held |
 | `medium.sh` | every 4h | `refresh-rosters` + `compute --future` | Wait for lock |
-| `daily.sh` | once/day | `refresh-schedule` (all remaining weeks) | Wait for lock |
+| `daily.sh` | once/day | `refresh-schedule` (all remaining weeks) + `publish --rebuild` (no push) | Wait for lock |
 
-The fast tier is the only one that publishes; medium/daily just update the DB and the next fast tick picks it up.
+The fast tier is the only one that **pushes**. `daily.sh` also runs `publish --rebuild` (forces a full per-week block-cache rebuild + picks up rare late corrections to already-settled weeks), but doesn't push — the next fast tick does. `medium.sh` just updates the DB.
 
 ### Schema is ensured before every subcommand (editable-install drift guard)
 
@@ -595,9 +595,9 @@ scored cats**, making the sim project from ≈zero banked → every WP collapses
 2026-06-04 evening (see `INCIDENTS.md`); the morning corruption that day was the
 same family (a partial current-period state mistaken for complete).
 
-The three readers therefore load the latest value **per `(matchup, team, stat)`**,
-not by a global `MAX(fetched_at)` — `sim.load_latest_state`, and `_latest_scores` /
-`_latest_score_rows` in `cli.py`. This mirrors the `last_good` loader the
+The readers therefore load the latest value **per `(matchup, team, stat)`**,
+not by a global `MAX(fetched_at)` — `sim.load_latest_state` and `_latest_score_rows`
+in `cli.py` (both delegating to `db.latest_category_state`). This mirrors the `last_good` loader the
 monotonicity guard already uses (cli.py, with the same rationale in its comment).
 If you add another current-state reader, use the same per-stat pattern. The
 `INV_CURRENT_CATS_MISSING` validation check (below) guards against a regression:
@@ -740,8 +740,8 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   until the new week's first game goes live, then flips on its own. `state` also
   gates whether team blocks show real scores vs projection dashes (the `started`
   flag through `_matchup_block`/`_team_block`).
-- **WP-over-time graph x-axis** — one global segmented control with three modes
-  (`renderChart`):
+- **WP-over-time graph x-axis** — one global segmented control with four modes
+  (`renderChart`, `CHART_SCOPES`):
   - **Full** (default): linear real time over all history; faint "matchup start"
     divider where the week began (when there's pre-matchup history to its left).
   - **Matchup**: clips to the week's Monday (`week.start`), dropping the flat
@@ -750,6 +750,10 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
     day's observed game window proportionally, with a labeled divider per day.
     Days with no plotted points (e.g. a week whose early history was trimmed)
     are skipped so the axis doesn't allocate blank space.
+  - **Today**: clips to the start of the current day's games (the most recent
+    `active_intervals` entry), then renders linearly — a live zoom on today,
+    starting at today's first pitch (not 24h back). Falls back to the full range
+    if today has no points yet.
   Full/Matchup are pure front-end. Active needs the **observed game-day windows**
   (`week.active_intervals`), which come from the `game_day_activity` table:
   `refresh-live` stamps `active_start` the first tick it sees a game In Progress
@@ -996,7 +1000,10 @@ keeps `pitcher_starts` current going forward).
 Covers `app/ingame.py` (in-progress QS/SVHD), `app/sim.py` cadence + extra-start
 sampling (`test_cadence.py`), the category_state monotonicity guard
 (`test_category_guard.py`), and the validation checks (`test_validate.py`).
-`scripts/ingame_scenarios.py` prints projections for hand-built in-progress states.
+`scripts/ingame_scenarios.py` prints projections for hand-built in-progress states;
+`scripts/ingame_spotcheck.py` does the same for *live* rostered pitchers from the
+current DB state (read-only, safe to run mid-slate) — a quick reality check on the
+in-game QS/SVHD model during real games.
 
 ### Verifying front-end (`docs/`) changes
 
@@ -1159,7 +1166,7 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Secrets in `~/.zshenv` (never inline in commands). Read via `read_zshenv_var` in shell or `_read_zshenv_var` in Python.
 - Cache-bust assets on every UI change: bump `?v=N` in `index.html` for `style.css` and `app.js`.
 - Don't recompute history snapshots on model changes — let new snapshots accumulate forward. **Never delete snapshots** (see "wp_snapshot history retention"); the chart filters by `model_version` and `publish` downsamples the payload, so stale points are harmless.
-- Front-end is intentionally tiny: no framework, vanilla JS, ~480 lines.
+- Front-end is intentionally tiny: no framework, vanilla JS, ~770 lines.
 
 ## Known limitations (documented in "How this works")
 

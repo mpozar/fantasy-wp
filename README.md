@@ -49,5 +49,9 @@ Open `docs/index.html` in a browser to see the current state.
 
 ## Status
 
-Skeleton. The WP model is a placeholder (per-category score ratios convolved
-into a poisson-binomial); the real Monte Carlo model is not yet implemented.
+Live. The Monte Carlo model (`mc-v1`) is the default — 10,000 sims per matchup,
+seeded from live ESPN/MLB state, with per-stat overdispersion, SP rotation-cadence
+start estimation, and in-progress QS/SVHD handling. The original ratio model is
+kept as a fallback via `app compute --model ratio-v0`. Cron tiers
+(`scripts/{fast,medium,daily}.sh`) keep the published site current; see `CLAUDE.md`
+for the full design notes.

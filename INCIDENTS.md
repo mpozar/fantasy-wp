@@ -168,7 +168,7 @@ Opposite halves of the split missing, opposite layers at fault — not the same 
 the two entries stay separate.
 
 **Root cause fixed in code** (commit `38b4959`): `load_latest_state` (sim.py) and
-`_latest_scores` / `_latest_score_rows` (cli.py) now read the latest value **per
+`_latest_score_rows` (cli.py) now read the latest value **per
 (matchup, team, stat)**, mirroring the `last_good` guard loader, so a partial tick
 can't hide earlier stats. Added `INV_CURRENT_CATS_MISSING` (validate.py) — an error
 flag if any scored cat is absent once a side has pitched (gated on OUTS, which

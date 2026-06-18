@@ -11,7 +11,7 @@ Covers the pure pieces that beat ESPN's once-daily REST settle:
 import sqlite3
 from datetime import datetime, timezone
 
-from app import mlb, sim
+from app import espn_public, mlb, sim
 
 
 # ───────────────────────── _norm_name matching ─────────────────────────
@@ -20,6 +20,20 @@ def test_norm_name_drops_middle_initial():
     # The 2026-06-09 José A. Ferrer case: MLB carries a middle initial the ESPN
     # roster omits — must still match (or his line goes unmatched in reconstruction).
     assert sim._norm_name("José A. Ferrer") == sim._norm_name("Jose Ferrer") == "joseferrer"
+
+def test_injury_normalizer_matches_sim_normalizer():
+    # espn_public._norm is the *write* key for player_injuries.norm_name; sim._norm_name
+    # is the *read* key (sim.load_team_roster). They MUST produce identical keys or an
+    # IL'd player whose injuries-feed name carries a middle initial/suffix silently
+    # loses his injury_return_override and falls back to the fixed-days heuristic.
+    # (Both now share app.names.norm_name; this guards against them diverging again.)
+    for feed_name, roster_name in [
+        ("José A. Ferrer", "Jose Ferrer"),    # middle initial in the feed, not the roster
+        ("Daniel Lynch IV", "Daniel Lynch"),  # suffix in the feed, not the roster
+        ("Lourdes Gurriel Jr.", "Lourdes Gurriel"),
+        ("Cristopher Sánchez", "Cristopher Sanchez"),
+    ]:
+        assert espn_public._norm(feed_name) == sim._norm_name(roster_name), feed_name
 
 def test_norm_name_drops_suffix():
     assert sim._norm_name("Daniel Lynch IV") == sim._norm_name("Daniel Lynch") == "daniellynch"

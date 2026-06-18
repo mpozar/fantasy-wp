@@ -38,21 +38,13 @@ MLB statsapi, far less brittle than the DOM scrape).
 
 from __future__ import annotations
 
-import unicodedata
 from datetime import date, timedelta
 
 import httpx
 
+from app.names import norm_name as _norm
+
 SITE_API = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb"
-
-
-def _norm(s: str | None) -> str:
-    """Mirror of sim._norm_name so injury/probable names match rostered ones."""
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return "".join(c for c in s.lower() if c.isalnum())
 
 
 def fetch_probables(start: date, end: date) -> dict[tuple[str, int], str]:

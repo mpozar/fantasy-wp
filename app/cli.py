@@ -15,9 +15,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _settle_boundary() -> str:
+    """The unsettled-window cutoff date (games on/after it aren't in ESPN's banked
+    totals yet) computed against the current UTC time. See `sim.settle_boundary_date`."""
+    return sim.settle_boundary_date(datetime.now(timezone.utc))
+
+
 # Rate categories (OPS/ERA/WHIP) — derived ratios that legitimately move either
 # direction, so they're never monotonicity-guarded.
 _RATE_STAT_IDS = frozenset(sim.RATE_DERIVERS)
+
+# Single source of truth for the category_state cell upsert (column list).
+_CATEGORY_STATE_UPSERT = (
+    "INSERT OR REPLACE INTO category_state "
+    "(matchup_id, team_id, stat_id, score, result, fetched_at) VALUES (?,?,?,?,?,?)"
+)
 
 
 def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
@@ -33,11 +45,7 @@ def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
         lg = last_good.get((mid, tid, sid))
         if lg is not None and score < lg:
             return False
-    conn.execute(
-        "INSERT OR REPLACE INTO category_state "
-        "(matchup_id, team_id, stat_id, score, result, fetched_at) VALUES (?,?,?,?,?,?)",
-        (mid, tid, sid, score, result, now),
-    )
+    conn.execute(_CATEGORY_STATE_UPSERT, (mid, tid, sid, score, result, now))
     return True
 
 
@@ -265,11 +273,7 @@ def fetch() -> None:
                                           s["score"], s["result"], now)
                 else:
                     conn.execute(
-                        """
-                        INSERT OR REPLACE INTO category_state
-                            (matchup_id, team_id, stat_id, score, result, fetched_at)
-                        VALUES (?,?,?,?,?,?)
-                        """,
+                        _CATEGORY_STATE_UPSERT,
                         (m["matchup_id"], s["team_id"], s["stat_id"],
                          s["score"], s["result"], now),
                     )
@@ -522,8 +526,6 @@ def backfill_starts(days: int) -> None:
     This scans the `days` before the current period start and records the
     starters. Also feeds `scripts/analyze_cadence.py`. Idempotent.
     """
-    from datetime import date, timedelta
-
     conn = db.connect()
     try:
         current = _current_matchup_period(conn)
@@ -652,7 +654,7 @@ def refresh_live() -> None:
 
     No DELETE, just upserts on the existing rows.
     """
-    from datetime import date, timedelta
+    from datetime import date  # `timedelta` is imported at module level
 
     today = datetime.now(timezone.utc).date()   # UTC, not host-local (tz-independent)
     yesterday = today - timedelta(days=1)
@@ -674,7 +676,7 @@ def refresh_live() -> None:
     # keeps a just-Final game's true final line current (cheap: only the last
     # ~1-2 days of games, and only ones with data). Older games are pruned —
     # they're already in ESPN's banked totals, so the sim reads them from there.
-    settle_boundary = sim.settle_boundary_date(datetime.now(timezone.utc))
+    settle_boundary = _settle_boundary()
     window_pks = {g["game_pk"] for g in games}
     status_by_pk: dict[int, set] = {}
     date_by_pk: dict[int, str] = {}
@@ -908,7 +910,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         # --future, non-mc models, or when nothing is live right now.
         live_components = (not future_only) and model_name == "mc-v1"
         settle_boundary = (
-            sim.settle_boundary_date(datetime.now(timezone.utc))
+            _settle_boundary()
             if live_components else None
         )
         unsettled_lines = (
@@ -1516,7 +1518,7 @@ def _fold_live_components(conn, home_state, away_state,
     drifts stale while the projection (which folds in the live box scores) moves —
     e.g. a team shown at ERA 2.38 while its projection and the live scrape both read
     4.5 after a rough inning. No-op when nothing is live."""
-    settle = sim.settle_boundary_date(datetime.now(timezone.utc))
+    settle = _settle_boundary()
     unsettled = sim.load_unsettled_lines(conn, since_date=settle)
     if not unsettled["pitchers"] and not unsettled["batters"]:
         return

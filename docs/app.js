@@ -4,7 +4,9 @@ async function load() {
   return r.json();
 }
 
-const fmtPct = (p) => (p == null ? "—" : (p * 100).toFixed(1) + "%");
+// WP-chart SVG viewBox width — shared by renderChart (drawing) and
+// bindChartHovers (pixel-space hover mapping) so they can't drift apart.
+const CHART_VIEWBOX_W = 600;
 
 function fmtStat(statId, val) {
   if (val == null) return "—";
@@ -49,7 +51,7 @@ function renderChart(history, currentModel, week, scope, ann) {
   let pts = history.filter((h) => h.model_version === currentModel);
   if (pts.length === 0) return "";
 
-  const W = 600, H = 140, padL = 40, padR = 12, padT = 12, padB = 22;
+  const W = CHART_VIEWBOX_W, H = 140, padL = 40, padR = 12, padT = 12, padB = 22;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const tms = (p) => new Date(p.computed_at).getTime();
@@ -242,7 +244,7 @@ function renderChart(history, currentModel, week, scope, ann) {
 // hovered data point with timestamp + both teams' WPs; the SVG hover styles
 // reveal the cursor line + dots via :hover.
 function bindChartHovers(root) {
-  const chartW = 600;  // matches the viewBox W in renderChart
+  const chartW = CHART_VIEWBOX_W;  // matches the viewBox W in renderChart
   root.querySelectorAll(".wp-chart-wrap").forEach((wrap) => {
     const svg = wrap.querySelector(".wp-chart");
     const tooltip = wrap.querySelector(".chart-tooltip");
@@ -271,8 +273,8 @@ function bindChartHovers(root) {
         const awayPct = (parseFloat(pt.dataset.away) * 100).toFixed(1);
         tooltip.innerHTML = `
           <div class="tt-time">${timeStr}</div>
-          <div class="tt-row tt-home"><span class="tt-swatch home"></span>${homePct}%</div>
-          <div class="tt-row tt-away"><span class="tt-swatch away"></span>${awayPct}%</div>`;
+          <div class="tt-row"><span class="tt-swatch home"></span>${homePct}%</div>
+          <div class="tt-row"><span class="tt-swatch away"></span>${awayPct}%</div>`;
         // Position in pixel space — map the SVG viewBox x to the rendered width.
         const svgRect = svg.getBoundingClientRect();
         const xVb = parseFloat(pt.dataset.x);
@@ -736,16 +738,9 @@ function render(data) {
       const next = btn.dataset.scope;
       if (next === chartScope) return;
       chartScope = next;
-      document.querySelectorAll(".scope-btn").forEach((b) =>
-        b.classList.toggle("active", b.dataset.scope === chartScope));
-      const openIds = [...document.querySelectorAll('.expand-toggle[aria-expanded="true"]')]
-        .map((b) => b.getAttribute("aria-controls"));
-      if (active.week) renderWeek(active.data, active.week);
-      openIds.forEach((id) => {
-        const panel = document.getElementById(id);
-        const tog = document.querySelector(`.expand-toggle[aria-controls="${id}"]`);
-        if (panel && tog) { panel.hidden = false; tog.setAttribute("aria-expanded", "true"); }
-      });
+      // renderWeek (via rerenderPreservingPanels) rebuilds the scope buttons with
+      // the active class derived from chartScope, so no manual toggle is needed.
+      rerenderPreservingPanels();
     });
   });
 }

@@ -39,6 +39,7 @@ when it's needed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from app import db, sim
 
@@ -479,7 +480,6 @@ _LEAGUE_CHECKS.append(check_correlated_swing)
 def _minutes_old(stamp_iso: str | None, now_iso: str | None) -> float | None:
     if not stamp_iso or not now_iso:
         return None
-    from datetime import datetime
     try:
         return abs((datetime.fromisoformat(now_iso) - datetime.fromisoformat(stamp_iso))
                    .total_seconds()) / 60.0
@@ -546,10 +546,8 @@ def check_live_lineup_capture(conn, now_iso: str | None) -> list[Finding]:
     quietly. Cheap two-count guard on the unsettled window."""
     if not now_iso:
         return []
-    from datetime import datetime
-    from app import sim as _sim
     try:
-        boundary = _sim.settle_boundary_date(datetime.fromisoformat(now_iso))
+        boundary = sim.settle_boundary_date(datetime.fromisoformat(now_iso))
     except (ValueError, TypeError):
         return []
     days = conn.execute(
@@ -668,7 +666,6 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
     # publish saw (as of generated_at) once, up front.
     unsettled = since_date = None
     if conn is not None and gen:
-        from datetime import datetime
         try:
             since_date = sim.settle_boundary_date(datetime.fromisoformat(gen))
             unsettled = sim.load_unsettled_lines(conn, since_date=since_date)

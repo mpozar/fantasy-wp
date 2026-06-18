@@ -39,12 +39,15 @@ log() {
 }
 
 # Run a command and log its wall-clock duration (whole seconds), so we can see
-# which step dominates a slow tick. Preserves the command's exit status.
+# which step dominates a slow tick. Returns the command's exit status; the caller
+# decides fatal vs non-fatal (a bare `timed ...` aborts the tick under `set -e`,
+# `timed ... || handler` doesn't). The `|| rc=$?` makes the rc-capture and the
+# duration log run even on failure, instead of relying on errexit being
+# suppressed inside a function called in a `||` context.
 timed() {
     local tier="$1" label="$2"; shift 2
-    local start=$SECONDS
-    "$@"
-    local rc=$?
+    local start=$SECONDS rc=0
+    "$@" || rc=$?
     log "$tier" "step ${label}: $((SECONDS - start))s"
     return $rc
 }
