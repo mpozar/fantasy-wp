@@ -769,6 +769,23 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
   did a one-time estimate fill for weeks 9–10's already-elapsed days (earliest
   first pitch → latest first pitch + ~3h15m) since live tracking only records
   forward; the COALESCE upsert means empirical values always win over the estimate.
+  - **Windows are clamped disjoint at publish (`_clamp_active_intervals`).** A game
+    that finalizes ~a day late (a **suspended game** resuming the next day) leaves
+    one day's `active_end` overlapping the next day's `active_start`. The Active axis
+    assigns each point to the *first* interval containing it, so an overlap steals the
+    next day's early points and renders that segment's lead-in as a **blank horizontal
+    gap** (observed 2026-06-16/17, Week 12). `_active_intervals` pulls each day's `end`
+    back to ≤ the next day's `start` so segments stay disjoint. Display-only; the
+    per-week publish cache means a one-time `publish --rebuild` is needed to apply an
+    emission-logic change like this to already-cached weeks. Test: `test_active_intervals.py`.
+  - **Active deliberately omits everything after the last game window** — so the
+    **post-game settle climb isn't shown in Active**. A matchup that clinches at the
+    overnight reconcile (WP reaching 100% *after* the last game went Final — see
+    "Finalization lag") happens in dead time outside any window, so the Active line
+    **ends mid-climb** (e.g. "ends at 3:45 AM at 94%, never shows 100%"). This is by
+    design, not a bug; **Full/Matchup** plot linear real time and show the final climb.
+    Combined with the 200-point downsample, Active's last visible point is the last
+    *in-window* point that survived thinning.
 - **Chart annotations (the "✦ Annotate" toggle).** Off by default; overlays major
   events + trend spans on the WP chart in *any* scope (placed via the same
   `xt(timestamp)→x` mapping, so they land correctly even in Active's collapsed
@@ -900,9 +917,31 @@ time and the signatures that explain ~every swing fast:
 7. **Phantom schedule games inflate starts/appearances/lineup-days.** If a probable
    projects >1 start, or an RP/hitter's "games remaining" looks too high, check for
    postponed / out-of-window games still filed under the period (the
-   `matchup_period_id` PK keeps a postponed game in-period with a far-future date).
-   `load_schedule_by_team` now filters these, but stale rows can still mislead a
-   raw `team_schedule` query — filter to the period's Mon–Sun window.
+   `matchup_period_id` PK keeps a postponed game in-period with a far-future makeup
+   date). `load_schedule_by_team` excludes three classes: out-of-window dates,
+   `Postponed/Suspended/Cancelled` status, and (when passed `now=`) **past-dated
+   games that aren't `Final`/`In Progress`**.
+   - **The lag-window trap (2026-06-18, m70 Imanaga — fixed).** A postponement is
+     NOT reflected in `team_schedule` immediately: the makeup date + `Postponed`
+     status only land at the next daily `refresh-schedule`. Until then the row keeps
+     its **original in-window date + a stale `Scheduled` status**, so the first two
+     filters don't fire and the sim credits a phantom start. A postponed Cubs game
+     (Imanaga probable) kept a full start (~5.7 K, ~0.5 QS) on the *Bus's* books all
+     of week 12 → inflated Bus K projection to 49.7 vs a real 44 → suppressed the
+     **Knights to ~6% the entire week**, only correcting Monday when refresh-schedule
+     moved the date to August. (The Knights had actually won K 45-44 and the 5-5 hits
+     tiebreaker the whole time.) Fix: the past-date guard — a game whose date is
+     strictly past yet isn't Final/live *didn't happen*, so drop it without waiting
+     for the status feed. `compute` passes `now`; the guard is opt-in (no `now` ⇒
+     old behavior) so other callers/tests are unchanged. Tests: `test_schedule_filter.py`.
+   - **Diagnostic tell:** a phantom start suppresses/inflates a WP **persistently
+     (the whole week, not one tick)** and corrects exactly at a `refresh-schedule`
+     boundary, not at a game event. So a WP that's been "off" for days — not a single
+     swing — points at a *budget input* (a phantom start, a stale projection), not a
+     live play: diff the budgets (`details_json.{home,away}_budgets` — look for an
+     SP with `units≈1.0`/`exp_k>0` who has no corresponding Final line in
+     `pitcher_final_lines`), then check `team_schedule` for a past-dated non-Final
+     row on that pitcher's team.
 
 8. **Owner-known benign behaviors (don't flag as bugs):** RP-classified pitchers
    can carry a small QS (they spot-start); the ~07:00 UTC daily settle step; sub-1pp
@@ -964,6 +1003,36 @@ time and the signatures that explain ~every swing fast:
 > *opponent* across the window (timestamped), not just the WP curve. And: timestamps
 > are UTC; the owner reasons in local time — in summer that's **CEST = UTC+2** (he
 > says "CET" but means CEST in June), so convert before quoting "8:15 PM".
+
+> **Finalization lag — why a decided matchup doesn't read 100%/0% until *after* the
+> last game (and how to explain it).** WP is an *end-of-week projection* = banked +
+> **expected remaining production**, and "remaining" is driven by game **status** in
+> the model's inputs. A matchup can be mathematically over (every category locked by
+> the actual results) while the model still carries a sliver of remaining production
+> for one side, leaving a category live in the sim — so the WP sits at, say, 97% (or
+> 6%) until the inputs reconcile, then snaps to 100% (or 0%). It's the model being
+> *correct given stale inputs*, not a bug in the sim. Three observed roots, easiest
+> to spot via the per-category `home_avg`/`away_avg` carrying a fractional remainder
+> above the banked total:
+> - **Status-lag remaining counters.** A finished game still read as not-`Final` in
+>   `team_schedule` keeps a fraction of a hitter's expected H/HR/etc. alive. (Norsemen
+>   2026-06-21: a ~0.16 expected remaining HR gave the opponent a ~13% chance to *tie*
+>   HR 12-12, capping WP at ~98% until the overnight reconcile zeroed it → 100%.)
+> - **Phantom start from a postponed game** (playbook #7 above) — the worst case:
+>   it's not a sliver, it's a whole projected start (~5.7 K), and it can suppress a WP
+>   for *days*, not minutes (m70 Imanaga). Distinguish from the benign sliver: phantom
+>   starts persist and correct at a `refresh-schedule` boundary; status-lag slivers are
+>   small and correct at the ~07:00 UTC settle / next live tick.
+> - **Over-long active window from a suspended game** — the display analogue, see the
+>   `_clamp_active_intervals` note under "Front-end behavior".
+>
+> The corrective swing therefore lands at a **schedule/settle boundary, not a play** —
+> don't attribute it to a single event (it's the daily reconcile, same caveat as the
+> ~07:00 settle). The standing fix for the whole family is the same: **zero a team's
+> remaining projected production the moment its game reads Final / its date passes**,
+> rather than waiting for the daily refresh. The past-date schedule guard (playbook #7)
+> does this for the postponed-game case; the status-lag-sliver case is still open
+> (it only ever costs a late, cosmetic climb to 100%, never the result).
 
 ## Operations
 
