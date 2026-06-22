@@ -417,11 +417,13 @@ function fmtSnapTime(iso) {
 }
 
 // Category-win-rates panel content. `asOfIso` set → prepend an "as of <time>"
-// banner with a Return-to-live button (used when a past chart point is clicked).
+// banner with a button to return to the week's latest table (used when a past
+// chart point is clicked). "Latest" reads correctly for both the live week
+// (current values) and a finished week (final values).
 function categoryPanel(source, cats, m, asOfIso) {
   const banner = asOfIso
     ? `<div class="catwp-asof">Category win rates as of <strong>${fmtSnapTime(asOfIso)}</strong>` +
-      `<button type="button" class="catwp-live">↩ Return to live</button></div>`
+      `<button type="button" class="catwp-live">↩ Return to latest</button></div>`
     : "";
   return banner + renderCategoryWP(source, cats, m);
 }

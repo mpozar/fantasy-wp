@@ -101,7 +101,7 @@ def _pub_setup(tmp_path, monkeypatch):
 
     rendered = []   # matchup_period_ids whose blocks got (re)built this run
     monkeypatch.setattr(cli, "_matchup_block",
-                        lambda conn, teams, m, *, started, live: rendered.append(m["matchup_period_id"]) or {"matchup_id": m["id"]})
+                        lambda conn, teams, m, *, started, live, cat_history=False: rendered.append(m["matchup_period_id"]) or {"matchup_id": m["id"]})
     monkeypatch.setattr(cli, "_week_state", lambda conn, pid: "final" if pid == 10 else "live")
     monkeypatch.setattr(cli, "_active_intervals", lambda conn, pid, now: [])
     monkeypatch.setattr(cli, "_current_matchup_period", lambda conn: 11)

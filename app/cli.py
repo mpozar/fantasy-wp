@@ -1218,14 +1218,27 @@ def publish(rebuild: bool) -> None:
             for r in conn.execute("SELECT period_id, stamp, block_json FROM published_week_cache")
         }
         fresh_blocks: dict[int, tuple[str, str]] = {}   # period_id -> (stamp, block_json), to upsert
+        # Per-point category history (lets the chart be clicked back to a past
+        # category table) is attached for the live week AND the most recently
+        # completed week — so "last week" stays scrubbable — but no further back:
+        # each such week adds ~1 MB to data.json (see _matchup_block).
+        states = {pid: _week_state(conn, pid) for pid in range(first, last_reg + 1)}
+        live_period = next((pid for pid, s in states.items() if s == "live"), None)
+        final_periods = [pid for pid, s in states.items() if s == "final"]
+        prev_period = max(final_periods) if final_periods else None
+        cat_periods = {p for p in (live_period, prev_period) if p is not None}
         weeks_out = []
         for period_id in range(first, last_reg + 1):
-            state = _week_state(conn, period_id)
+            state = states[period_id]
             ms = conn.execute(
                 "SELECT * FROM matchups WHERE matchup_period_id=? ORDER BY id",
                 (period_id,),
             ).fetchall()
-            stamp = _week_stamp(conn, period_id, ms, state)
+            with_cat = period_id in cat_periods
+            # Fold the category-history decision into the cache stamp, so a week's
+            # block is rebuilt (and its ~1 MB of category history dropped) the tick
+            # it ages out of the live/previous window.
+            stamp = _week_stamp(conn, period_id, ms, state) + (":cat" if with_cat else "")
             hit = cache.get(period_id)
             if hit is not None and hit[0] == stamp:
                 weeks_out.append(json.loads(hit[1]))
@@ -1242,7 +1255,8 @@ def publish(rebuild: bool) -> None:
                 # Observed game-day windows for the chart's "Active" x-axis.
                 "active_intervals": _active_intervals(conn, period_id, now),
                 "matchups": [
-                    _matchup_block(conn, teams, m, started=started, live=(state == "live"))
+                    _matchup_block(conn, teams, m, started=started,
+                                   live=(state == "live"), cat_history=with_cat)
                     for m in ms
                 ],
             }
@@ -1532,15 +1546,19 @@ def _fold_live_components(conn, home_state, away_state,
                 state.setdefault(sid, {"score": None, "result": None})["score"] = val
 
 
-def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -> dict:
+def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
+                   cat_history: bool = False) -> dict:
     """One matchup with team blocks, current snapshot, and history.
 
     `started` = the week has begun (state != "upcoming"); when False the team
     blocks emit null scores/records so the UI shows dashes for a pure projection.
-    `live` = the current (in-progress) week; only then do we attach each history
-    point's category_wp so the chart can be clicked back to a past category table
-    (past weeks are settled — their latest table already covers them, and
-    per-point category data for all weeks would bloat data.json several-fold).
+    `live` = the current (in-progress) week; only then do we keep the last
+    ~game-day at full resolution for the chart's "Today" zoom.
+    `cat_history` = attach each history point's category_wp so the chart can be
+    clicked back to a past category table. Enabled for the live week AND the most
+    recently completed week (so last week stays scrubbable) — but no further back:
+    per-point category data costs ~1 MB/week in data.json (older weeks rely on
+    their latest table in `details`, which covers a settled week).
     """
     home_team_id = m["home_team_id"]
     away_team_id = m["away_team_id"]
@@ -1562,7 +1580,7 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
         """,
         (m["id"],),
     ).fetchone()
-    cols = "computed_at, home_wp, away_wp, model_version" + (", details_json" if live else "")
+    cols = "computed_at, home_wp, away_wp, model_version" + (", details_json" if cat_history else "")
     history_rows = conn.execute(
         f"SELECT {cols} FROM wp_snapshots WHERE matchup_id=? ORDER BY computed_at ASC",
         (m["id"],),
@@ -1575,7 +1593,7 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False) -
             "away_wp": r["away_wp"],
             "model_version": r["model_version"],
         }
-        if live and r["details_json"]:
+        if cat_history and r["details_json"]:
             cwp, n = _slim_category_wp(r["details_json"])
             if cwp is not None:
                 pt["category_wp"] = cwp
