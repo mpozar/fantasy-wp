@@ -1708,11 +1708,12 @@ _SKIP_SCHEDULE_STATES = {"Postponed", "Suspended", "Cancelled", "Canceled"}
 
 
 def load_schedule_by_team(conn: sqlite3.Connection,
-                          matchup_period_id: int) -> dict[int, list[dict]]:
+                          matchup_period_id: int,
+                          now: str | None = None) -> dict[int, list[dict]]:
     """Team → its games in this matchup period, for the sim's start/appearance
     projections.
 
-    Two exclusions keep phantom games out of the projection:
+    Three exclusions keep phantom games out of the projection:
       - **Out-of-window dates.** `matchup_period_id` is part of the
         `team_schedule` PK, so when a game is postponed its row keeps the
         original period id while its `game_date` moves months out (the makeup
@@ -1721,6 +1722,16 @@ def load_schedule_by_team(conn: sqlite3.Connection,
         and inflating teammates' RP appearances (Ranger Suarez / Chapman,
         2026-06-06).
       - **Postponed/suspended/cancelled status**, even if still dated in-window.
+      - **Past-dated games that never went Final or live** (only when `now` is
+        given). A postponement isn't reflected immediately — the makeup date and
+        `Postponed` status can lag a day-plus behind in `team_schedule` (the row
+        keeps its original in-window date + a stale `Scheduled` status until the
+        next `refresh-schedule`). In that window the two checks above don't fire,
+        so the sim counts a game that already should have happened and credits a
+        phantom start. A game whose date is strictly in the past yet isn't
+        `Final`/`In Progress` didn't happen — drop it. (2026-06-18 Imanaga: a
+        postponed Cubs game suppressed a matchup's WP all week, only correcting
+        when the Monday refresh-schedule finally moved the date to August.)
     """
     start, end = mlb.matchup_period_window(matchup_period_id)
     rows = conn.execute(
@@ -1734,9 +1745,14 @@ def load_schedule_by_team(conn: sqlite3.Connection,
         """,
         (matchup_period_id, start.isoformat(), end.isoformat()),
     ).fetchall()
+    today = now[:10] if now else None   # UTC calendar date of the compute
     out: dict[int, list[dict]] = {}
     for r in rows:
         if r["game_status"] in _SKIP_SCHEDULE_STATES:
+            continue
+        if (today and r["game_date"] < today
+                and r["game_status"] not in FINAL_GAME_STATES
+                and r["game_status"] != "In Progress"):
             continue
         out.setdefault(r["pro_team_id"], []).append(dict(r))
     return out

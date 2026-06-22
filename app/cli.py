@@ -931,7 +931,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
             if not ms:
                 continue
 
-            schedule_by_team = sim.load_schedule_by_team(conn, period_id) \
+            schedule_by_team = sim.load_schedule_by_team(conn, period_id, now=now) \
                 if model_name == "mc-v1" else {}
             if model_name == "mc-v1" and not schedule_by_team:
                 raise click.ClickException(

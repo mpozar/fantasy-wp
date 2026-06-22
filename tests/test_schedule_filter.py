@@ -60,3 +60,41 @@ def test_normal_schedule_unaffected():
     conn.commit()
     games = sim.load_schedule_by_team(conn, 10).get(2, [])
     assert {g["game_pk"] for g in games} == {1, 2}
+
+
+def test_past_dated_scheduled_game_excluded_with_now():
+    # A postponed game whose Postponed status / August makeup date hasn't landed
+    # yet: still dated in-window (06-03) with a stale "Scheduled" status. With
+    # `now` past that date, it must be dropped (it never happened) so it can't
+    # credit a phantom start. Regression for 2026-06-18 (Imanaga).
+    conn = _mem_db()
+    _row(conn, pk=1, date="2026-06-03", status="Scheduled")   # past, never happened
+    _row(conn, pk=2, date="2026-06-07", status="Scheduled")   # still upcoming
+    _row(conn, pk=3, date="2026-06-03", status="Final")       # past but did happen
+    conn.commit()
+    now = "2026-06-05T12:00:00+00:00"
+    games = sim.load_schedule_by_team(conn, 10, now=now).get(2, [])
+    assert {g["game_pk"] for g in games} == {2, 3}            # phantom pk=1 dropped
+    # And the phantom no longer yields a projected start.
+    assert sim._probable_starts_for("Ranger Suarez", 2,
+                                     {2: games}, 6.0) <= 1.0
+
+
+def test_past_guard_noop_without_now():
+    # Backward-compat: without `now`, behavior is unchanged (past-dated Scheduled
+    # games are still returned). Existing callers that don't pass now are safe.
+    conn = _mem_db()
+    _row(conn, pk=1, date="2026-06-03", status="Scheduled")
+    conn.commit()
+    games = sim.load_schedule_by_team(conn, 10).get(2, [])
+    assert [g["game_pk"] for g in games] == [1]
+
+
+def test_today_scheduled_game_kept():
+    # A game dated *today* that hasn't started yet is a real upcoming game — keep it.
+    conn = _mem_db()
+    _row(conn, pk=1, date="2026-06-05", status="Scheduled")
+    conn.commit()
+    now = "2026-06-05T08:00:00+00:00"
+    games = sim.load_schedule_by_team(conn, 10, now=now).get(2, [])
+    assert [g["game_pk"] for g in games] == [1]
