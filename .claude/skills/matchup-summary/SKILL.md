@@ -255,3 +255,15 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
 - **Name the team in the hook, not just a generic phrase.** Prefer "a pitching sweep
   Saturday sealed it for Jo Mamas" over "a pitching sweep sealed Saturday" — the recap
   may be read on its own, so the subject should be explicit. [owner, 2026-06-16]
+- **Pin a marker to the *sustained* swing, not the single steepest tick — and search
+  a wide enough window.** Two traps when self-selecting a marker's `at`: (1) the single
+  biggest tick-to-tick jump can be a **blip that reverts** (a momentary stale/partial
+  read), not the real separation — verify the WP *holds* at the new level for several
+  ticks after the tick you pick. (2) A naive "that calendar day" UTC window **misses
+  US night games**, which bank ~23:00 UTC → 04:00 UTC the *next* day; search the
+  evening-through-early-next-morning span, not 00:00–12:00. *Worked example:* m72's
+  HR marker was first pinned to the steepest tick (Jun 16 02:45 UTC, +8.8) — a
+  Jun-15-night blip that reverted — when the actual Neto/Gelof/Steer separation was
+  Jun 16 **23:00** UTC (+16pp, sustained). The owner caught it on the published chart
+  ("not much of a swing at that timestamp"). Sanity-check every marker against the
+  rendered curve: it should sit on a visible, lasting move. [owner, 2026-06-22]
