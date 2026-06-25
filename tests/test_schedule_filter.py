@@ -98,3 +98,21 @@ def test_today_scheduled_game_kept():
     now = "2026-06-05T08:00:00+00:00"
     games = sim.load_schedule_by_team(conn, 10, now=now).get(2, [])
     assert [g["game_pk"] for g in games] == [1]
+
+
+def test_yesterday_utc_late_game_kept():
+    # Regression for 2026-06-24 (Gage Jump): a game's US calendar date is a day
+    # behind UTC. At 00:01 UTC, a legit not-yet-started game dated "yesterday" must
+    # NOT be dropped (it plays into the early UTC hours). The 1-day buffer keeps it;
+    # a bare `game_date < today` wrongly dropped it and suppressed the matchup ~4h.
+    conn = _mem_db()
+    _row(conn, pk=1, date="2026-06-04", status="Scheduled")   # yesterday UTC, plays tonight
+    conn.commit()
+    now = "2026-06-05T00:01:00+00:00"                          # just past UTC midnight
+    games = sim.load_schedule_by_team(conn, 10, now=now).get(2, [])
+    assert [g["game_pk"] for g in games] == [1]                # kept (not a no-show)
+    # But a game 2+ days stale (a real postponed-row lag) is still dropped.
+    _row(conn, pk=2, date="2026-06-03", status="Scheduled")
+    conn.commit()
+    games = sim.load_schedule_by_team(conn, 10, now=now).get(2, [])
+    assert {g["game_pk"] for g in games} == {1}               # pk=2 (2 days stale) dropped

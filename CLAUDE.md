@@ -931,9 +931,20 @@ time and the signatures that explain ~every swing fast:
      **Knights to ~6% the entire week**, only correcting Monday when refresh-schedule
      moved the date to August. (The Knights had actually won K 45-44 and the 5-5 hits
      tiebreaker the whole time.) Fix: the past-date guard — a game whose date is
-     strictly past yet isn't Final/live *didn't happen*, so drop it without waiting
+     well past yet isn't Final/live *didn't happen*, so drop it without waiting
      for the status feed. `compute` passes `now`; the guard is opt-in (no `now` ⇒
      old behavior) so other callers/tests are unchanged. Tests: `test_schedule_filter.py`.
+   - **The guard uses a 1-day buffer (`game_date < today_utc − 1`), NOT `< today`
+     — learned the hard way (2026-06-24 Gage Jump regression).** `game_date` is the
+     *US calendar* date, a day behind UTC for late/West-Coast games (date D plays
+     into D+1 early UTC). A bare `< today` dropped a legit not-yet-started start the
+     instant UTC passed midnight: Jump dated Jun 24, still pre-game at 00:01 UTC Jun
+     25 → dropped → Sox Teacher suppressed ~13%→~3% for ~4h until his game went Final
+     and the 9 K banked (recovering to ~14%). The buffer keeps a game through all of
+     the next UTC day while still catching genuinely-stale postponed rows (≥1 day past
+     before they matter; Imanaga's lingered ~4 days). **Lesson: test the boundary** —
+     the original tests used a 2-days-stale game and passed under both the buggy and
+     fixed cutoff; the bug lived exactly at the today−1 edge.
    - **Diagnostic tell:** a phantom start suppresses/inflates a WP **persistently
      (the whole week, not one tick)** and corrects exactly at a `refresh-schedule`
      boundary, not at a game event. So a WP that's been "off" for days — not a single

@@ -1722,16 +1722,26 @@ def load_schedule_by_team(conn: sqlite3.Connection,
         and inflating teammates' RP appearances (Ranger Suarez / Chapman,
         2026-06-06).
       - **Postponed/suspended/cancelled status**, even if still dated in-window.
-      - **Past-dated games that never went Final or live** (only when `now` is
-        given). A postponement isn't reflected immediately — the makeup date and
+      - **Stale past-dated games that never went Final or live** (only when `now`
+        is given). A postponement isn't reflected immediately — the makeup date and
         `Postponed` status can lag a day-plus behind in `team_schedule` (the row
         keeps its original in-window date + a stale `Scheduled` status until the
         next `refresh-schedule`). In that window the two checks above don't fire,
         so the sim counts a game that already should have happened and credits a
-        phantom start. A game whose date is strictly in the past yet isn't
-        `Final`/`In Progress` didn't happen — drop it. (2026-06-18 Imanaga: a
-        postponed Cubs game suppressed a matchup's WP all week, only correcting
-        when the Monday refresh-schedule finally moved the date to August.)
+        phantom start. (2026-06-18 Imanaga: a postponed Cubs game suppressed a
+        matchup's WP all week, only correcting when the Monday refresh-schedule
+        finally moved the date to August.)
+
+        **The cutoff uses a 1-day buffer (`game_date < today_utc − 1`), NOT
+        `< today`.** `game_date` is the game's *US calendar* date, which is a day
+        behind UTC for late/West-Coast games (a game dated D plays D-evening US =
+        into D+1 early UTC). A bare `< today` drops a legit not-yet-started game
+        the instant UTC ticks past midnight — the 2026-06-24 Gage Jump regression:
+        a real start dated Jun 24, still pre-game at 00:01 UTC Jun 25, got dropped
+        and suppressed Sox Teacher ~3% for ~4h until the game finally went Final.
+        The buffer keeps a game through all of the next UTC day (covering any late
+        game) while still catching genuinely-stale postponed rows, which sit ≥1 day
+        past before they matter (Imanaga's lingered ~4 days).
     """
     start, end = mlb.matchup_period_window(matchup_period_id)
     rows = conn.execute(
@@ -1745,12 +1755,13 @@ def load_schedule_by_team(conn: sqlite3.Connection,
         """,
         (matchup_period_id, start.isoformat(), end.isoformat()),
     ).fetchall()
-    today = now[:10] if now else None   # UTC calendar date of the compute
+    # 1-day buffer for the US-date ⇄ UTC offset (see docstring).
+    cutoff = (date.fromisoformat(now[:10]) - timedelta(days=1)).isoformat() if now else None
     out: dict[int, list[dict]] = {}
     for r in rows:
         if r["game_status"] in _SKIP_SCHEDULE_STATES:
             continue
-        if (today and r["game_date"] < today
+        if (cutoff and r["game_date"] < cutoff
                 and r["game_status"] not in FINAL_GAME_STATES
                 and r["game_status"] != "In Progress"):
             continue
