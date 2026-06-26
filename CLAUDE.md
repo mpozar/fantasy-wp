@@ -699,16 +699,24 @@ rate they imply matches ESPN's live scraped rate. Pieces:
     aged deGrom's game out of the window → **100%→0%** flip (lost the QS-tiebreaker
     on hits). The "settle revert" was the *window boundary*, not an ESPN correction.
   - **`settled_floor`** (`sim.load_settled_floor`) is the QS already banked from
-    aged-out games: the running **MIN** of the scraped weekly count over the
-    window-day (`fetched_at >= since_date`). Observation-driven, so it needs no
-    settle-clock assumption (the 07:00 boundary only *buckets* the day; the min value
-    has ~10h of slack) and **self-heals** a downward stat correction (the min follows
-    the scrape down). The `max` is **fail-safe**: never below the authoritative scrape
-    (a lagging scrape can't drop a real credit — preserves the in-progress→Final
-    gap-fill), never the double-count. No floor (isolated callers) ⇒ default
-    floor = scrape ⇒ additive. Residual (accepted, bounded): a downward correction to
-    a *settled* game is masked until the next 07:00 re-min; a buggy box parse can
-    over-credit in-window; both narrow, vs the old guaranteed 7h double-count.
+    aged-out games (in-period games with `game_date < since_date`), counted directly
+    from the write-once **`pitcher_final_lines` archive + that date's `daily_lineups`
+    slots** — the same definition `_count_qs`/`_count_svhd` apply in-window. Aged-out
+    (`< since_date`) is disjoint from the in-window box count (`>= since_date`), so
+    `floor + box` never double-counts a game. The `max` is **fail-safe**: never below
+    the authoritative scrape (a lagging scrape can't drop a real credit — preserves the
+    in-progress→Final gap-fill), never the double-count. No floor (isolated callers)
+    ⇒ default floor = scrape ⇒ additive.
+    - *Was the running MIN of the scraped weekly count over the window-day — replaced
+      2026-06-26.* That assumed all aged-out credits banked **before** the window-day
+      began, which breaks when a prior-day (West-Coast/post-midnight) game's QS/SVHD
+      scrape-banks **late, inside** the window-day: the day-min is then taken before
+      that credit lands and drops it from the floor, masking an in-window box credit.
+      (Ohtani's Jun-24 QS banked 02:30 Jun-25 → MIN floor = 1 vs the true 2 → Connelly
+      Early's Jun-25 QS stayed hidden until the 07:00 settle.) The box-archive count is
+      immune to *when* the scrape captured a game. Trade-off: a *downward* correction to
+      a settled QS/SVHD no longer self-heals (the archive is write-once) — accepted, as
+      QS/SVHD are deterministic thresholds rarely revised after Final.
   - **Caught by validation:** `INV_SITE_QS_OVERCREDIT` (published-site) independently
     recomputes `max(scrape, floor+box)` and errors if the site shows more;
     `ANOM_WP_RAIL_FLIP` flags the near-0↔near-100 UX symptom.

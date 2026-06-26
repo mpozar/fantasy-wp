@@ -1922,34 +1922,74 @@ def load_active_slots(conn: sqlite3.Connection, fantasy_team_id: int, *,
 def load_settled_floor(conn: sqlite3.Connection, matchup_id: int, team_id: int,
                        stat_ids, *, since_date: str,
                        as_of: str | None = None) -> dict[int, float]:
-    """Per-counting-cat 'settled floor' for the QS/SVHD double-count guard: the
-    running MIN of the scraped weekly count over the current window-day (rows with
-    `fetched_at >= since_date`). That minimum is the count from games already aged
-    out of the reconstruction window — captured by *observation*, not a clock: the
-    scrape only rises within a settled period, so the day's minimum is its value
-    before any in-window game contributed. This needs no assumption about the exact
-    settle time (the 07:00 boundary only buckets the day; the min value is robust to
-    drift) and *self-heals* a downward stat correction (the min follows the scrape
-    down). With `as_of`, bounds the read to `fetched_at <= as_of` (what a publish
-    stamped `generated_at=as_of` would have seen).
+    """Per-cat 'settled floor' for the QS/SVHD double-count guard: the QS/SVHD
+    already banked from games **aged out** of the reconstruction window (in-period
+    games with `game_date < since_date`), counted directly from the write-once
+    `pitcher_final_lines` archive + that date's locked `daily_lineups` slots — the
+    same definition `_count_qs`/`_count_svhd` apply to in-window games.
 
-    Returns {stat_id: floor} only for stats that have scraped history this day;
-    stats with none are omitted, so the caller defaults them to the scrape (trust
-    the authoritative source when no floor can be established)."""
+    Why not the scrape: this used to be the running MIN of the scraped weekly count
+    over the window-day, on the assumption that aged-out games' credits were all
+    banked *before* the window-day began. That breaks when a prior-day (West-Coast /
+    post-midnight) game's QS/SVHD scrape-banks **late** — *inside* the window-day:
+    the day-min is then taken before that credit lands and drops it from the floor,
+    which masks an in-window box credit. (2026-06-26: Ohtani's Jun-24 QS banked
+    02:30 Jun-25 → floor=1 vs the true 2 → Early's Jun-25 box QS was hidden until the
+    07:00 settle.) Counting aged-out games straight from the archive + that day's
+    lineup is immune to *when* the scrape happened to capture them.
+
+    The deGrom double-count guard is preserved: aged-out games are `game_date <
+    since_date`, exactly disjoint from the in-window box count (`game_date >=
+    since_date`), so `floor + box` never counts the same game twice.
+
+    `as_of` (publish reproducibility) bounds the archive to lines finalized by then.
+    Trade-off vs the old MIN: a *downward* correction to a settled QS/SVHD no longer
+    self-heals (the archive is write-once) — but QS/SVHD are deterministic thresholds
+    rarely revised after Final (unlike the H/error revisions the min guarded against).
+    Returns {stat_id: floor} for whichever of QS/SVHD were requested."""
+    want = {sid for sid in stat_ids if sid in (STAT_QS, STAT_SVHD)}
+    if not want:
+        return {}
+    prow = conn.execute("SELECT matchup_period_id FROM matchups WHERE id=?",
+                        (matchup_id,)).fetchone()
+    if prow is None:
+        return {}
+    try:
+        period_start = mlb.matchup_period_window(prow["matchup_period_id"])[0].isoformat()
+    except Exception:
+        return {}
+    # That date's pitching-slot players, keyed by (game_date, normalized name), so
+    # a pitcher is credited only on a day he was actually slotted to pitch.
+    try:
+        slot_rows = conn.execute(
+            "SELECT dl.game_date, p.full_name, dl.lineup_slot_id "
+            "FROM daily_lineups dl JOIN players p ON p.id = dl.player_id "
+            "WHERE dl.fantasy_team_id=? AND dl.game_date>=? AND dl.game_date<?",
+            (team_id, period_start, since_date)).fetchall()
+        slot_by_day_name = {(r["game_date"], _norm_name(r["full_name"])): r["lineup_slot_id"]
+                            for r in slot_rows}
+        sql = ("SELECT game_date, name, games_started, outs, er, sv, hld "
+               "FROM pitcher_final_lines WHERE game_date>=? AND game_date<?")
+        params: list = [period_start, since_date]
+        if as_of:
+            sql += " AND final_at <= ?"
+            params.append(as_of)
+        lines = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    qs = svhd = 0
+    for ln in lines:
+        if slot_by_day_name.get((ln["game_date"], _norm_name(ln["name"]))) not in PITCHER_SLOTS:
+            continue
+        if (ln["games_started"] and (ln["outs"] or 0) >= ingame.QS_OUTS
+                and (ln["er"] or 0) <= ingame.QS_MAX_ER):
+            qs += 1
+        svhd += (ln["sv"] or 0) + (ln["hld"] or 0)
     out: dict[int, float] = {}
-    for sid in stat_ids:
-        try:
-            sql = ("SELECT MIN(score) AS f FROM category_state "
-                   "WHERE matchup_id=? AND team_id=? AND stat_id=? AND fetched_at >= ?")
-            params: list = [matchup_id, team_id, sid, since_date]
-            if as_of:
-                sql += " AND fetched_at <= ?"
-                params.append(as_of)
-            row = conn.execute(sql, params).fetchone()
-        except sqlite3.OperationalError:
-            row = None
-        if row is not None and row["f"] is not None:
-            out[sid] = row["f"]
+    if STAT_QS in want:
+        out[STAT_QS] = qs
+    if STAT_SVHD in want:
+        out[STAT_SVHD] = svhd
     return out
 
 

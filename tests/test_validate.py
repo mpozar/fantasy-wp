@@ -525,8 +525,14 @@ def _mem_db_qs(tmp_path):
             player_id INT, lineup_slot_id INT, status TEXT);
         CREATE TABLE player_injuries (norm_name TEXT, return_date TEXT);
         CREATE TABLE player_projections (player_id INT, split_id INT, stat_id INT, value REAL);
+        CREATE TABLE pitcher_final_lines (game_date TEXT, name TEXT, games_started INT,
+            outs INT, er INT, sv INT, hld INT, final_at TEXT);
         """
     )
+    # matchup 1 is period 10 (window 2026-06-01..06-07); the settled floor counts
+    # aged-out (< since_date) games from pitcher_final_lines — none here (deGrom's
+    # start is in-window), so floor = 0 and the recompute is max(scrape, 0 + box).
+    conn.execute("INSERT INTO matchups (id, matchup_period_id) VALUES (1, 10)")
     # deGrom: a Final QS start (6 IP, 0 ER) for fantasy team 20, slotted SP.
     conn.execute("INSERT INTO team_schedule VALUES (10, 9001, '2026-06-07', 26, 'Final')")
     conn.execute("INSERT INTO live_pitchers VALUES "

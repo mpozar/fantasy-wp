@@ -548,39 +548,83 @@ def test_svhd_additive_over_multiple_relievers():
     assert state[sim.STAT_SVHD] == 5 + 2            # SV + HLD (no floor → additive)
 
 
-# ──────────────────── settled floor (observation-driven) ────────────────────
+# ──────────────────── settled floor (box-archive, aged-out games) ────────────────────
+# Period 10 window is 2026-06-01..06-07 (mlb.matchup_period_window). The floor counts
+# QS/SVHD from in-period games with game_date < since_date, via pitcher_final_lines +
+# that day's daily_lineups slots. Robust to *when* a credit was scrape-captured.
 
-def _floor_db(rows):
+def _floor_db(*, lineups=(), final_lines=(), period_id=10, team=13):
+    """lineups: (game_date, player_id, full_name, slot). final_lines: (game_date,
+    name, gs, outs, er, sv, hld, final_at)."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE category_state (matchup_id INT, team_id INT, stat_id INT, "
-                 "score REAL, fetched_at TEXT)")
-    conn.executemany("INSERT INTO category_state VALUES (?,?,?,?,?)", rows)
+    conn.execute("CREATE TABLE matchups (id INT, matchup_period_id INT)")
+    conn.execute("INSERT INTO matchups VALUES (60, ?)", (period_id,))
+    conn.execute("CREATE TABLE players (id INT, full_name TEXT)")
+    conn.execute("CREATE TABLE daily_lineups (game_date TEXT, fantasy_team_id INT, "
+                 "player_id INT, lineup_slot_id INT, fetched_at TEXT)")
+    conn.execute("CREATE TABLE pitcher_final_lines (game_date TEXT, name TEXT, "
+                 "games_started INT, outs INT, er INT, sv INT, hld INT, final_at TEXT)")
+    seen = set()
+    for gd, pid, name, slot in lineups:
+        if pid not in seen:
+            conn.execute("INSERT INTO players VALUES (?,?)", (pid, name)); seen.add(pid)
+        conn.execute("INSERT INTO daily_lineups VALUES (?,?,?,?,?)",
+                     (gd, team, pid, slot, gd + "T12:00:00+00:00"))
+    for gd, name, gs, outs, er, sv, hld, fin in final_lines:
+        conn.execute("INSERT INTO pitcher_final_lines VALUES (?,?,?,?,?,?,?,?)",
+                     (gd, name, gs, outs, er, sv, hld, fin))
     conn.commit()
     return conn
 
 
-def test_settled_floor_is_running_min_over_the_window_day():
-    # QS across one window-day: settled total 2 all morning, then deGrom's QS banks
-    # to 3 mid-day. The floor (running min) = 2 = the pre-window settled count.
-    conn = _floor_db([
-        (60, 13, 63, 2.0, "2026-06-07T08:00:00+00:00"),
-        (60, 13, 63, 2.0, "2026-06-07T18:00:00+00:00"),
-        (60, 13, 63, 3.0, "2026-06-07T21:15:00+00:00"),
-    ])
-    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {63: 2.0}
+def test_settled_floor_counts_aged_out_qs_from_archive():
+    # Two aged-out quality starts (Jun 2, Jun 4), both pitchers slotted to pitch
+    # that day → floor QS = 2. This is the count the old MIN-of-scrape undercounted
+    # when a credit banked late (2026-06-26 Ohtani/Early).
+    conn = _floor_db(
+        lineups=[("2026-06-02", 1, "Ace A", 15), ("2026-06-04", 2, "Ace B", 15)],
+        final_lines=[("2026-06-02", "Ace A", 1, 18, 2, 0, 0, "2026-06-02T23:00:00+00:00"),
+                     ("2026-06-04", "Ace B", 1, 21, 1, 0, 0, "2026-06-05T03:00:00+00:00")],  # banked "late"
+    )
+    assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_QS,), since_date="2026-06-05") == {sim.STAT_QS: 2}
 
 
-def test_settled_floor_self_heals_downward_correction():
-    # A retroactive correction drops a settled QS (3→2). The min follows it down,
-    # so the floor self-heals rather than masking the old higher value.
-    conn = _floor_db([
-        (60, 13, 63, 3.0, "2026-06-07T08:00:00+00:00"),
-        (60, 13, 63, 2.0, "2026-06-07T15:00:00+00:00"),   # correction
-    ])
-    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {63: 2.0}
+def test_settled_floor_respects_slot_and_qs_threshold_and_window():
+    conn = _floor_db(
+        lineups=[("2026-06-02", 1, "Ace A", 15),     # slotted to pitch
+                 ("2026-06-02", 2, "Benched B", 16), # bench → not counted
+                 ("2026-06-04", 3, "Blowup C", 15)],
+        final_lines=[
+            ("2026-06-02", "Ace A", 1, 18, 2, 0, 0, "2026-06-02T23:00:00+00:00"),  # QS ✓
+            ("2026-06-02", "Benched B", 1, 18, 1, 0, 0, "2026-06-02T23:00:00+00:00"),  # benched ✗
+            ("2026-06-04", "Blowup C", 1, 18, 5, 0, 0, "2026-06-05T03:00:00+00:00"),  # 5 ER, not a QS ✗
+            ("2026-06-06", "Ace A", 1, 21, 0, 0, 0, "2026-06-06T23:00:00+00:00"),  # in-window (>= since) ✗
+        ],
+    )
+    assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_QS,), since_date="2026-06-05") == {sim.STAT_QS: 1}
 
 
-def test_settled_floor_excludes_prior_days_and_is_empty_without_history():
-    conn = _floor_db([(60, 13, 63, 9.0, "2026-06-06T23:00:00+00:00")])  # prior day
-    assert sim.load_settled_floor(conn, 60, 13, (63,), since_date="2026-06-07") == {}
+def test_settled_floor_svhd_and_empty():
+    conn = _floor_db(
+        lineups=[("2026-06-03", 1, "Closer A", 14)],
+        final_lines=[("2026-06-03", "Closer A", 0, 3, 0, 1, 0, "2026-06-03T23:00:00+00:00"),  # 1 SV
+                     ("2026-06-03", "Closer A", 0, 3, 0, 0, 1, "2026-06-03T23:30:00+00:00")],  # +1 HLD
+    )
+    assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_SVHD,), since_date="2026-06-05") == {sim.STAT_SVHD: 2}
+    # No aged-out games at all → floor 0 (not omitted), so floor+box can't double-count.
+    empty = _floor_db(lineups=[], final_lines=[])
+    assert sim.load_settled_floor(empty, 60, 13, (sim.STAT_QS, sim.STAT_SVHD),
+                                  since_date="2026-06-05") == {sim.STAT_QS: 0, sim.STAT_SVHD: 0}
+
+
+def test_settled_floor_as_of_excludes_later_finalizations():
+    # A QS finalized after as_of isn't counted (publish reproducibility).
+    conn = _floor_db(
+        lineups=[("2026-06-04", 1, "Ace A", 15)],
+        final_lines=[("2026-06-04", "Ace A", 1, 18, 2, 0, 0, "2026-06-05T03:00:00+00:00")],
+    )
+    assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_QS,), since_date="2026-06-05",
+                                  as_of="2026-06-05T01:00:00+00:00") == {sim.STAT_QS: 0}
+    assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_QS,), since_date="2026-06-05",
+                                  as_of="2026-06-05T06:00:00+00:00") == {sim.STAT_QS: 1}
