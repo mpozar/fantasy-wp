@@ -52,6 +52,24 @@ def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
     return True
 
 
+def _write_noncurrent_score(conn, prev: dict, mid: int, tid: int, sid: int,
+                            score, result, now: str) -> bool:
+    """Upsert one past/future-period category_state cell, skipping the write when
+    the value is unchanged from the latest stored one.
+
+    Settled past weeks never change and future weeks are all-zero, yet `fetch` runs
+    every 5 min — without this guard each tick re-INSERTed an identical snapshot of
+    every non-current matchup (~2,600 duplicate rows/tick). That bloated
+    category_state to ~21M rows / 3.8 GB and slowed every reader. A rare late ESPN
+    correction to an already-settled week still lands, because its (score, result)
+    then differs from `prev`. `prev` is keyed (matchup_id, team_id, stat_id) →
+    (score, result), latest value per cell. Returns True if a row was written."""
+    if prev.get((mid, tid, sid)) == (score, result):
+        return False
+    conn.execute(_CATEGORY_STATE_UPSERT, (mid, tid, sid, score, result, now))
+    return True
+
+
 def _scrape_owns_display_cat(stat_id: int, in_progress: bool) -> bool:
     """Whether the live DOM scrape (not REST) owns this current-period display cat
     this tick — i.e. REST must skip writing it.
@@ -213,13 +231,37 @@ def fetch() -> None:
         # so a stale/partial source can't regress it. Past/future periods: REST
         # only, no scrape, no guard.
         display_cats = {c.stat_id for c in shape.categories}
-        seeded_current = {
-            r["matchup_id"] for r in conn.execute(
-                "SELECT DISTINCT cs.matchup_id FROM category_state cs "
-                "JOIN matchups m ON m.id = cs.matchup_id "
-                "WHERE m.matchup_period_id = ?", (current_period,),
-            ).fetchall()
+        # Which current-period matchups already have category_state rows (so we know
+        # whether to seed them from REST). Probe each matchup_id directly — an index
+        # equality seek on idx_category_state_recent — rather than the old
+        # `... JOIN matchups WHERE matchup_period_id=?`, which couldn't use that
+        # matchup_id-led index and full-scanned all of category_state (~29s once the
+        # table grew to ~21M rows: the bulk of every idle `fetch` tick).
+        current_matchup_ids = {
+            m["matchup_id"] for m in matchups
+            if m["matchup_period_id"] == current_period
         }
+        seeded_current = {
+            mid for mid in current_matchup_ids
+            if conn.execute(
+                "SELECT 1 FROM category_state WHERE matchup_id=? LIMIT 1", (mid,)
+            ).fetchone()
+        }
+        # Latest stored value per non-current (matchup,team,stat), for the dedup in
+        # `_write_noncurrent_score` below. After the one-time prune this scans only
+        # the few thousand settled/future rows; see that helper for the rationale.
+        prev_noncurrent: dict = {}
+        for r in conn.execute(
+            "SELECT cs.matchup_id, cs.team_id, cs.stat_id, cs.score, cs.result, "
+            "MAX(cs.fetched_at) FROM category_state cs "
+            "JOIN matchups m ON m.id = cs.matchup_id "
+            "WHERE m.matchup_period_id <> ? "
+            "GROUP BY cs.matchup_id, cs.team_id, cs.stat_id",
+            (current_period,),
+        ).fetchall():
+            prev_noncurrent[(r["matchup_id"], r["team_id"], r["stat_id"])] = (
+                r["score"], r["result"],
+            )
         # Last-good current-period scores, for the monotonicity guard — latest
         # value *per (matchup, team, stat)* (a stat not written every tick, like
         # the just-restored ER/OUTS, must compare against its own last value, not
@@ -275,11 +317,9 @@ def fetch() -> None:
                                           s["team_id"], sid,
                                           s["score"], s["result"], now)
                 else:
-                    conn.execute(
-                        _CATEGORY_STATE_UPSERT,
-                        (m["matchup_id"], s["team_id"], s["stat_id"],
-                         s["score"], s["result"], now),
-                    )
+                    _write_noncurrent_score(conn, prev_noncurrent, m["matchup_id"],
+                                            s["team_id"], sid,
+                                            s["score"], s["result"], now)
         conn.commit()
 
         # Override the (lagging) REST scoreByStat for the CURRENT period with
