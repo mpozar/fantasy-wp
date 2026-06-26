@@ -164,6 +164,21 @@ same flat-ROS-share-split fallback as far-future weeks (`_open_sp_game_weight` �
 still varies; we only lose the turn placement, never regressing below the
 pre-cadence model.
 
+**Physical start-count cap (`_max_remaining_starts` / `_cap_extra_dist`,
+current-week only).** A backstop against projecting more starts than the rotation
+physically allows: a pitcher can't start more often than `MIN_REST_DAYS` (5) apart.
+After the fixed + extra pieces are built, the **extra (cadence) piece is clipped**
+so that `announced_starts + extra ≤` the min-rest-spaced turns possible from his
+last recorded start through the period's last game. **Only the extra is clipped —
+announced probable starts are always respected** (a real two-start week like
+Jun 23 + Jun 28 survives; physical max over that window is 2). This catches the
+transient where the fixed and cadence pieces are computed against in-flux game
+statuses around the daily rollover and momentarily sum to the impossible — e.g.
+2026-06-26 Rasmussen: a cadence Jun-27 turn colliding with a soon-to-be-announced
+Jun-28 start briefly projected 2 starts in 2 days. Gated on `use_cadence` (current
+week): for future weeks the anchor is ~a week stale, so the cap would be unreliable
+and the flat fallback stays anchor-independent by design. Tests: `test_start_cap.py`.
+
 **Anchor data:** `pitcher_starts` is populated forward by `refresh-schedule`
 (every Final game's probable IS its starter) and seeded once by
 `app backfill-starts [--days 21]` (the regular fetch window only spans the

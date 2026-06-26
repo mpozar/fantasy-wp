@@ -207,6 +207,12 @@ REST_DAY_WEIGHTS = {5: 0.340, 6: 0.544, 7: 0.101, 8: 0.014}
 # A SP gets at most ~2 starts in a 7-day scoring period.
 MAX_EXTRA_STARTS = 2
 
+# Minimum days between a pitcher's starts — the shortest real rotation turn.
+# Used as a physical backstop on total projected starts (fixed + cadence): a
+# pitcher can't start more often than this, so we never project, say, both a
+# Saturday and a Sunday start.
+MIN_REST_DAYS = min(REST_DAY_WEIGHTS)
+
 # MLB statsapi detailedState values that mean a game is over. Canonical set —
 # cli.py and validate.py alias this rather than re-declaring the literal.
 FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
@@ -1149,6 +1155,32 @@ def _expected_extra_starts(dist: list[float] | None) -> float:
     return sum(i * pk for i, pk in enumerate(dist or []))
 
 
+def _max_remaining_starts(anchor: date | None, window_end: date | None,
+                          min_rest: int = MIN_REST_DAYS) -> int | None:
+    """How many more starts a pitcher can physically make from `anchor` (his last
+    recorded start) through `window_end`, spaced ≥ `min_rest` days apart. `None`
+    when either bound is unknown (caller skips the cap). Counts turns *after* the
+    anchor, so it bounds the *remaining* starts — announced + cadence combined."""
+    if anchor is None or window_end is None:
+        return None
+    first = anchor + timedelta(days=min_rest)
+    if first > window_end:
+        return 0
+    return (window_end - first).days // min_rest + 1
+
+
+def _cap_extra_dist(dist: list[float], max_extra: int) -> list[float]:
+    """Fold probability mass above `max_extra` down onto it so the extra-start
+    distribution can't exceed what the rotation physically allows. Stays a valid
+    distribution (sums to 1). `max_extra=0` ⇒ `[1.0]` (no extra start)."""
+    max_extra = max(0, max_extra)
+    if len(dist) - 1 <= max_extra:
+        return dist
+    capped = list(dist[:max_extra + 1])
+    capped[max_extra] += sum(dist[max_extra + 1:])
+    return capped
+
+
 def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
     """Per-start stat rates (`ros_v / denom`) for the pitcher counters — the
     multipliers used to scale a SP's sampled extra starts. Mirrors the `rate`
@@ -1209,6 +1241,12 @@ def build_budgets(roster: list[dict],
     live_by_team = live_by_team or {}
     last_start_by_pitcher = last_start_by_pitcher or {}
     as_of = as_of or _utc_today()
+
+    # End of the scoring window = latest scheduled game across the period (the
+    # schedule is already period-clamped). Used for the physical start-count cap.
+    _all_dates = [g["game_date"] for games in schedule_by_team.values()
+                  for g in games if g.get("game_date")]
+    window_end = date.fromisoformat(max(_all_dates)) if _all_dates else None
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts, as_of)
 
     out: list[Budget] = []
@@ -1287,6 +1325,31 @@ def build_budgets(roster: list[dict],
                         if flat_mean > 0:
                             extra_dist = _split_mean_to_dist(flat_mean)
                 if extra_dist is not None:
+                    # Physical backstop: a pitcher can't start more often than the
+                    # rotation allows, so cap the *extra* (speculative) piece such
+                    # that announced starts + extra never exceed the min-rest-spaced
+                    # turns physically possible in the remaining window. Only the
+                    # extra is clipped — announced probable starts (`probable_units`)
+                    # are always respected. Anchored on the last *recorded* start so
+                    # the announced start is counted within the budget. Prevents
+                    # transient impossible-back-to-back projections (2026-06-26
+                    # Rasmussen: a cadence Jun-27 turn colliding with a soon-to-be-
+                    # announced Jun-28 start briefly projected 2 starts in 2 days).
+                    # Current week only: the anchor (last recorded start) is fresh,
+                    # so the physical bound is meaningful. For future weeks the anchor
+                    # is ~a week stale (the flat fallback is anchor-independent by
+                    # design — see test_use_cadence_flag_gates_the_model), so skip.
+                    anchor_iso = (last_start_by_pitcher.get(_norm_name(p["full_name"]))
+                                  if use_cadence else None)
+                    if anchor_iso:
+                        try:
+                            phys = _max_remaining_starts(
+                                date.fromisoformat(anchor_iso), window_end)
+                        except ValueError:
+                            phys = None
+                        if phys is not None:
+                            max_extra = phys - math.ceil(probable_units - 1e-9)
+                            extra_dist = _cap_extra_dist(extra_dist, max_extra)
                     # Probables are the fixed units; the open tail is sampled.
                     # sp_est_units = E[extra starts], used for the two-way
                     # subtraction and the displayed start count.
