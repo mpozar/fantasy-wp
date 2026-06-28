@@ -628,3 +628,75 @@ def test_settled_floor_as_of_excludes_later_finalizations():
                                   as_of="2026-06-05T01:00:00+00:00") == {sim.STAT_QS: 0}
     assert sim.load_settled_floor(conn, 60, 13, (sim.STAT_QS,), since_date="2026-06-05",
                                   as_of="2026-06-05T06:00:00+00:00") == {sim.STAT_QS: 1}
+
+
+# ───────── live box-score persistence: duplicate personId tolerance ─────────
+# Regression for the 2026-06-28 refresh-live crash: MLB statsapi repeated a
+# personId within one game's `batters` array (game 824256 listed Matt Vierling
+# & Ben Malgeri twice), so live_b/live_p can carry a duplicate (game_pk,
+# mlbam_id) in a single tick. parse_boxscore does NOT dedup (by design — the
+# repeated line is identical), so the DB write must be an idempotent upsert, not
+# a plain INSERT that trips the (game_pk, mlbam_id) primary key. The SQL below
+# mirrors cli.refresh_live's writes.
+
+from app import db as _db
+
+_LIVE_PITCHER_UPSERT = """
+    INSERT INTO live_pitchers
+        (game_pk, mlbam_id, name, pro_team_id, order_idx, is_last,
+         games_started, outs, er, k, p_h, p_bb, sv, hld, fetched_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(game_pk, mlbam_id) DO UPDATE SET
+        name=excluded.name, pro_team_id=excluded.pro_team_id,
+        order_idx=excluded.order_idx, is_last=excluded.is_last,
+        games_started=excluded.games_started, outs=excluded.outs,
+        er=excluded.er, k=excluded.k, p_h=excluded.p_h,
+        p_bb=excluded.p_bb, sv=excluded.sv, hld=excluded.hld,
+        fetched_at=excluded.fetched_at
+"""
+_LIVE_BATTER_UPSERT = """
+    INSERT INTO live_batters
+        (game_pk, mlbam_id, name, pro_team_id, ab, h, b2, b3, hr, bb, hbp, sf, fetched_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(game_pk, mlbam_id) DO UPDATE SET
+        name=excluded.name, pro_team_id=excluded.pro_team_id,
+        ab=excluded.ab, h=excluded.h, b2=excluded.b2, b3=excluded.b3,
+        hr=excluded.hr, bb=excluded.bb, hbp=excluded.hbp,
+        sf=excluded.sf, fetched_at=excluded.fetched_at
+"""
+
+
+def _schema_db():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(_db.SCHEMA)  # real DDL incl. PRIMARY KEY (game_pk, mlbam_id)
+    for col, type_ in (("p_h", "INTEGER"), ("p_bb", "INTEGER"),
+                       ("sv", "INTEGER"), ("hld", "INTEGER")):
+        try:
+            conn.execute(f"ALTER TABLE live_pitchers ADD COLUMN {col} {type_}")
+        except sqlite3.OperationalError:
+            pass
+    return conn
+
+
+def test_live_batter_upsert_tolerates_duplicate_personid():
+    conn = _schema_db()
+    # Same (game_pk=824256, mlbam_id=663837) line twice in one tick.
+    row = (824256, 663837, "Matt Vierling", 100, 3, 1, 0, 0, 0, 0, 0, 0, "t0")
+    conn.execute(_LIVE_BATTER_UPSERT, row)
+    conn.execute(_LIVE_BATTER_UPSERT, row)  # would raise IntegrityError on plain INSERT
+    got = conn.execute("SELECT mlbam_id, ab, h FROM live_batters").fetchall()
+    assert len(got) == 1
+    assert (got[0]["mlbam_id"], got[0]["ab"], got[0]["h"]) == (663837, 3, 1)
+
+
+def test_live_pitcher_upsert_last_write_wins():
+    conn = _schema_db()
+    conn.execute(_LIVE_PITCHER_UPSERT,
+                 (824256, 999, "Spot Starter", 100, 0, 1, 1, 15, 2, 6, 4, 1, 0, 0, "t0"))
+    # A later tick re-fetches the same game with an advanced line → overwrites.
+    conn.execute(_LIVE_PITCHER_UPSERT,
+                 (824256, 999, "Spot Starter", 100, 0, 1, 1, 18, 3, 7, 5, 1, 0, 0, "t1"))
+    got = conn.execute("SELECT outs, er, k, fetched_at FROM live_pitchers").fetchall()
+    assert len(got) == 1
+    assert (got[0]["outs"], got[0]["er"], got[0]["k"], got[0]["fetched_at"]) == (18, 3, 7, "t1")

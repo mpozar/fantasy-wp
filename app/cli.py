@@ -808,6 +808,13 @@ def refresh_live() -> None:
             for pk in (existing - unsettled_pks) | set(fetch_pks):
                 conn.execute("DELETE FROM live_pitchers WHERE game_pk=?", (pk,))
                 conn.execute("DELETE FROM live_batters WHERE game_pk=?", (pk,))
+            # Upsert (not plain INSERT): MLB statsapi occasionally repeats a
+            # personId within one game's `batters`/`pitchers` array (re-entry /
+            # batting-order shuffle — e.g. 2026-06-28 game 824256 listed Matt
+            # Vierling & Ben Malgeri twice), so the line can arrive twice in one
+            # tick. The repeated line is identical, so last-write-wins is correct
+            # (summing would double-count); ON CONFLICT also makes the whole
+            # write idempotent regardless of the duplicate's source.
             for lp in live_p:
                 conn.execute(
                     """
@@ -815,6 +822,13 @@ def refresh_live() -> None:
                         (game_pk, mlbam_id, name, pro_team_id, order_idx, is_last,
                          games_started, outs, er, k, p_h, p_bb, sv, hld, fetched_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(game_pk, mlbam_id) DO UPDATE SET
+                        name=excluded.name, pro_team_id=excluded.pro_team_id,
+                        order_idx=excluded.order_idx, is_last=excluded.is_last,
+                        games_started=excluded.games_started, outs=excluded.outs,
+                        er=excluded.er, k=excluded.k, p_h=excluded.p_h,
+                        p_bb=excluded.p_bb, sv=excluded.sv, hld=excluded.hld,
+                        fetched_at=excluded.fetched_at
                     """,
                     (lp["game_pk"], lp["mlbam_id"], lp["name"], lp["espn_team_id"],
                      lp["order_idx"], 1 if lp["is_last"] else 0, lp["games_started"],
@@ -828,6 +842,11 @@ def refresh_live() -> None:
                         (game_pk, mlbam_id, name, pro_team_id,
                          ab, h, b2, b3, hr, bb, hbp, sf, fetched_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(game_pk, mlbam_id) DO UPDATE SET
+                        name=excluded.name, pro_team_id=excluded.pro_team_id,
+                        ab=excluded.ab, h=excluded.h, b2=excluded.b2, b3=excluded.b3,
+                        hr=excluded.hr, bb=excluded.bb, hbp=excluded.hbp,
+                        sf=excluded.sf, fetched_at=excluded.fetched_at
                     """,
                     (lb["game_pk"], lb["mlbam_id"], lb["name"], lb["espn_team_id"],
                      lb["ab"], lb["h"], lb["b2"], lb["b3"], lb["hr"],
