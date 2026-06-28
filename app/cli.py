@@ -1010,6 +1010,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     roster_period = current if future_only else period_id
                     home_roster = sim.load_team_roster(conn, roster_period, m["home_team_id"])
                     away_roster = sim.load_team_roster(conn, roster_period, m["away_team_id"])
+                    home_slots = away_slots = None
                     if live_components:
                         home_scores, hdec = sim.apply_live_components(
                             conn, m["home_team_id"], home_scores, home_roster,
@@ -1020,6 +1021,16 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                             unsettled_lines, since_date=settle_boundary,
                             matchup_id=m["id"])
                         live_accepts += sum(1 for d in (hdec + adec) if d["accepted"])
+                        # Daily lineup slots → gate the in-game QS/SVHD override:
+                        # a pitcher benched at first pitch is locked out of today's
+                        # game (can't be moved in), so his in-progress start mustn't
+                        # be credited. Same source the banked _count_qs/_svhd use.
+                        home_slots = sim.load_active_slots(
+                            conn, m["home_team_id"], since_date=settle_boundary,
+                            fallback_roster=home_roster)
+                        away_slots = sim.load_active_slots(
+                            conn, m["away_team_id"], since_date=settle_boundary,
+                            fallback_roster=away_roster)
                     inputs = sim.MatchupInputs(
                         matchup_id=m["id"],
                         home_state=home_scores,
@@ -1033,6 +1044,8 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         lineup_slot_counts=lineup_slot_counts,
                         live_by_team=live_by_team,
                         last_start_by_pitcher=last_start_by_pitcher,
+                        home_slot_by_norm_name=home_slots,
+                        away_slot_by_norm_name=away_slots,
                         # Rotation-cadence start projection ONLY for the current
                         # week. For any future week the anchor (last recorded
                         # start) is already a week-plus stale — the pitcher will

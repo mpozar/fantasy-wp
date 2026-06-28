@@ -151,6 +151,62 @@ def test_qs_exited_shelled_is_zero():
     assert qs == 0.0
 
 
+# ── Benched-starter gate: a pitcher benched at first pitch is locked out of that
+# game, so his in-progress start mustn't be credited (2026-06-28 Hunter Brown:
+# benched all week, threw a 6 IP / 2 ER QS, was projected +1.0 QS for the Bus
+# although ESPN won't score a benched player). The gate keys on the daily-lineup
+# slot (passed as slot_by_norm_name), mirroring the banked _count_qs/_count_svhd.
+
+def _slots(name, slot):
+    return {sim._norm_name(name): slot}
+
+
+def _qs_slots(roster, schedule, live, slots):
+    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
+                            live_by_team=live, slot_by_norm_name=slots)
+    return sum(b.expected.get(STAT_QS, 0.0) for b in budgets if b.role == "SP")
+
+
+def _svhd_slots(roster, schedule, live, slots):
+    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
+                            live_by_team=live, slot_by_norm_name=slots)
+    return sum(b.expected.get(STAT_SVHD, 0.0) for b in budgets)
+
+
+def test_qs_benched_exited_qualified_not_credited():
+    # The Brown case: exited with a qualified line, but benched (slot 16) → 0,
+    # vs. 1.0 when the daily slot is a pitching slot.
+    live = _live(outs=18, er=1, is_last=0)
+    assert _qs_slots([_starter()], {TEAM: [_game()]}, live, _slots("Test Starter", 16)) == 0.0
+    assert _qs_slots([_starter()], {TEAM: [_game()]}, live, _slots("Test Starter", 15)) == 1.0
+
+
+def test_qs_benched_still_pitching_strips_phantom_share():
+    # Still pitching, threshold met (~0.95 when active). Benched → the in-progress
+    # share is stripped to ~0, not left as a phantom fractional QS.
+    live = _live(outs=18, er=1, is_last=1)
+    assert _qs_slots([_starter()], {TEAM: [_game()]}, live, _slots("Test Starter", 16)) < 0.01
+    assert _qs_slots([_starter()], {TEAM: [_game()]}, live, _slots("Test Starter", 15)) > 0.8
+
+
+def test_qs_benched_future_start_still_projected():
+    # No live line + a future (Scheduled) game he's the probable for → the override
+    # never fires, so a benched starter's FUTURE start is still projected (the
+    # streaming hedge the owner wants kept). Gate touches only started games.
+    future = _game(status="Scheduled", inning=0, state="")
+    benched = _qs_slots([_starter()], {TEAM: [future]}, {}, _slots("Test Starter", 16))
+    assert benched > 0.0
+
+
+def test_svhd_benched_reliever_in_save_spot_not_credited():
+    live = {TEAM: {sim._norm_name("Test Closer"): dict(
+        game_pk=999, name="Test Closer", is_last=1, games_started=0,
+        outs=1, er=0, k=1)}}
+    sched = {TEAM: [_game(inning=9, probable=None)]}
+    assert _svhd_slots([_reliever()], sched, live, _slots("Test Closer", 16)) == 0.0
+    assert _svhd_slots([_reliever()], sched, live, _slots("Test Closer", 15)) == 0.85
+
+
 # ── SVHD through build_budgets ────────────────────────────────────────────────
 
 def test_svhd_currently_in_save_spot_uses_conversion():

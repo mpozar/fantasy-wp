@@ -351,6 +351,27 @@ actually *starting*, then 0 when the game blew open — wrong at every step).
 a starter can't earn SV/HLD. (Mirror of the Roki Sasaki QS case — an RP genuinely
 starting; there we *keep* the QS, here we *drop* the impossible save/hold.)
 
+**Benched pitchers don't get a live QS/SVHD credit (fixed 2026-06-28).** A pitcher
+**benched at first pitch** is locked out of that game — league rules forbid moving a
+player into the lineup once his game has started — so his start can never score, even
+though `build_budgets` includes BE-slot pitchers (the streaming hedge: a manager may
+activate them *before a future start*). The in-game override fires only once a game is
+underway, so it's the right hook: `_override_sp_qs`/`_override_rp_svhd` now take a
+`slot_by_norm_name` (today's `daily_lineups` slot, roster-slot fallback — built by
+`load_active_slots`, the **same source** the banked `_count_qs`/`_count_svhd` gate on)
+and, when the pitcher is in a non-pitching slot, **strip the in-progress game's
+projected QS/SVHD share and add nothing** (not a bare skip — that would leave a
+mid-start pitcher's `qs_rate × sp_factor` base share as a phantom). Future-day starts/
+appearances keep their share. Threaded `compute → simulate → build_budgets` per side;
+absent map (tests/isolated callers) ⇒ no gating, prior behavior. The bug: 2026-06-28
+Hunter Brown, benched all week, threw a 6 IP / 2 ER QS → projected **+1.0 QS for the
+Bus** that ESPN won't score (the projection over-credited vs the banked `_count_qs`,
+which correctly excluded him). Tests: `test_ingame_integration.py` (benched exited /
+benched-still-pitching / benched-future-start-still-projected / benched RP). *Residual:*
+the gate covers QS/SVHD; a benched pitcher caught **mid-start** still carries a small
+fractional K/OUTS/ER from the un-gated counter path until he exits (sp_factor→0) — minor
+and self-healing, not yet gated.
+
 Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
 save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
 in-game QS path on two live starters (a cruising 0-ER start projected ~0.82 and

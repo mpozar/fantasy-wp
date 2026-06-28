@@ -1091,10 +1091,29 @@ def _is_save_situation(margin: int) -> bool:
     return 1 <= margin <= 3
 
 
+def _benched_for_live_start(full_name: str,
+                            slot_by_norm_name: dict[str, int] | None) -> bool:
+    """True when the day's locked lineup has this pitcher in a **non-pitching slot**
+    (bench/IL) — i.e. he's locked out of today's game. League rules forbid moving a
+    player into the lineup once his game has started, so a pitcher benched at first
+    pitch can never score that start; the in-game QS/SVHD override must not credit it
+    (mirrors the daily-slot gate `_count_qs`/`_count_svhd` apply to the *banked*
+    credit). `slot_by_norm_name` comes from `load_active_slots` (today's
+    `daily_lineups`, roster-slot fallback). When it's absent (isolated callers /
+    tests) we don't gate — preserving prior behavior. NB: this gates only the
+    *in-progress* credit; a benched pitcher's *future* start is still projected (the
+    streaming hedge), since the override only fires once a game is underway."""
+    if not slot_by_norm_name:
+        return False
+    slot = slot_by_norm_name.get(_norm_name(full_name))
+    return slot is not None and slot not in PITCHER_SLOTS
+
+
 def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
                     schedule_by_team: dict[int, list[dict]],
                     live_by_team: dict[int, dict[str, dict]],
-                    team_id: int, gs_ros: float, sp_exit_inning: float) -> None:
+                    team_id: int, gs_ros: float, sp_exit_inning: float,
+                    slot_by_norm_name: dict[str, int] | None = None) -> None:
     """Swap the in-progress start's QS share for the conditional in-game
     projection (`app.ingame`). Other games and other counters are untouched, so
     with no live game this is a no-op."""
@@ -1109,6 +1128,15 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
     if g is None:
         return
     qs_rate = (ros.get(STAT_QS) or 0) / gs_ros
+    if _benched_for_live_start(full_name, slot_by_norm_name):
+        # Benched at first pitch → locked out of this game → his start can't score.
+        # Strip the in-progress start's projected QS share and add nothing (the
+        # normal path below would replace it with the in-game estimate). For an
+        # already-exited starter the share is ~0, so this is a no-op there; for one
+        # still pitching it removes the otherwise-phantom fractional QS.
+        cur = budget.expected.get(STAT_QS, 0.0)
+        budget.expected[STAT_QS] = max(0.0, cur - qs_rate * _sp_factor(g, sp_exit_inning))
+        return
     outs_tot = ros.get(STAT_OUTS) or 0
     # Cap the inferred start length: a promoted/spot starter's tiny GS makes
     # outs_tot/gs_ros a relief-inflated nonsense value (e.g. 150 outs / 3 GS = 50).
@@ -1129,7 +1157,8 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
                       schedule_by_team: dict[int, list[dict]],
                       live_by_team: dict[int, dict[str, dict]],
                       team_id: int, gp_ros: float, units_p: float,
-                      rp_remaining: float) -> None:
+                      rp_remaining: float,
+                      slot_by_norm_name: dict[str, int] | None = None) -> None:
     """Swap each in-progress game's SVHD share for the in-game projection: the
     live line if the reliever has appeared, else a game-script-gated rate for a
     closer who hasn't entered yet. No-op when nothing is live."""
@@ -1141,6 +1170,17 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
         return
     svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
     appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
+    if _benched_for_live_start(full_name, slot_by_norm_name):
+        # Benched today → locked out of today's games → can't earn a save/hold in
+        # them. Strip each in-progress game's projected SVHD share (add nothing);
+        # any *future*-day appearances keep their share (the streaming hedge).
+        for g in ip_games.values():
+            factor = _rp_factor(g)
+            if factor <= 0:
+                continue
+            cur = budget.expected.get(STAT_SVHD, 0.0)
+            budget.expected[STAT_SVHD] = max(0.0, cur - svhd_rate * appearance_per_factor * factor)
+        return
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
     # A pitcher *starting* today can't earn a save or hold — skip the reliever
     # override entirely (it's keyed off the fantasy RP role; an RP-classified spot
@@ -1259,6 +1299,7 @@ def build_budgets(roster: list[dict],
                   last_start_by_pitcher: dict[str, str] | None = None,
                   use_cadence: bool = True,
                   as_of: date | None = None,
+                  slot_by_norm_name: dict[str, int] | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
@@ -1470,10 +1511,12 @@ def build_budgets(roster: list[dict],
                 # probable, hence fixed); the extra piece is never live.
                 if role_p == "SP":
                     _override_sp_qs(budget, p["full_name"], ros, schedule_by_team,
-                                    live_by_team, team_id, gs_ros, sp_exit_inning)
+                                    live_by_team, team_id, gs_ros, sp_exit_inning,
+                                    slot_by_norm_name)
                 else:
                     _override_rp_svhd(budget, p["full_name"], ros, schedule_by_team,
-                                      live_by_team, team_id, gp_ros, units_p, rp_remaining)
+                                      live_by_team, team_id, gp_ros, units_p, rp_remaining,
+                                      slot_by_norm_name)
                 out.append(budget)
 
         # ── Hitter budget ──────────────────────────────────────────────
@@ -1628,6 +1671,8 @@ def simulate(inputs: MatchupInputs,
              last_start_by_pitcher: dict[str, str] | None = None,
              use_cadence: bool = True,
              as_of: date | None = None,
+             home_slot_by_norm_name: dict[str, int] | None = None,
+             away_slot_by_norm_name: dict[str, int] | None = None,
              ) -> tuple[float, float, dict]:
     as_of = as_of or _utc_today()   # UTC, never host-local — resolved once per run
     home_budgets = build_budgets(
@@ -1638,6 +1683,7 @@ def simulate(inputs: MatchupInputs,
         last_start_by_pitcher=last_start_by_pitcher,
         use_cadence=use_cadence,
         as_of=as_of,
+        slot_by_norm_name=home_slot_by_norm_name,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
@@ -1647,6 +1693,7 @@ def simulate(inputs: MatchupInputs,
         last_start_by_pitcher=last_start_by_pitcher,
         use_cadence=use_cadence,
         as_of=as_of,
+        slot_by_norm_name=away_slot_by_norm_name,
     )
 
     home_wins = 0
