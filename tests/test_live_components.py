@@ -125,6 +125,28 @@ def test_parse_boxscore_skips_unknown_team():
     assert out == {"pitchers": [], "batters": []}
 
 
+def test_parse_boxscore_still_in_flags_removed_batter():
+    team = _mlmam = _mlbam_team()
+    def _bat(pid, name, order, h=1):
+        return {"person": {"id": pid, "fullName": name},
+                "battingOrder": order,
+                "stats": {"batting": {"atBats": 3, "hits": h}}}
+    payload = {"teams": {"home": {
+        "team": {"id": team},
+        "batters": [201, 202, 300],
+        "players": {
+            # Slot 2: starter (200) was replaced by a sub (201) → starter is OUT.
+            "ID201": _bat(201, "Starter Two", "200"),
+            "ID202": _bat(202, "Sub Two", "201"),
+            # Slot 3: unreplaced starter → still in.
+            "ID300": _bat(300, "Starter Three", "300"),
+        },
+    }}}
+    out = mlb.parse_boxscore(payload, game_pk=7)
+    still = {b["name"]: b["still_in"] for b in out["batters"]}
+    assert still == {"Starter Two": False, "Sub Two": True, "Starter Three": True}
+
+
 # ─────────────────────── reconcile guard ───────────────────────
 
 PITCH_SLOT = 13            # SP — counts

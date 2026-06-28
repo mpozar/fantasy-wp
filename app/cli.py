@@ -840,17 +840,19 @@ def refresh_live() -> None:
                     """
                     INSERT INTO live_batters
                         (game_pk, mlbam_id, name, pro_team_id,
-                         ab, h, b2, b3, hr, bb, hbp, sf, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         ab, h, b2, b3, hr, bb, hbp, sf, still_in, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(game_pk, mlbam_id) DO UPDATE SET
                         name=excluded.name, pro_team_id=excluded.pro_team_id,
                         ab=excluded.ab, h=excluded.h, b2=excluded.b2, b3=excluded.b3,
                         hr=excluded.hr, bb=excluded.bb, hbp=excluded.hbp,
-                        sf=excluded.sf, fetched_at=excluded.fetched_at
+                        sf=excluded.sf, still_in=excluded.still_in,
+                        fetched_at=excluded.fetched_at
                     """,
                     (lb["game_pk"], lb["mlbam_id"], lb["name"], lb["espn_team_id"],
                      lb["ab"], lb["h"], lb["b2"], lb["b3"], lb["hr"],
-                     lb["bb"], lb["hbp"], lb["sf"], now),
+                     lb["bb"], lb["hbp"], lb["sf"],
+                     1 if lb.get("still_in", True) else 0, now),
                 )
             # Durable archive of Final pitcher lines (survives the prune above).
             _archive_final_lines(conn, live_p, status_by_pk, date_by_pk, now)
@@ -946,6 +948,11 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         # unless games are live now, in which case the sim behaves as before.
         live_by_team = (
             sim.load_live_pitchers(conn) if model_name == "mc-v1" else {}
+        )
+        # Live batter lines for in-progress games → lets the hitter optimizer zero a
+        # removed hitter's remaining production (still_in=False). Empty unless live.
+        live_batters_by_team = (
+            sim.load_live_batters_inprogress(conn) if model_name == "mc-v1" else {}
         )
 
         # Anchor history for the rotation-cadence SP model (last start per
@@ -1046,6 +1053,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         last_start_by_pitcher=last_start_by_pitcher,
                         home_slot_by_norm_name=home_slots,
                         away_slot_by_norm_name=away_slots,
+                        live_batters_by_team=live_batters_by_team,
                         # Rotation-cadence start projection ONLY for the current
                         # week. For any future week the anchor (last recorded
                         # start) is already a week-plus stale — the pitcher will

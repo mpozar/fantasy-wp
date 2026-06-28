@@ -993,6 +993,7 @@ def _hitter_days_slotted(roster: list[dict],
                          lineup_slot_counts: dict[int, int],
                          as_of: date | None = None,
                          slot_by_norm_name: dict[str, int] | None = None,
+                         live_batters_by_team: dict[int, dict[str, dict]] | None = None,
                          ) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
     lineup slot. Honors slot eligibility and league-configured slot counts, and
@@ -1065,12 +1066,13 @@ def _hitter_days_slotted(roster: list[dict],
                 g for g in schedule_by_team.get(p["pro_team_id"], [])
                 if g.get("game_date") == date_str
             ]
-            # Benched at first pitch → locked out of any game already underway. Drop
-            # In-Progress games so a benched hitter isn't optimistically slotted into
-            # one (he can't be moved in); a not-yet-started game on the same day still
-            # counts, since the lineup there isn't locked. Same rule the pitcher path
-            # applies via _drop_inprogress_for_benched.
-            if _is_benched_today(p.get("full_name"), slot_by_norm_name):
+            # Drop In-Progress games for a hitter who can't (still) bat in one:
+            #   - benched at first pitch (locked out, can't be moved in), or
+            #   - already removed from the game (a later batter took his slot —
+            #     `still_in` False in the live line).
+            # A not-yet-started game on the same day still counts (lineup not locked).
+            if (_is_benched_today(p.get("full_name"), slot_by_norm_name)
+                    or _is_removed_from_game(p, live_batters_by_team)):
                 team_games_today = [g for g in team_games_today
                                     if g.get("game_status") != "In Progress"]
             if not team_games_today:
@@ -1127,6 +1129,18 @@ def _is_benched_today(full_name: str,
     if not slot_by_norm_name:
         return False
     return slot_by_norm_name.get(_norm_name(full_name)) in NON_COUNTING_SLOTS
+
+
+def _is_removed_from_game(p: dict,
+                          live_batters_by_team: dict[int, dict[str, dict]] | None) -> bool:
+    """True when this hitter's live line says he's been **removed** from his
+    in-progress game (`still_in` False — a later batter took his lineup slot). He
+    can't bat again, so his remaining in-progress production is zero. No live map /
+    no line for him ⇒ not removed (he hasn't been pulled, or isn't in a live game)."""
+    if not live_batters_by_team:
+        return False
+    line = live_batters_by_team.get(p.get("pro_team_id"), {}).get(_norm_name(p.get("full_name")))
+    return line is not None and not line.get("still_in", 1)
 
 
 def _drop_inprogress_for_benched(schedule_by_team: dict[int, list[dict]],
@@ -1322,6 +1336,7 @@ def build_budgets(roster: list[dict],
                   use_cadence: bool = True,
                   as_of: date | None = None,
                   slot_by_norm_name: dict[str, int] | None = None,
+                  live_batters_by_team: dict[int, dict[str, dict]] | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
 
@@ -1351,7 +1366,7 @@ def build_budgets(roster: list[dict],
                   for g in games if g.get("game_date")]
     window_end = date.fromisoformat(max(_all_dates)) if _all_dates else None
     hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts,
-                                        as_of, slot_by_norm_name)
+                                        as_of, slot_by_norm_name, live_batters_by_team)
 
     out: list[Budget] = []
     for p in roster:
@@ -1703,6 +1718,7 @@ def simulate(inputs: MatchupInputs,
              as_of: date | None = None,
              home_slot_by_norm_name: dict[str, int] | None = None,
              away_slot_by_norm_name: dict[str, int] | None = None,
+             live_batters_by_team: dict[int, dict[str, dict]] | None = None,
              ) -> tuple[float, float, dict]:
     as_of = as_of or _utc_today()   # UTC, never host-local — resolved once per run
     home_budgets = build_budgets(
@@ -1714,6 +1730,7 @@ def simulate(inputs: MatchupInputs,
         use_cadence=use_cadence,
         as_of=as_of,
         slot_by_norm_name=home_slot_by_norm_name,
+        live_batters_by_team=live_batters_by_team,
     )
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
@@ -1724,6 +1741,7 @@ def simulate(inputs: MatchupInputs,
         use_cadence=use_cadence,
         as_of=as_of,
         slot_by_norm_name=away_slot_by_norm_name,
+        live_batters_by_team=live_batters_by_team,
     )
 
     home_wins = 0
@@ -1995,6 +2013,26 @@ def load_live_pitchers(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
                ON ra.game_pk = lp.game_pk AND ra.mlbam_id = lp.mlbam_id
         WHERE EXISTS (SELECT 1 FROM team_schedule ts
                       WHERE ts.game_pk = lp.game_pk AND ts.game_status = 'In Progress')
+        """
+    ).fetchall()
+    out: dict[int, dict[str, dict]] = {}
+    for r in rows:
+        out.setdefault(r["pro_team_id"], {})[_norm_name(r["name"])] = dict(r)
+    return out
+
+
+def load_live_batters_inprogress(conn: sqlite3.Connection) -> dict[int, dict[str, dict]]:
+    """Batter lines for games **in progress right now**, keyed by ESPN proTeamId then
+    normalized name. Carries `still_in` (False once a later batter took his lineup
+    slot) so the hitter optimizer can zero a **removed** hitter's remaining production
+    for an in-progress game — he won't bat again. In Progress only (a Final game's
+    factor is already 0). Empty when nothing is live → optimizer behaves as before."""
+    rows = conn.execute(
+        """
+        SELECT lb.pro_team_id, lb.name, lb.still_in
+        FROM live_batters lb
+        WHERE EXISTS (SELECT 1 FROM team_schedule ts
+                      WHERE ts.game_pk = lb.game_pk AND ts.game_status = 'In Progress')
         """
     ).fetchall()
     out: dict[int, dict[str, dict]] = {}

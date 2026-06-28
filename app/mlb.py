@@ -233,6 +233,28 @@ def parse_boxscore(payload: dict, game_pk: int) -> dict:
                 "hld": st.get("holds") or 0,
             })
 
+        # Active occupant of each batting-order slot = the player with the highest
+        # `battingOrder` in that slot (slot = order // 100): a starter is "100",
+        # whoever replaces him "101", "102", … So a batter whose order is below his
+        # slot's max has been **removed** from the game (`still_in=False`). Used to
+        # zero a removed hitter's remaining in-progress production downstream (he
+        # can't bat again). Computed over the whole `players` map — a defensive sub
+        # with no PA still occupies the slot and retires the starter.
+        slot_max: dict[int, int] = {}
+        order_by_pid: dict[int, int] = {}
+        for pl in players.values():
+            bo = pl.get("battingOrder")
+            opid = (pl.get("person") or {}).get("id")
+            if not bo or opid is None:
+                continue
+            try:
+                bo = int(bo)
+            except (TypeError, ValueError):
+                continue
+            order_by_pid[opid] = bo
+            slot = bo // 100
+            slot_max[slot] = max(slot_max.get(slot, 0), bo)
+
         # Batters: everyone with a batting line who actually batted (AB+BB+HBP+SF
         # > 0 catches pinch-hitters/walks; a defensive sub with no PA contributes
         # nothing and is skipped so it can't be mis-attributed).
@@ -249,6 +271,10 @@ def parse_boxscore(payload: dict, game_pk: int) -> dict:
             sf = st.get("sacFlies") or 0
             if ab + bb + hbp + sf == 0:
                 continue
+            # No battingOrder (rare/odd) → assume still in (don't zero a player we
+            # can't classify). Otherwise still in iff he holds his slot's max order.
+            bo = order_by_pid.get(person_id)
+            still_in = bo is None or bo == slot_max.get(bo // 100)
             batters.append({
                 "game_pk": game_pk,
                 "mlbam_id": person_id,
@@ -264,6 +290,7 @@ def parse_boxscore(payload: dict, game_pk: int) -> dict:
                 "sf": sf,
                 "r": st.get("runs") or 0,
                 "sb": st.get("stolenBases") or 0,
+                "still_in": still_in,
             })
     return {"pitchers": pitchers, "batters": batters}
 

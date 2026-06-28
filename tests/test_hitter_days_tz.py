@@ -101,3 +101,29 @@ def test_benched_hitter_future_game_still_slotted():
     sched = {100: [_game("2026-06-06", status="Scheduled")]}
     u = sim._hitter_days_slotted(roster, sched, SLOTS, date(2026, 6, 5), _slots(16))
     assert u[1] == 1.0
+
+
+# ── Removed-from-game hitter (the batter analogue of the exited-starter fix) ───
+# A hitter pulled mid-game (a later batter took his slot → still_in False) can't bat
+# again, so an In-Progress game contributes nothing — while one still in the game
+# keeps the smooth fractional remainder.
+
+def _live_bat(still_in, team=100, name="Benched Bat"):
+    return {team: {sim._norm_name(name): {"still_in": still_in}}}
+
+
+def test_removed_hitter_dropped_from_inprogress_game():
+    roster = [_named_hitter()]
+    sched = {100: [_game("2026-06-05", status="In Progress", inning=5)]}
+    ao = date(2026, 6, 5)
+    # Still in → fractional remainder, as before. Removed → 0.
+    assert 0.0 < sim._hitter_days_slotted(roster, sched, SLOTS, ao, None, _live_bat(1))[1] < 1.0
+    assert sim._hitter_days_slotted(roster, sched, SLOTS, ao, None, _live_bat(0))[1] == 0.0
+
+
+def test_removed_hitter_future_game_still_slotted():
+    # Pulled from today's game, but a later Scheduled game still projects.
+    roster = [_named_hitter()]
+    sched = {100: [_game("2026-06-06", status="Scheduled")]}
+    u = sim._hitter_days_slotted(roster, sched, SLOTS, date(2026, 6, 5), None, _live_bat(0))
+    assert u[1] == 1.0

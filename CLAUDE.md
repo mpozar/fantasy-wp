@@ -285,6 +285,21 @@ QS** is unaffected — `_override_sp_qs` still supplies it, and it now skips its
 subtraction when exited (the base no longer carries that game's QS share, so there's
 nothing to drop). A starter *still pitching* keeps the projected remainder as before.
 
+**Removed hitter → zero remaining counters (fixed 2026-06-29).** The batter analogue:
+a hitter pulled mid-game (pinch-hit/defensive sub) can't bat again, but the hitter
+factor `(9−elapsed)/9` is purely game-clock based, so he kept a phantom remainder. We
+now capture a per-batter **`still_in`** from the boxscore: the active occupant of a
+lineup slot is the player with the **highest `battingOrder`** in that slot (`slot =
+order // 100`; starter `300`, subs `301/302/…`), so a batter below his slot's max has
+been replaced (`mlb.parse_boxscore`; stored on `live_batters.still_in`). The hitter
+optimizer (`_hitter_days_slotted`) drops In-Progress games for a hitter whose live line
+is `still_in=False` (`_is_removed_from_game`), same as it does for a benched one —
+zeroing his remaining H/R/HR/SB. `load_live_batters_inprogress` builds the
+team→name→line map (In-Progress only); threaded `compute → simulate → build_budgets →
+_hitter_days_slotted`. Future games still count (he can play tomorrow). No live line ⇒
+not removed. Tests: `test_live_components.py` (parse_boxscore still_in), `test_hitter_
+days_tz.py` (removed → 0 / still-in → fractional / future game still slotted).
+
 ### In-progress QS & SVHD (`app/ingame.py`, wired into `build_budgets`)
 
 The linear scaling above is wrong for **QS** and **SVHD** because they're not

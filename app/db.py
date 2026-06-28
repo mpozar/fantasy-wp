@@ -395,6 +395,9 @@ def init() -> None:
             ("live_pitchers", "p_bb", "INTEGER"),
             ("live_pitchers", "sv", "INTEGER"),    # saves ┐ SVHD (stat 83) = SV + HLD
             ("live_pitchers", "hld", "INTEGER"),   # holds ┘ (blown saves not scored)
+            # Whether the batter still holds his lineup slot (0 once replaced) —
+            # zeroes a removed hitter's remaining in-progress production.
+            ("live_batters", "still_in", "INTEGER"),
             ("wp_snapshots", "edited", "INTEGER NOT NULL DEFAULT 0"),
             ("validation_flags", "resolved_at", "TEXT"),
             ("validation_flags", "resolved_by", "TEXT"),
