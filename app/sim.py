@@ -213,6 +213,17 @@ MAX_EXTRA_STARTS = 2
 # Saturday and a Sunday start.
 MIN_REST_DAYS = min(REST_DAY_WEIGHTS)
 
+# A pitcher the season GS/GP ratio classifies as RP, but who is the announced
+# probable / currently making a start, is misclassified (a rotation regular or
+# spot starter whose ESPN ROS projection lags). When we promote him to the SP
+# path his projected GS is tiny, so `ros_outs/gs_ros` is inflated by relief outs:
+# cap the per-start length and rebuild cumulative per-start rates from per-out
+# rates × this length. QS stays the per-start rate (ros_qs/gs_ros) since it's
+# already a per-start event.
+TYPICAL_START_OUTS = 17   # ~5.2 IP — fallback start length when GS is unusable (0)
+MAX_START_OUTS = 22       # ~7.1 IP — cap on the inferred start length
+DEFAULT_QS_RATE = 0.30    # per-start QS prior when there's no usable GS history
+
 # MLB statsapi detailedState values that mean a game is over. Canonical set —
 # cli.py and validate.py alias this rather than re-declaring the literal.
 FINAL_GAME_STATES = {"Final", "Game Over", "Completed Early"}
@@ -715,6 +726,32 @@ def _rp_remaining_units(team_id: int,
                if _game_after_return(g, return_date))
 
 
+def _is_announced_or_live_starter(full_name: str, team_id: int,
+                                  schedule_by_team: dict[int, list[dict]],
+                                  live_by_team: dict[int, dict[str, dict]]) -> bool:
+    """True when a pitcher is the **announced probable** for an in-window game, or
+    is **currently making a start** (live `games_started`). Such a pitcher is a
+    starter for that game regardless of his season GS/GP ratio — used to promote a
+    misclassified rotation SP / spot starter to the SP path so his start (and its
+    QS/K/innings) is projected, not missed (the spot-starter blind spot: e.g. a
+    swingman who's moved into the rotation but whose ESPN ROS projection still has
+    GS/GP < 0.5). Caller only consults this when the ratio says RP."""
+    nn = _norm_name(full_name)
+    if not nn:
+        return False
+    for g in schedule_by_team.get(team_id, []):
+        # Only an *upcoming or in-progress* start promotes him — a Final game he
+        # already started is banked, and counting it would route a swingman who's
+        # since returned to the bullpen onto the SP path and drop his remaining
+        # relief appearances.
+        if g.get("game_status") in FINAL_GAME_STATES:
+            continue
+        if _norm_name(g.get("probable_pitcher_name")) == nn:
+            return True
+    live = (live_by_team.get(team_id) or {}).get(nn)
+    return bool(live and live.get("games_started"))
+
+
 def _probable_starts_for(player_name: str, team_id: int,
                          schedule_by_team: dict[int, list[dict]],
                          sp_exit_inning: float,
@@ -1073,7 +1110,10 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
         return
     qs_rate = (ros.get(STAT_QS) or 0) / gs_ros
     outs_tot = ros.get(STAT_OUTS) or 0
-    exp_outs = outs_tot / gs_ros if gs_ros else 18.0
+    # Cap the inferred start length: a promoted/spot starter's tiny GS makes
+    # outs_tot/gs_ros a relief-inflated nonsense value (e.g. 150 outs / 3 GS = 50).
+    # A real start tops out ~MAX_START_OUTS; real SPs are already well under it.
+    exp_outs = min(outs_tot / gs_ros, MAX_START_OUTS) if gs_ros else TYPICAL_START_OUTS
     er_per_out = (ros.get(STAT_ER) or 0) / outs_tot if outs_tot else 0.13
     state = ingame.StarterState(
         game_status="In Progress", appeared=True, exited=not live["is_last"],
@@ -1279,9 +1319,15 @@ def build_budgets(roster: list[dict],
             gs_ros = ros.get(STAT_GS) or 0
             gp_ros = ros.get(STAT_PITCH_GP) or 0
             if gp_ros > 0:
-                is_sp = (gs_ros / gp_ros) > 0.5
+                ratio_sp = (gs_ros / gp_ros) > 0.5
             else:
-                is_sp = (pos == 1)
+                ratio_sp = (pos == 1)
+            # Promote a misclassified rotation SP / spot starter to the SP path:
+            # the season GS/GP ratio says RP, but he's the announced probable or is
+            # currently starting, so project his start instead of missing it.
+            promoted_sp = (not ratio_sp) and _is_announced_or_live_starter(
+                p["full_name"], team_id, schedule_by_team, live_by_team)
+            is_sp = ratio_sp or promoted_sp
 
             if is_sp:
                 # SP starts split into a FIXED piece (announced probables + any
@@ -1292,11 +1338,26 @@ def build_budgets(roster: list[dict],
                 # ROS-share smear so behavior never regresses. Either way the
                 # fixed and extra pieces never overlap (probable games are
                 # excluded from the extra piece — no double-count).
+                ros_outs = ros.get(STAT_OUTS, 0) or 0
                 if gs_ros > 0:
-                    avg_outs_per_start = (ros.get(STAT_OUTS, 0) or 0) / gs_ros
+                    avg_outs_per_start = ros_outs / gs_ros
+                    # A promoted starter's tiny GS makes ros_outs/gs_ros a
+                    # relief-inflated nonsense length — cap it to a real start.
+                    if promoted_sp:
+                        avg_outs_per_start = min(avg_outs_per_start, MAX_START_OUTS)
                     sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
                 else:
-                    sp_exit_inning = 6.0
+                    avg_outs_per_start = TYPICAL_START_OUTS
+                    sp_exit_inning = max(1.0, avg_outs_per_start / 3.0 + 1.0)
+                # Per-start rate basis for the cumulative counters (K/OUTS/ER/…):
+                # a real SP divides ROS totals by GS; a promoted starter's GS is
+                # unreliable (relief outs inflate it), so use an effective start
+                # count = ros_outs / start-length instead. QS is handled separately
+                # below (it's a per-start event, not per-out). Real SPs unchanged.
+                if promoted_sp and ros_outs > 0 and avg_outs_per_start > 0:
+                    sp_rate_denom = ros_outs / avg_outs_per_start
+                else:
+                    sp_rate_denom = gs_ros
                 probable_units = _probable_starts_for(
                     p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
                 )
@@ -1354,10 +1415,10 @@ def build_budgets(roster: list[dict],
                     # sp_est_units = E[extra starts], used for the two-way
                     # subtraction and the displayed start count.
                     sp_extra_dist = extra_dist
-                    sp_extra_per_start = _per_start_rates(ros, gs_ros)
+                    sp_extra_per_start = _per_start_rates(ros, sp_rate_denom)
                     sp_est_units = _expected_extra_starts(extra_dist)
                 units_p = probable_units
-                denom_p = gs_ros
+                denom_p = sp_rate_denom
                 role_p = "SP"
             else:
                 rp_remaining = _rp_remaining_units(team_id, schedule_by_team, ret)
@@ -1395,6 +1456,14 @@ def build_budgets(roster: list[dict],
                 budget = Budget(player_id=p["player_id"], name=p["full_name"],
                                 role="SP", units=0.0, expected={})
             if budget:
+                if role_p == "SP" and promoted_sp:
+                    # The cumulative counters used the per-out denom; QS is a
+                    # per-start event, so set it from the per-start QS rate
+                    # (ros_qs/gs_ros) × total starts. Keeps the in-game override
+                    # below composing — it drops qs_rate × sp_factor for the
+                    # in-progress start and adds the live estimate.
+                    qs_rate = ((ros.get(STAT_QS) or 0) / gs_ros) if gs_ros > 0 else DEFAULT_QS_RATE
+                    budget.expected[STAT_QS] = min(qs_rate, 0.95) * budget.units
                 # In-game override for the threshold/context stats — no-op
                 # unless this pitcher's team has a game in progress right now.
                 # Operates on the fixed `expected` only (a live start is a

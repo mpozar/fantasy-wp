@@ -60,7 +60,70 @@ def _qs(roster, schedule, live):
 def _svhd(roster, schedule, live):
     budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
                             live_by_team=live)
-    return next(b.expected.get(STAT_SVHD, 0.0) for b in budgets if b.role == "RP")
+    # SVHD lives only on the pitcher's budget; sum across budgets so the lookup is
+    # robust to whether he's classified RP or — when spot-starting — promoted to SP.
+    return sum(b.expected.get(STAT_SVHD, 0.0) for b in budgets)
+
+
+# ── Misclassified-SP promotion (the Tyler Phillips spot-starter blind spot) ────
+
+def _spot():
+    # RP-classified by the season GS/GP ratio (3/30 = 0.10) but a real rotation
+    # starter: OUTS=150, K=40, QS=1, ER=26. ros_K/GS = 13.3 (absurd per start);
+    # ros_outs/GS = 50 (absurd length) — the inflation the per-out basis must fix.
+    return {
+        "player_id": 7, "full_name": "Spot Starter", "pro_team_id": TEAM,
+        "default_position_id": 1, "injury_status": "ACTIVE", "lineup_slot_id": 13,
+        "ros_stats": {STAT_GS: 3, STAT_PITCH_GP: 30, STAT_OUTS: 150,
+                      STAT_ER: 26, STAT_QS: 1, STAT_K: 40},
+    }
+
+
+def _sp_budget(roster, schedule, live):
+    bs = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60}, live_by_team=live)
+    return next((b for b in bs if b.name == "Spot Starter"), None)
+
+
+def test_spot_starter_promoted_on_announced_probable():
+    # Announced probable for an upcoming game → promoted to SP, so his start (and
+    # its QS) is projected instead of missed. Per-start QS uses the per-start rate
+    # (1/3 ≈ 0.33); cumulative K uses per-out × length, NOT the absurd 40/3 ≈ 13.
+    g = {TEAM: [_game(status="Scheduled", inning=None, state=None, probable="Spot Starter")]}
+    b = _sp_budget([_spot()], g, {})
+    assert b is not None and b.role == "SP"
+    assert b.expected.get(STAT_QS, 0) > 0.2          # QS projected (was ~0 as RP)
+    assert b.expected.get(STAT_K, 0) < 8             # sane per-start K, not inflated 13
+
+
+def test_spot_starter_live_qs_credited():
+    # The live Phillips case: RP-classified, but making a start that's already past
+    # the QS threshold (22 outs / 2 ER, still in) → in-game QS projection near-locked.
+    g = {TEAM: [_game(status="In Progress", inning=8, probable="Spot Starter")]}
+    live = {TEAM: {sim._norm_name("Spot Starter"):
+                   dict(game_pk=999, name="Spot Starter", is_last=0,
+                        games_started=1, outs=22, er=2, k=6)}}
+    b = _sp_budget([_spot()], g, live)
+    assert b is not None and b.role == "SP"
+    assert b.expected.get(STAT_QS, 0) > 0.8          # near-locked QS, credited live
+
+
+def test_reliever_not_promoted_without_a_start():
+    # A genuine reliever (not the probable, no live start) stays RP — promotion must
+    # not fire for ordinary relievers.
+    g = {TEAM: [_game(status="In Progress", probable="Someone Else")]}
+    bs = build_budgets([_reliever()], g, team_total_ros_games={TEAM: 60}, live_by_team={})
+    b = next(x for x in bs if x.name == "Test Closer")
+    assert b.role == "RP" and b.expected.get(STAT_QS, 0) == 0
+
+
+def test_final_start_does_not_promote_or_strip_relief():
+    # A swingman whose only start this week is already Final (someone else starts the
+    # upcoming game) must NOT be promoted — he stays RP so his remaining relief
+    # appearances are still projected.
+    g = {TEAM: [_game(status="Final", probable="Spot Starter"),
+                _game(status="Scheduled", probable="Someone Else")]}
+    b = _sp_budget([_spot()], g, {})
+    assert b is not None and b.role == "RP"
 
 
 # ── QS through build_budgets ──────────────────────────────────────────────────

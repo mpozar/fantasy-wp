@@ -70,8 +70,25 @@ Rate stats (OPS, ERA, WHIP) are *never* sampled directly — they're derived fro
 ESPN's `default_position_id` is wrong for some players. We classify pitchers by their projected usage:
 - `gs/gp > 0.5` → SP path (uses GS as denominator)
 - else → RP path (uses GP as denominator)
+- **OR: an *announced probable* (for an upcoming/in-progress game) or a *live
+  `games_started`* line → SP path regardless of the ratio** (`_is_announced_or_live_starter`).
+  This promotes a misclassified rotation SP / spot starter whose ESPN ROS projection
+  still has `gs/gp < 0.5` (2026-06-28 Tyler Phillips: GS 3 / GP 30, but starting every
+  5–6 days). Without it his start — and its QS — were invisible to the live projection
+  (he was modeled as relief). Only a *non-Final* game promotes him (a Final game he
+  already started is banked; counting it would strip a swingman's remaining relief).
 
 This catches RP-eligible swingmen (e.g. Wrobleski, pos=11 but usage ≈ SP), and also catches the two-way case below.
+
+**Promoted-starter rate basis.** A promoted pitcher's projected GS is tiny, so
+`ros_v / gs_ros` blows up (the 70 K / 1 GS problem: `ros_outs/gs_ros` can be 50).
+So for a promoted starter the *cumulative* counters (K/OUTS/ER/…) are scaled by
+**per-out rate × a capped start length** (`MAX_START_OUTS`=22, or `TYPICAL_START_OUTS`=17
+when GS=0), via an effective `denom = ros_outs / start_outs`. **QS is set separately**
+to the per-start rate `ros_qs/gs_ros × units` (or `DEFAULT_QS_RATE` when GS=0) — QS is a
+per-start event, not per-out — placed so the in-game `_override_sp_qs` (which drops
+`qs_rate × sp_factor` for the in-progress start and adds the live estimate) still composes
+without double-counting. Real SPs (ratio-classified) are unchanged. Tests: `test_ingame_integration.py`.
 
 ### SP start estimation (rotation cadence + per-sim start-count sampling)
 
@@ -1289,18 +1306,16 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Reliever leverage: an RP appearance in a save spot counts the same as one in a blowout
 - Off-days, platoon splits, weather, lineup card details — assumed away
 - Probable-pitcher matching is by name (rare misses on spelling variations)
-- **Spot starts by reliever-classified pitchers are partly missed (SVHD half now
-  fixed).** SP-vs-RP is decided by season ROS ratio (`GS/GP`), and only the SP
-  branch reads probables — so a reliever/swingman who draws a spot start (e.g.
-  Kai-Wei Teng GS 1 / GP 33; Troy Melton 2026-06-10) is modeled as relief
-  appearances, not a start, for the *projection*. The **phantom SVHD** that used to
-  give such a pitcher a save/hold he can't earn is now suppressed: the in-game SVHD
-  override skips any live line with `games_started` (2026-06-10). Still open: the
-  spot start's **outs/K aren't modeled** and its QS chance isn't either (he stays on
-  the RP path). Can't be fixed by flipping him to SP — per-start rates would be
-  `season_total / GS` (e.g. 70 K / 1 GS). Proper fix: honor announced probables for
-  any pitcher and estimate the start from per-out rates × a spot-start length
-  (~12-15 outs). Modest impact; deferred until spot-starts come up often enough.
+- **Spot starts / misclassified rotation SPs — fixed 2026-06-28** (see "Role
+  classification"). A reliever/swingman the season `GS/GP` ratio calls RP but who is
+  the **announced probable or currently starting** is now promoted to the SP path, so
+  his start's QS/K/innings are projected (and his live QS credited) instead of missed.
+  Cumulative counters use per-out × a capped start length (avoids the `season_total/GS`
+  blowup), QS uses the per-start rate. (Earlier the projection modeled him as relief —
+  2026-06-28 Tyler Phillips's 7-IP QS was invisible; the SVHD half was fixed 2026-06-10
+  by skipping the save/hold override on a `games_started` line.) *Residual:* the per-out
+  rates and the capped/typical start length are approximations — a genuine one-off
+  opener still gets ~one sane start's worth rather than a precisely-calibrated line.
 
 ## When the user asks about a WP swing
 
