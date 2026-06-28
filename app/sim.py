@@ -980,7 +980,9 @@ def _max_slot_assignment(candidates: list[dict], slot_instances: list[int]) -> s
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
                          lineup_slot_counts: dict[int, int],
-                         as_of: date | None = None) -> dict[int, float]:
+                         as_of: date | None = None,
+                         slot_by_norm_name: dict[str, int] | None = None,
+                         ) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
     lineup slot. Honors slot eligibility and league-configured slot counts, and
     seats hitters by per-game impact.
@@ -1052,6 +1054,14 @@ def _hitter_days_slotted(roster: list[dict],
                 g for g in schedule_by_team.get(p["pro_team_id"], [])
                 if g.get("game_date") == date_str
             ]
+            # Benched at first pitch → locked out of any game already underway. Drop
+            # In-Progress games so a benched hitter isn't optimistically slotted into
+            # one (he can't be moved in); a not-yet-started game on the same day still
+            # counts, since the lineup there isn't locked. Same rule the pitcher path
+            # applies via _drop_inprogress_for_benched.
+            if _is_benched_today(p.get("full_name"), slot_by_norm_name):
+                team_games_today = [g for g in team_games_today
+                                    if g.get("game_status") != "In Progress"]
             if not team_games_today:
                 continue
             # Two-way players starting on the mound today can't bat.
@@ -1091,32 +1101,47 @@ def _is_save_situation(margin: int) -> bool:
     return 1 <= margin <= 3
 
 
-def _benched_for_live_start(full_name: str,
-                            slot_by_norm_name: dict[str, int] | None) -> bool:
-    """True when the day's locked lineup has this pitcher in a **non-pitching slot**
-    (bench/IL) — i.e. he's locked out of today's game. League rules forbid moving a
-    player into the lineup once his game has started, so a pitcher benched at first
-    pitch can never score that start; the in-game QS/SVHD override must not credit it
-    (mirrors the daily-slot gate `_count_qs`/`_count_svhd` apply to the *banked*
-    credit). `slot_by_norm_name` comes from `load_active_slots` (today's
-    `daily_lineups`, roster-slot fallback). When it's absent (isolated callers /
-    tests) we don't gate — preserving prior behavior. NB: this gates only the
-    *in-progress* credit; a benched pitcher's *future* start is still projected (the
-    streaming hedge), since the override only fires once a game is underway."""
+def _is_benched_today(full_name: str,
+                      slot_by_norm_name: dict[str, int] | None) -> bool:
+    """True when the day's locked lineup (today's `daily_lineups`, via
+    `load_active_slots`) has this player on the **bench or IL** — not in any active
+    slot. League rules lock the lineup at each game's first pitch, so a player benched
+    then is locked out of that game and can't score it. Callers therefore drop
+    **In-Progress** games from a benched player's projection (every role), zeroing the
+    remaining production for a game they can't play; *future* (not-yet-started) games
+    stay, since a manager may still activate them (the streaming hedge). No map
+    (tests / isolated callers) ⇒ not benched, preserving prior behavior. Keyed on
+    `NON_COUNTING_SLOTS` (not 'not a pitcher slot') so it's role-agnostic and
+    two-way-safe — a player in *any* active slot is not benched."""
     if not slot_by_norm_name:
         return False
-    slot = slot_by_norm_name.get(_norm_name(full_name))
-    return slot is not None and slot not in PITCHER_SLOTS
+    return slot_by_norm_name.get(_norm_name(full_name)) in NON_COUNTING_SLOTS
+
+
+def _drop_inprogress_for_benched(schedule_by_team: dict[int, list[dict]],
+                                 team_id: int, full_name: str,
+                                 slot_by_norm_name: dict[str, int] | None
+                                 ) -> dict[int, list[dict]]:
+    """Schedule view for one player: identical to `schedule_by_team`, except a
+    player benched at first pitch (`_is_benched_today`) has his team's **In-Progress**
+    games removed — he's locked out of them, so they must contribute nothing to his
+    projection. Returns the original dict unchanged when he's not benched (the common
+    case), so there's no per-player copy cost unless the gate fires."""
+    if not _is_benched_today(full_name, slot_by_norm_name):
+        return schedule_by_team
+    kept = [g for g in schedule_by_team.get(team_id, [])
+            if g.get("game_status") != "In Progress"]
+    return {**schedule_by_team, team_id: kept}
 
 
 def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
                     schedule_by_team: dict[int, list[dict]],
                     live_by_team: dict[int, dict[str, dict]],
-                    team_id: int, gs_ros: float, sp_exit_inning: float,
-                    slot_by_norm_name: dict[str, int] | None = None) -> None:
+                    team_id: int, gs_ros: float, sp_exit_inning: float) -> None:
     """Swap the in-progress start's QS share for the conditional in-game
     projection (`app.ingame`). Other games and other counters are untouched, so
-    with no live game this is a no-op."""
+    with no live game this is a no-op. (A benched pitcher never reaches here with a
+    live start — `build_budgets` drops his In-Progress game from the schedule first.)"""
     if gs_ros <= 0:
         return
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
@@ -1128,15 +1153,6 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
     if g is None:
         return
     qs_rate = (ros.get(STAT_QS) or 0) / gs_ros
-    if _benched_for_live_start(full_name, slot_by_norm_name):
-        # Benched at first pitch → locked out of this game → his start can't score.
-        # Strip the in-progress start's projected QS share and add nothing (the
-        # normal path below would replace it with the in-game estimate). For an
-        # already-exited starter the share is ~0, so this is a no-op there; for one
-        # still pitching it removes the otherwise-phantom fractional QS.
-        cur = budget.expected.get(STAT_QS, 0.0)
-        budget.expected[STAT_QS] = max(0.0, cur - qs_rate * _sp_factor(g, sp_exit_inning))
-        return
     outs_tot = ros.get(STAT_OUTS) or 0
     # Cap the inferred start length: a promoted/spot starter's tiny GS makes
     # outs_tot/gs_ros a relief-inflated nonsense value (e.g. 150 outs / 3 GS = 50).
@@ -1157,11 +1173,11 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
                       schedule_by_team: dict[int, list[dict]],
                       live_by_team: dict[int, dict[str, dict]],
                       team_id: int, gp_ros: float, units_p: float,
-                      rp_remaining: float,
-                      slot_by_norm_name: dict[str, int] | None = None) -> None:
+                      rp_remaining: float) -> None:
     """Swap each in-progress game's SVHD share for the in-game projection: the
     live line if the reliever has appeared, else a game-script-gated rate for a
-    closer who hasn't entered yet. No-op when nothing is live."""
+    closer who hasn't entered yet. No-op when nothing is live. (A benched reliever
+    never reaches here — `build_budgets` drops his In-Progress games first.)"""
     if gp_ros <= 0 or rp_remaining <= 0:
         return
     ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
@@ -1170,17 +1186,6 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
         return
     svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
     appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
-    if _benched_for_live_start(full_name, slot_by_norm_name):
-        # Benched today → locked out of today's games → can't earn a save/hold in
-        # them. Strip each in-progress game's projected SVHD share (add nothing);
-        # any *future*-day appearances keep their share (the streaming hedge).
-        for g in ip_games.values():
-            factor = _rp_factor(g)
-            if factor <= 0:
-                continue
-            cur = budget.expected.get(STAT_SVHD, 0.0)
-            budget.expected[STAT_SVHD] = max(0.0, cur - svhd_rate * appearance_per_factor * factor)
-        return
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
     # A pitcher *starting* today can't earn a save or hold — skip the reliever
     # override entirely (it's keyed off the fantasy RP role; an RP-classified spot
@@ -1328,7 +1333,8 @@ def build_budgets(roster: list[dict],
     _all_dates = [g["game_date"] for games in schedule_by_team.values()
                   for g in games if g.get("game_date")]
     window_end = date.fromisoformat(max(_all_dates)) if _all_dates else None
-    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts, as_of)
+    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts,
+                                        as_of, slot_by_norm_name)
 
     out: list[Budget] = []
     for p in roster:
@@ -1354,6 +1360,14 @@ def build_budgets(roster: list[dict],
 
         # ── Pitcher budget ─────────────────────────────────────────────
         if _has_pitcher_ros(ros):
+            # Benched at first pitch → locked out of any game already underway, so
+            # drop In-Progress games from this pitcher's schedule view: his start's
+            # QS/K/OUTS/ER (and any RP save/hold) all vanish at the source instead of
+            # being projected for a game he can't pitch. Future (Scheduled) games stay
+            # — a manager may still activate him before they start (the streaming
+            # hedge). No-op for an active-slot pitcher or when no slot map is supplied.
+            sched = _drop_inprogress_for_benched(
+                schedule_by_team, team_id, p["full_name"], slot_by_norm_name)
             # Classify SP vs RP by projected usage, not ESPN's
             # defaultPositionId — handles RP-eligible swingmen and two-way
             # players (Ohtani has pos=10 but gs/gp=1.0 → SP).
@@ -1367,7 +1381,7 @@ def build_budgets(roster: list[dict],
             # the season GS/GP ratio says RP, but he's the announced probable or is
             # currently starting, so project his start instead of missing it.
             promoted_sp = (not ratio_sp) and _is_announced_or_live_starter(
-                p["full_name"], team_id, schedule_by_team, live_by_team)
+                p["full_name"], team_id, sched, live_by_team)
             is_sp = ratio_sp or promoted_sp
 
             if is_sp:
@@ -1400,7 +1414,7 @@ def build_budgets(roster: list[dict],
                 else:
                     sp_rate_denom = gs_ros
                 probable_units = _probable_starts_for(
-                    p["full_name"], team_id, schedule_by_team, sp_exit_inning, ret,
+                    p["full_name"], team_id, sched, sp_exit_inning, ret,
                 )
                 # The extra (un-probabled) starts are always the sampled piece;
                 # only *how the distribution is built* depends on the horizon:
@@ -1413,12 +1427,12 @@ def build_budgets(roster: list[dict],
                 #     the walk snap the first turn to day 1 and over-project. The
                 #     start *count* still varies per sim either way.
                 extra_dist = _cadence_extra_start_dist(
-                    p["full_name"], team_id, schedule_by_team,
+                    p["full_name"], team_id, sched,
                     last_start_by_pitcher, ret,
                 ) if use_cadence else None
                 if extra_dist is None:
                     open_weight = _open_sp_game_weight(
-                        team_id, schedule_by_team, sp_exit_inning, ret,
+                        team_id, sched, sp_exit_inning, ret,
                     )
                     total_ros = team_total_ros_games.get(team_id, 0)
                     if total_ros > 0 and gs_ros > 0 and open_weight > 0:
@@ -1462,7 +1476,7 @@ def build_budgets(roster: list[dict],
                 denom_p = sp_rate_denom
                 role_p = "SP"
             else:
-                rp_remaining = _rp_remaining_units(team_id, schedule_by_team, ret)
+                rp_remaining = _rp_remaining_units(team_id, sched, ret)
                 total_ros = team_total_ros_games.get(team_id, 0)
                 if total_ros > 0 and gp_ros > 0:
                     units_p = (gp_ros / total_ros) * rp_remaining
@@ -1492,7 +1506,7 @@ def build_budgets(roster: list[dict],
             # QS reconstruction once the game ends (no overlap: this needs the game
             # In Progress, reconstruction needs it Final).
             if (budget is None and role_p == "SP"
-                    and _has_live_inprogress_start(p["full_name"], schedule_by_team,
+                    and _has_live_inprogress_start(p["full_name"], sched,
                                                    live_by_team, team_id)):
                 budget = Budget(player_id=p["player_id"], name=p["full_name"],
                                 role="SP", units=0.0, expected={})
@@ -1510,13 +1524,11 @@ def build_budgets(roster: list[dict],
                 # Operates on the fixed `expected` only (a live start is a
                 # probable, hence fixed); the extra piece is never live.
                 if role_p == "SP":
-                    _override_sp_qs(budget, p["full_name"], ros, schedule_by_team,
-                                    live_by_team, team_id, gs_ros, sp_exit_inning,
-                                    slot_by_norm_name)
+                    _override_sp_qs(budget, p["full_name"], ros, sched,
+                                    live_by_team, team_id, gs_ros, sp_exit_inning)
                 else:
-                    _override_rp_svhd(budget, p["full_name"], ros, schedule_by_team,
-                                      live_by_team, team_id, gp_ros, units_p, rp_remaining,
-                                      slot_by_norm_name)
+                    _override_rp_svhd(budget, p["full_name"], ros, sched,
+                                      live_by_team, team_id, gp_ros, units_p, rp_remaining)
                 out.append(budget)
 
         # ── Hitter budget ──────────────────────────────────────────────

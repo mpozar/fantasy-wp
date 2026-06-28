@@ -68,3 +68,36 @@ def test_default_as_of_is_utc_not_local():
     """The default reference is UTC, never the host's local date."""
     from datetime import datetime, timezone
     assert sim._utc_today() == datetime.now(timezone.utc).date()
+
+
+# ── Benched-at-first-pitch gate (mirrors the pitcher schedule filter) ──────────
+# A hitter benched when his game starts is locked out of it, so an In-Progress game
+# must contribute nothing — even though the optimizer would otherwise slot him.
+# Future (not-yet-started) games still count; he may be activated before they lock.
+
+def _named_hitter():
+    h = _hitter()
+    h["full_name"] = "Benched Bat"
+    return h
+
+
+def _slots(slot):
+    return {sim._norm_name("Benched Bat"): slot}
+
+
+def test_benched_hitter_dropped_from_inprogress_game():
+    roster = [_named_hitter()]
+    sched = {100: [_game("2026-06-05", status="In Progress", inning=5)]}
+    ao = date(2026, 6, 5)
+    # Active hitter slot (3) → fractional unit, as before. Benched (16) → 0.
+    assert 0.0 < sim._hitter_days_slotted(roster, sched, SLOTS, ao, _slots(3))[1] < 1.0
+    assert sim._hitter_days_slotted(roster, sched, SLOTS, ao, _slots(16))[1] == 0.0
+
+
+def test_benched_hitter_future_game_still_slotted():
+    # Benched in today's locked lineup, but a Scheduled game isn't locked yet → he
+    # may be activated, so it still projects (parity with the pitcher streaming hedge).
+    roster = [_named_hitter()]
+    sched = {100: [_game("2026-06-06", status="Scheduled")]}
+    u = sim._hitter_days_slotted(roster, sched, SLOTS, date(2026, 6, 5), _slots(16))
+    assert u[1] == 1.0

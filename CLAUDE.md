@@ -351,26 +351,30 @@ actually *starting*, then 0 when the game blew open — wrong at every step).
 a starter can't earn SV/HLD. (Mirror of the Roki Sasaki QS case — an RP genuinely
 starting; there we *keep* the QS, here we *drop* the impossible save/hold.)
 
-**Benched pitchers don't get a live QS/SVHD credit (fixed 2026-06-28).** A pitcher
-**benched at first pitch** is locked out of that game — league rules forbid moving a
-player into the lineup once his game has started — so his start can never score, even
+**Benched players contribute nothing to a game already underway (fixed 2026-06-28).**
+A player **benched at first pitch** is locked out of that game — league rules forbid
+moving a player into the lineup once his game has started — so he can't score it, even
 though `build_budgets` includes BE-slot pitchers (the streaming hedge: a manager may
-activate them *before a future start*). The in-game override fires only once a game is
-underway, so it's the right hook: `_override_sp_qs`/`_override_rp_svhd` now take a
-`slot_by_norm_name` (today's `daily_lineups` slot, roster-slot fallback — built by
-`load_active_slots`, the **same source** the banked `_count_qs`/`_count_svhd` gate on)
-and, when the pitcher is in a non-pitching slot, **strip the in-progress game's
-projected QS/SVHD share and add nothing** (not a bare skip — that would leave a
-mid-start pitcher's `qs_rate × sp_factor` base share as a phantom). Future-day starts/
-appearances keep their share. Threaded `compute → simulate → build_budgets` per side;
-absent map (tests/isolated callers) ⇒ no gating, prior behavior. The bug: 2026-06-28
-Hunter Brown, benched all week, threw a 6 IP / 2 ER QS → projected **+1.0 QS for the
-Bus** that ESPN won't score (the projection over-credited vs the banked `_count_qs`,
-which correctly excluded him). Tests: `test_ingame_integration.py` (benched exited /
-benched-still-pitching / benched-future-start-still-projected / benched RP). *Residual:*
-the gate covers QS/SVHD; a benched pitcher caught **mid-start** still carries a small
-fractional K/OUTS/ER from the un-gated counter path until he exits (sp_factor→0) — minor
-and self-healing, not yet gated.
+activate them *before a future start*). The fix is at the **schedule level, all roles,
+all counters** (not just QS/SVHD): for a player `_is_benched_today` (slot in
+`NON_COUNTING_SLOTS` per today's `daily_lineups`, via `load_active_slots` — the **same
+source** the banked `_count_qs`/`_count_svhd` gate on), `build_budgets` runs his
+projection against a schedule with **In-Progress games dropped** (`_drop_inprogress_for_
+benched`), and `_hitter_days_slotted` likewise drops In-Progress games from a benched
+hitter's slotting. So a benched pitcher's whole started game — QS *and* K/OUTS/ER (and a
+reliever's SV/HLD) — and a benched hitter's H/R/HR/SB all zero out at the source. The
+in-game QS/SVHD overrides need no gate of their own: they only act on In-Progress games,
+which the benched player no longer sees. **Future (Scheduled) games stay** — not yet
+locked, so the streaming hedge is intact. Keyed on `NON_COUNTING_SLOTS` (bench/IL), not
+"not a pitcher slot", so it's role-agnostic and two-way-safe (a player in *any* active
+slot isn't benched). `slot_by_norm_name` threads `compute → simulate → build_budgets`
+(per side) `→ _hitter_days_slotted`; absent map (tests / isolated callers) ⇒ no gating,
+prior behavior. The bug: 2026-06-28 Hunter Brown, benched all week, threw a 6 IP / 2 ER
+QS → projected **+1.0 QS for the Bus** that ESPN won't score (the projection over-credited
+vs the banked `_count_qs`, which already excluded him). Tests: `test_ingame_integration.py`
+(benched SP exited / still-pitching / future-start-still-projected / benched RP),
+`test_hitter_days_tz.py` (benched hitter dropped from In-Progress / future game still
+slotted).
 
 Validated live on 2026-06-03 across 13 rostered relievers in all four scripts —
 save-spot (+1..3) → ~0.85, big-lead (>3) → 0, tied → 0, trailing → 0 — and the
