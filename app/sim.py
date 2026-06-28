@@ -755,17 +755,28 @@ def _is_announced_or_live_starter(full_name: str, team_id: int,
 def _probable_starts_for(player_name: str, team_id: int,
                          schedule_by_team: dict[int, list[dict]],
                          sp_exit_inning: float,
-                         return_date: date | None = None) -> float:
+                         return_date: date | None = None,
+                         live_by_team: dict[int, dict[str, dict]] | None = None) -> float:
     """Sum of SP factors over games where this pitcher is the probable
-    starter and the game is on/after their estimated return date."""
+    starter and the game is on/after their estimated return date.
+
+    Once he's **exited** his in-progress start (a later pitcher has appeared —
+    `live` line `games_started` with `is_last` falsey), that start is over: its
+    remaining counter production (K/OUTS/ER) is zero, so its factor drops out here.
+    His *earned* QS for it is supplied separately by `_override_sp_qs`. While he's
+    still pitching, the factor decays normally with the game's innings."""
     target = _norm_name(player_name)
     if not target:
         return 0.0
+    live = (live_by_team or {}).get(team_id, {}).get(target)
     total = 0.0
     for g in schedule_by_team.get(team_id, []):
         if not _game_after_return(g, return_date):
             continue
         if _norm_name(g.get("probable_pitcher_name")) == target:
+            if (live and live.get("games_started") and not live.get("is_last")
+                    and live.get("game_pk") == g.get("game_pk")):
+                continue   # exited this start → no remaining counters
             total += _sp_factor(g, sp_exit_inning)
     return total
 
@@ -1159,12 +1170,18 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
     # A real start tops out ~MAX_START_OUTS; real SPs are already well under it.
     exp_outs = min(outs_tot / gs_ros, MAX_START_OUTS) if gs_ros else TYPICAL_START_OUTS
     er_per_out = (ros.get(STAT_ER) or 0) / outs_tot if outs_tot else 0.13
+    exited = not live["is_last"]
     state = ingame.StarterState(
-        game_status="In Progress", appeared=True, exited=not live["is_last"],
+        game_status="In Progress", appeared=True, exited=exited,
         outs=live["outs"], er=live["er"], exp_outs_per_start=exp_outs,
         er_per_out=er_per_out, pregame_qs_rate=qs_rate,
     )
-    ip_share = qs_rate * _sp_factor(g, sp_exit_inning)   # rate-based share to drop
+    # Rate-based share to drop before adding the in-game estimate. Once he's EXITED,
+    # `_probable_starts_for` already zeroed this game's factor (his start is over —
+    # no remaining counters), so the share isn't in `cur` and there's nothing to drop;
+    # subtracting it would wrongly eat into other games' QS. While still in, the base
+    # share is present, so drop it as before.
+    ip_share = 0.0 if exited else qs_rate * _sp_factor(g, sp_exit_inning)
     cur = budget.expected.get(STAT_QS, 0.0)
     budget.expected[STAT_QS] = max(0.0, cur - ip_share) + ingame.project_qs(state)
 
@@ -1415,6 +1432,7 @@ def build_budgets(roster: list[dict],
                     sp_rate_denom = gs_ros
                 probable_units = _probable_starts_for(
                     p["full_name"], team_id, sched, sp_exit_inning, ret,
+                    live_by_team,
                 )
                 # The extra (un-probabled) starts are always the sampled piece;
                 # only *how the distribution is built* depends on the horizon:

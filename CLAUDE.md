@@ -274,6 +274,17 @@ When a game's status is `In Progress`, its *remaining* production scales by role
 
 Game state comes from MLB statsapi via `refresh-live` (calls `mlb.fetch_schedule` with `linescore` hydrated).
 
+**Exited starter → zero remaining counters (fixed 2026-06-28).** The SP factor above
+decays with the *game's* innings, not whether the pitcher has actually been pulled, so
+an already-departed starter kept a small phantom remaining K/OUTS/ER (the "Sale 0.1-start
+sliver": exp_K 0.4 / exp_OUTS 1.1 after a 6 IP / 1 ER / 10 K start that was over). Now,
+when his live line shows he's **exited** (`games_started` with `is_last` falsey — a later
+pitcher has appeared), `_probable_starts_for` drops that game's factor (it takes
+`live_by_team` and matches on `game_pk`), zeroing his remaining counters. His **earned
+QS** is unaffected — `_override_sp_qs` still supplies it, and it now skips its `ip_share`
+subtraction when exited (the base no longer carries that game's QS share, so there's
+nothing to drop). A starter *still pitching* keeps the projected remainder as before.
+
 ### In-progress QS & SVHD (`app/ingame.py`, wired into `build_budgets`)
 
 The linear scaling above is wrong for **QS** and **SVHD** because they're not

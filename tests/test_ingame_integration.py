@@ -151,6 +151,30 @@ def test_qs_exited_shelled_is_zero():
     assert qs == 0.0
 
 
+# ── Exited starter's remaining counters zero out (the Sale 0.1-start sliver) ───
+# Once a later pitcher appears (is_last=0) his start is over — no remaining
+# K/OUTS/ER — but his earned QS stays (supplied by the override). While he's still
+# pitching, the remaining sliver is projected as before.
+
+def _sp_full(roster, schedule, live):
+    bs = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60}, live_by_team=live)
+    return next(b for b in bs if b.role == "SP")
+
+
+def test_exited_starter_has_no_remaining_counters():
+    b = _sp_full([_starter()], {TEAM: [_game(inning=7)]}, _live(outs=18, er=1, is_last=0))
+    assert b.expected.get(STAT_K, 0.0) == 0.0
+    assert b.expected.get(STAT_OUTS, 0.0) == 0.0
+    assert b.units == 0.0
+    assert b.expected.get(STAT_QS, 0.0) == 1.0   # earned QS still credited
+
+
+def test_still_pitching_starter_keeps_remaining_counters():
+    b = _sp_full([_starter()], {TEAM: [_game(inning=7)]}, _live(outs=18, er=1, is_last=1))
+    assert b.expected.get(STAT_K, 0.0) > 0.0      # still projects the rest of his start
+    assert b.expected.get(STAT_OUTS, 0.0) > 0.0
+
+
 # ── Benched-starter gate: a pitcher benched at first pitch is locked out of that
 # game, so his in-progress start mustn't be credited (2026-06-28 Hunter Brown:
 # benched all week, threw a 6 IP / 2 ER QS, was projected +1.0 QS for the Bus
