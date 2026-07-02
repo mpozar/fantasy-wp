@@ -12,7 +12,10 @@ source "$(dirname "$0")/_common.sh"
     trap 'release_lock' EXIT
 
     log medium "start"
-    "$APP" refresh-rosters
+    # Retries cover the transient morning network drops (see with_retries);
+    # a still-failing fetch aborts the run (set -e) — stale rosters make the
+    # compute below pointless, and the next 4h run catches up.
+    with_retries medium refresh-rosters "$APP" refresh-rosters
     # Recompute future-week WPs with the fresh projections. DB-only; the next
     # fast-tier publish picks them up. Future weeks use fewer sims than the
     # current-week (fast.sh) compute: their ROS-share projections are inherently

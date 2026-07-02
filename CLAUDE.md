@@ -946,7 +946,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
    ```
    ESPN sometimes retroactively credits stats hours after games — H goes from 27→32, result might flip from LOSS to WIN.
 5. **Cron events to know**:
-   - Lockout periods (medium.sh holds the lock for 3-5 min every 4h, on `*/4` hour boundaries in local time) — fast.sh skips and pushes resume after. Big jumps often line up with the first fast.sh tick after medium.sh finishes.
+   - medium.sh runs ~1-2 min every 4h at minute :02 of `*/4` hours local time (offset since 2026-07-02 so fast.sh's :00 tick no longer skips; before that it fired at :00 and cost a fast tick). Big jumps often line up with the first fast.sh tick after medium.sh finishes.
    - 5-min boundary fast.sh fires every `*/5` minute. New live data lands every tick.
    - GitHub Pages rebuild lag — pushes appear ~30-90s later on the live site.
 6. **Investigation telemetry** (added 2026-06-10 — closes the gaps that made the deGrom/Melton digs slow):
@@ -1332,9 +1332,18 @@ for non-final weeks, never a blanket "keep latest only."
 
 ```
 */5  *   * * *  /Users/mpozar/git/fantasy-wp/scripts/fast.sh
-0    */4 * * *  /Users/mpozar/git/fantasy-wp/scripts/medium.sh
-0    6   * * *  /Users/mpozar/git/fantasy-wp/scripts/daily.sh
+2    */4 * * *  /Users/mpozar/git/fantasy-wp/scripts/medium.sh
+2    6   * * *  /Users/mpozar/git/fantasy-wp/scripts/daily.sh
 ```
+
+medium/daily fire at **minute :02** deliberately: fast's :00 tick finishes in
+~45s, so they no longer collide with (and skip) it — on the old :00 schedule
+every medium/daily run cost one fast tick (a 10-min site-freshness gap). Both
+finish before the :05 fast tick. Their network step runs under `with_retries`
+(_common.sh: 60/120/240s backoff, ~7 min worst case, still far under
+`MAX_LOCK_AGE`) to ride out the recurring ~06:00-07:00 UTC Wi-Fi drops; an
+outage that outlasts the retries aborts the run and the next scheduled one
+catches up.
 
 macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access → `+` → Cmd-Shift-G → `/usr/sbin/cron`). Otherwise it can't read `~/.zshenv` and silently fails.
 

@@ -52,6 +52,28 @@ timed() {
     return $rc
 }
 
+# Run a command with bounded retries — for the network-fetch steps, which hit
+# transient DNS/connect failures (the laptop regularly drops off Wi-Fi around
+# 06:00-07:00 UTC; most drops last one tick, some the whole hour). Backoff
+# totals ~7 min worst case so a lock-holding job stays far under MAX_LOCK_AGE.
+# A full-hour outage still fails after the last attempt — deliberate: better
+# to give up and let the next scheduled run catch up than wedge the lock.
+RETRY_DELAYS=(60 120 240)
+with_retries() {
+    local tier="$1" label="$2"; shift 2
+    local rc delay
+    for delay in "${RETRY_DELAYS[@]}" 0; do
+        rc=0
+        "$@" || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        if [ "$delay" -eq 0 ]; then break; fi
+        log "$tier" "step ${label} failed (rc=$rc); retrying in ${delay}s"
+        sleep "$delay"
+    done
+    log "$tier" "step ${label} failed after $((${#RETRY_DELAYS[@]} + 1)) attempts (rc=$rc)"
+    return $rc
+}
+
 # Read `export NAME=...` value from ~/.zshenv (same pattern as espn.py).
 # Cron can't reach the keychain, so secrets live in this file.
 read_zshenv_var() {
@@ -65,8 +87,9 @@ read_zshenv_var() {
 # skip on contention; slow jobs should wait their turn.
 LOCKFILE="$REPO/.app.lock"
 
-# A tick should never legitimately hold the lock this long — medium.sh's
-# `compute --future` (the slowest job) runs ~3-5 min. Past this we treat the
+# A tick should never legitimately hold the lock this long — medium.sh (the
+# slowest job) runs ~1-2 min, up to ~9 min if with_retries rides out a network
+# blip. Past this we treat the
 # holder as wedged (a network call hung beyond its own timeout, or a process
 # killed without its EXIT trap firing) and steal the lock, so one stuck tick
 # can't freeze the whole pipeline until someone clears it by hand.

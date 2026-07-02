@@ -10,7 +10,7 @@ source "$(dirname "$0")/_common.sh"
     trap 'release_lock' EXIT
 
     log daily "start"
-    "$APP" refresh-schedule
+    with_retries daily refresh-schedule "$APP" refresh-schedule
     # Force a full publish rebuild once/day: refreshes the per-week block cache and
     # picks up any rare late stat correction to an already-settled week (whose
     # change-stamp wouldn't otherwise move). The next fast tick pushes the result.
