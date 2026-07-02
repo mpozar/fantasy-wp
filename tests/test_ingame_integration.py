@@ -361,5 +361,6 @@ def test_no_minimal_budget_without_live_start():
     budgets = build_budgets(roster, schedule, sim.SimContext(
         team_total_ros_games={TEAM: 60}, live_by_team=live))
     # Final game → load path would exclude it live; here live_by_team is passed but
-    # the game is Final, so _has_live_inprogress_start is False → no minimal budget.
+    # the game is Final, so PitcherSituation.live_start_in_progress is False →
+    # no minimal budget.
     assert not [b for b in budgets if b.role == "SP"]

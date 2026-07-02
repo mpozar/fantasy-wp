@@ -77,6 +77,15 @@ Rate stats (OPS, ERA, WHIP) are *never* sampled directly — they're derived fro
 
 ### Role classification (not by ESPN's `default_position_id`)
 
+**Resolved once per pitcher in `sim._resolve_pitcher_situation` →
+`PitcherSituation` (added 2026-07-02).** Role (incl. the spot-starter
+promotion below), the benched schedule view, the live box line, and the
+exited/live-start state used to be re-derived independently by five
+name-matching helpers — most live-credit incidents (Melton, Hunter Brown, the
+exited-starter sliver, Phillips) were those derivations disagreeing. They now
+come from one struct that `build_budgets` and the in-game overrides branch on;
+tests: `tests/test_situation.py`.
+
 ESPN's `default_position_id` is wrong for some players. We classify pitchers by their projected usage:
 - `gs/gp > 0.5` → SP path (uses GS as denominator)
 - else → RP path (uses GP as denominator)

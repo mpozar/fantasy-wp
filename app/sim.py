@@ -814,9 +814,10 @@ def _probable_starts_for(player_name: str, team_id: int,
                          schedule_by_team: dict[int, list[dict]],
                          sp_exit_inning: float,
                          return_date: date | None = None,
-                         live_by_team: dict[int, dict[str, dict]] | None = None) -> float:
+                         live: dict | None = None) -> float:
     """Sum of SP factors over games where this pitcher is the probable
-    starter and the game is on/after their estimated return date.
+    starter and the game is on/after their estimated return date. `live` is
+    the pitcher's own live box line (`PitcherSituation.live`), if any.
 
     Once he's **exited** his in-progress start (a later pitcher has appeared —
     `live` line `games_started` with `is_last` falsey), that start is over: its
@@ -826,7 +827,6 @@ def _probable_starts_for(player_name: str, team_id: int,
     target = _norm_name(player_name)
     if not target:
         return 0.0
-    live = (live_by_team or {}).get(team_id, {}).get(target)
     total = 0.0
     for g in schedule_by_team.get(team_id, []):
         if not _game_after_return(g, return_date):
@@ -1218,18 +1218,18 @@ def _drop_inprogress_for_benched(schedule_by_team: dict[int, list[dict]],
     return {**schedule_by_team, team_id: kept}
 
 
-def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
+def _override_sp_qs(budget: Budget, ros: dict,
                     schedule_by_team: dict[int, list[dict]],
-                    live_by_team: dict[int, dict[str, dict]],
+                    live: dict | None,
                     team_id: int, gs_ros: float, sp_exit_inning: float) -> bool:
     """Swap the in-progress start's QS share for the conditional in-game
-    projection (`app.ingame`). Other games and other counters are untouched, so
+    projection (`app.ingame`). `live` is the pitcher's own live box line
+    (`PitcherSituation.live`). Other games and other counters are untouched, so
     with no live game this is a no-op. (A benched pitcher never reaches here with a
-    live start — `build_budgets` drops his In-Progress game from the schedule first.)
+    live start — his In-Progress game is dropped from the schedule view first.)
     Returns True when it materially changed expected[QS] (provenance flag)."""
     if gs_ros <= 0:
         return False
-    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
     if not live or not live.get("games_started"):
         return False
     ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
@@ -1262,15 +1262,16 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
     return abs(new - cur) > 1e-9
 
 
-def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
+def _override_rp_svhd(budget: Budget, ros: dict,
                       schedule_by_team: dict[int, list[dict]],
-                      live_by_team: dict[int, dict[str, dict]],
+                      live: dict | None,
                       team_id: int, gp_ros: float, units_p: float,
                       rp_remaining: float) -> bool:
     """Swap each in-progress game's SVHD share for the in-game projection: the
-    live line if the reliever has appeared, else a game-script-gated rate for a
-    closer who hasn't entered yet. No-op when nothing is live. (A benched reliever
-    never reaches here — `build_budgets` drops his In-Progress games first.)
+    live line (`PitcherSituation.live`) if the reliever has appeared, else a
+    game-script-gated rate for a closer who hasn't entered yet. No-op when
+    nothing is live. (A benched reliever never reaches here — his In-Progress
+    games are dropped from the schedule view first.)
     Returns True when it materially changed expected[SVHD] (provenance flag)."""
     if gp_ros <= 0 or rp_remaining <= 0:
         return False
@@ -1280,7 +1281,6 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
         return False
     svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
     appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
-    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
     # A pitcher *starting* today can't earn a save or hold — skip the reliever
     # override entirely (it's keyed off the fantasy RP role; an RP-classified spot
     # starter would otherwise get a phantom SV/HLD). The QS path handles his start.
@@ -1380,19 +1380,76 @@ def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
     return rates
 
 
-def _has_live_inprogress_start(full_name: str, schedule_by_team: dict,
-                               live_by_team: dict, team_id: int) -> bool:
-    """True if this pitcher has a started line in a game that's *in progress right
-    now* — i.e. `_override_sp_qs` has a live start to act on. Used to keep a minimal
-    SP budget alive once his start-units have decayed to ~0 (a deep outing, where
-    `_sp_factor`→0 makes `_make_budget` drop him): without it, an exited starter's
-    earned-but-unbanked QS falls into the seam between the in-progress model and the
-    Final-only QS reconstruction, vanishing until ESPN's daily settle."""
-    live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
-    if not live or not live.get("games_started"):
-        return False
-    return any(g.get("game_status") == "In Progress" and g.get("game_pk") == live["game_pk"]
-               for g in schedule_by_team.get(team_id, []))
+@dataclass(frozen=True)
+class PitcherSituation:
+    """One pitcher's current circumstances, resolved once per build_budgets pass.
+
+    "Is he starting / benched / exited / promoted?" used to be re-derived
+    independently by five name-matching helpers, and most live-credit incidents
+    were those derivations disagreeing or one missing a case (the Melton
+    phantom save, the Hunter Brown benched QS, the exited-starter sliver, the
+    Phillips invisible start). That state is now decided HERE, once, and every
+    downstream branch reads the struct. Per-game arithmetic (factors, the
+    cadence walk) stays in the specialist helpers — they receive `sched` and
+    `live` from the struct instead of re-matching names.
+    """
+    role: str                     # 'SP' | 'RP' — final classification
+    ratio_sp: bool                # season GS/GP ratio said SP
+    promoted: bool                # ratio said RP; announced/live start promoted him
+    benched_today: bool           # NON_COUNTING_SLOT in today's locked lineup
+    live: dict | None             # his live box line (this team's live game), if any
+    has_live_start: bool          # that line is a start (games_started truthy)
+    exited: bool                  # started and a later pitcher has appeared
+    live_start_in_progress: bool  # the started game is In Progress in `sched`
+    sched: dict[int, list[dict]]  # his schedule view (benched ⇒ In-Progress dropped)
+
+
+def _resolve_pitcher_situation(p: dict, schedule_by_team: dict[int, list[dict]],
+                               ctx: SimContext) -> PitcherSituation:
+    """Build the PitcherSituation for one rostered pitcher — pure, and the single
+    place a pitcher's identity is matched against live lines and lineup slots."""
+    team_id = p["pro_team_id"]
+    full_name = p["full_name"]
+    ros = p["ros_stats"]
+
+    benched_today = _is_benched_today(full_name, ctx.slot_by_norm_name)
+    # Schedule view: benched at first pitch → locked out of games already
+    # underway, so In-Progress games are dropped and that start contributes
+    # nothing anywhere downstream (QS, K/OUTS/ER, SV/HLD alike). Scheduled
+    # games stay — the streaming hedge.
+    sched = _drop_inprogress_for_benched(
+        schedule_by_team, team_id, full_name, ctx.slot_by_norm_name)
+
+    live = (ctx.live_by_team.get(team_id) or {}).get(_norm_name(full_name))
+    has_live_start = bool(live and live.get("games_started"))
+    exited = bool(has_live_start and not live.get("is_last"))
+    # His started game is live *in his schedule view* — i.e. `_override_sp_qs`
+    # has a start to act on. False for a benched pitcher (the game was dropped
+    # above) and once the game goes Final (the Final-only QS reconstruction
+    # takes over — no overlap). Keeps an exited starter's earned-but-unbanked
+    # QS creditable while the game runs (the Yamamoto 04:15→07:00 seam).
+    live_start_in_progress = has_live_start and any(
+        g.get("game_status") == "In Progress"
+        and g.get("game_pk") == live.get("game_pk")
+        for g in sched.get(team_id, []))
+
+    gs_ros = ros.get(STAT_GS) or 0
+    gp_ros = ros.get(STAT_PITCH_GP) or 0
+    if gp_ros > 0:
+        ratio_sp = (gs_ros / gp_ros) > 0.5
+    else:
+        ratio_sp = (p["default_position_id"] == 1)
+    # Promote a misclassified rotation SP / spot starter: the ratio says RP but
+    # he's the announced probable for an upcoming/in-progress game, or is
+    # currently starting (see _is_announced_or_live_starter for the Final-game
+    # caveat that protects a swingman's remaining relief).
+    promoted = (not ratio_sp) and _is_announced_or_live_starter(
+        full_name, team_id, sched, ctx.live_by_team)
+    return PitcherSituation(
+        role="SP" if (ratio_sp or promoted) else "RP",
+        ratio_sp=ratio_sp, promoted=promoted, benched_today=benched_today,
+        live=live, has_live_start=has_live_start, exited=exited,
+        live_start_in_progress=live_start_in_progress, sched=sched)
 
 
 def build_budgets(roster: list[dict],
@@ -1463,34 +1520,21 @@ def build_budgets(roster: list[dict],
 
         # ── Pitcher budget ─────────────────────────────────────────────
         if _has_pitcher_ros(ros):
-            # Benched at first pitch → locked out of any game already underway, so
-            # drop In-Progress games from this pitcher's schedule view: his start's
-            # QS/K/OUTS/ER (and any RP save/hold) all vanish at the source instead of
-            # being projected for a game he can't pitch. Future (Scheduled) games stay
-            # — a manager may still activate him before they start (the streaming
-            # hedge). No-op for an active-slot pitcher or when no slot map is supplied.
-            sched = _drop_inprogress_for_benched(
-                schedule_by_team, team_id, p["full_name"], slot_by_norm_name)
+            # One resolution of role / benched / live-start state per pitcher —
+            # every branch below reads the struct (see PitcherSituation: the
+            # SP-vs-RP classification incl. spot-starter promotion, the benched
+            # schedule view, and the live-line/exited state all live there).
+            sit = _resolve_pitcher_situation(p, schedule_by_team, ctx)
+            sched = sit.sched
             # Provenance flags for this pitcher's budget (see Budget.flags).
             # Telemetry only — collected along the way, attached at the end.
             pflags: list[str] = []
-            if sched is not schedule_by_team:
+            if sit.benched_today:
                 pflags.append("benched-live-drop")
-            # Classify SP vs RP by projected usage, not ESPN's
-            # defaultPositionId — handles RP-eligible swingmen and two-way
-            # players (Ohtani has pos=10 but gs/gp=1.0 → SP).
             gs_ros = ros.get(STAT_GS) or 0
             gp_ros = ros.get(STAT_PITCH_GP) or 0
-            if gp_ros > 0:
-                ratio_sp = (gs_ros / gp_ros) > 0.5
-            else:
-                ratio_sp = (pos == 1)
-            # Promote a misclassified rotation SP / spot starter to the SP path:
-            # the season GS/GP ratio says RP, but he's the announced probable or is
-            # currently starting, so project his start instead of missing it.
-            promoted_sp = (not ratio_sp) and _is_announced_or_live_starter(
-                p["full_name"], team_id, sched, live_by_team)
-            is_sp = ratio_sp or promoted_sp
+            promoted_sp = sit.promoted
+            is_sp = sit.role == "SP"
             if promoted_sp:
                 pflags.append("promoted")
 
@@ -1525,7 +1569,7 @@ def build_budgets(roster: list[dict],
                     sp_rate_denom = gs_ros
                 probable_units = _probable_starts_for(
                     p["full_name"], team_id, sched, sp_exit_inning, ret,
-                    live_by_team,
+                    live=sit.live,
                 )
                 # The extra (un-probabled) starts are always the sampled piece;
                 # only *how the distribution is built* depends on the horizon:
@@ -1623,9 +1667,7 @@ def build_budgets(roster: list[dict],
             # settle (the Yamamoto 04:15→07:00 case). Hands off to the Final-only
             # QS reconstruction once the game ends (no overlap: this needs the game
             # In Progress, reconstruction needs it Final).
-            if (budget is None and role_p == "SP"
-                    and _has_live_inprogress_start(p["full_name"], sched,
-                                                   live_by_team, team_id)):
+            if budget is None and role_p == "SP" and sit.live_start_in_progress:
                 budget = Budget(player_id=p["player_id"], name=p["full_name"],
                                 role="SP", units=0.0, expected={})
                 pflags.append("live-keepalive")
@@ -1643,12 +1685,12 @@ def build_budgets(roster: list[dict],
                 # Operates on the fixed `expected` only (a live start is a
                 # probable, hence fixed); the extra piece is never live.
                 if role_p == "SP":
-                    if _override_sp_qs(budget, p["full_name"], ros, sched,
-                                       live_by_team, team_id, gs_ros, sp_exit_inning):
+                    if _override_sp_qs(budget, ros, sched, sit.live,
+                                       team_id, gs_ros, sp_exit_inning):
                         pflags.append("qs-ingame")
                 else:
-                    if _override_rp_svhd(budget, p["full_name"], ros, sched,
-                                         live_by_team, team_id, gp_ros, units_p,
+                    if _override_rp_svhd(budget, ros, sched, sit.live,
+                                         team_id, gp_ros, units_p,
                                          rp_remaining):
                         pflags.append("svhd-ingame")
                 budget.flags.extend(pflags)
