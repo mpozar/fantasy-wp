@@ -34,6 +34,10 @@ _CATEGORY_STATE_UPSERT = (
 # MLB detailedState values that mean a game is over (canonical set lives in sim).
 _FINAL_GAME_STATES = sim.FINAL_GAME_STATES
 
+# The published-site artifact. Module-level so the golden-week test can point
+# publish + the site validation checks at a temp file instead of the real docs/.
+DOCS_DATA_JSON = Path(__file__).resolve().parent.parent / "docs" / "data.json"
+
 
 def _write_category_score(conn, last_good: dict, mid: int, tid: int, sid: int,
                           score, result, now: str) -> bool:
@@ -1179,7 +1183,7 @@ def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
             periods = [cur]
 
         now = _now_iso()
-        data_json_path = str(Path(__file__).resolve().parent.parent / "docs" / "data.json")
+        data_json_path = str(DOCS_DATA_JSON)
         findings = _v.run(conn, periods, now=now, data_json_path=data_json_path)
         _v.persist(conn, findings, now)
         errs = sum(1 for f in findings if f.severity == "error")
@@ -1360,7 +1364,7 @@ def publish(rebuild: bool) -> None:
             "generated_at": now,
             "weeks": weeks_out,
         }
-        out_path = Path(__file__).resolve().parent.parent / "docs" / "data.json"
+        out_path = DOCS_DATA_JSON
         # Compact (no indent/whitespace) — data.json is machine-generated and
         # fetched on every page load; pretty-printing ~doubled the payload, which
         # matters now that the live week carries per-point category history.

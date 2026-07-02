@@ -1179,6 +1179,21 @@ keeps `pitcher_starts` current going forward).
 Covers `app/ingame.py` (in-progress QS/SVHD), `app/sim.py` cadence + extra-start
 sampling (`test_cadence.py`), the category_state monotonicity guard
 (`test_category_guard.py`), and the validation checks (`test_validate.py`).
+
+**Golden-week end-to-end test** (`tests/test_golden_week.py`): runs the real
+`compute` → `publish` → `validate` pipeline against a slimmed snapshot of a real
+week (`tests/fixtures/golden_week.db.gz`) with the app clock frozen at the
+snapshot's newest timestamp, asserting zero error-severity validation findings —
+plus a negative control that re-creates the 2026-06-04 dropped-scored-cats
+corruption and asserts the battery flags it. This is the pre-commit guard for
+the *emergent* bug class (plumbing changes that pass unit tests but break the
+end-to-end output). Regenerate the fixture with
+`.venv/bin/python scripts/make_golden_fixture.py` after schema changes, at
+season start, or ideally during a live slate (richer in-game paths). The test
+monkeypatches `db.DB_PATH`, `cli._now_iso`, `cli._settle_boundary`,
+`sim._utc_today`, and `cli.DOCS_DATA_JSON` — a new wall-clock read on the
+compute/publish/validate path typically surfaces here as the past-date guard
+dropping the fixture's schedule (INV_EMPTY_BUDGETS).
 `scripts/ingame_scenarios.py` prints projections for hand-built in-progress states;
 `scripts/ingame_spotcheck.py` does the same for *live* rostered pitchers from the
 current DB state (read-only, safe to run mid-slate) — a quick reality check on the
