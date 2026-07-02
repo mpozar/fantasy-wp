@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -992,6 +993,17 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         )
         live_accepts = 0
 
+        # Everything the sim consumes beyond roster + schedule, built ONCE —
+        # the single production construction site for sim.SimContext (per-side
+        # lineup slots are per-matchup and ride on MatchupInputs instead).
+        base_ctx = sim.SimContext(
+            team_total_ros_games=team_total_ros_games,
+            lineup_slot_counts=lineup_slot_counts,
+            live_by_team=live_by_team,
+            live_batters_by_team=live_batters_by_team,
+            last_start_by_pitcher=last_start_by_pitcher,
+        )
+
         total_matchups = 0
         for period_id in periods:
             ms = conn.execute(
@@ -1048,26 +1060,21 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                         away_state=away_scores,
                         home_roster=home_roster,
                         away_roster=away_roster,
-                    )
-                    home_wp, away_wp, details = sim.simulate(
-                        inputs, schedule_by_team, n_sims=sims,
-                        team_total_ros_games=team_total_ros_games,
-                        lineup_slot_counts=lineup_slot_counts,
-                        live_by_team=live_by_team,
-                        last_start_by_pitcher=last_start_by_pitcher,
                         home_slot_by_norm_name=home_slots,
                         away_slot_by_norm_name=away_slots,
-                        live_batters_by_team=live_batters_by_team,
-                        # Rotation-cadence start projection ONLY for the current
-                        # week. For any future week the anchor (last recorded
-                        # start) is already a week-plus stale — the pitcher will
-                        # start again *this* week first, and those turns aren't
-                        # recorded yet — so the cadence walk snaps the first turn
-                        # to day 1 of the future week and invents a 2nd, badly
-                        # over-projecting (~1.9 vs a realistic ~1.3). Future weeks
-                        # use the flat ROS-share split (tier B) instead.
-                        use_cadence=(period_id == current),
                     )
+                    # Rotation-cadence start projection ONLY for the current
+                    # week. For any future week the anchor (last recorded
+                    # start) is already a week-plus stale — the pitcher will
+                    # start again *this* week first, and those turns aren't
+                    # recorded yet — so the cadence walk snaps the first turn
+                    # to day 1 of the future week and invents a 2nd, badly
+                    # over-projecting (~1.9 vs a realistic ~1.3). Future weeks
+                    # use the flat ROS-share split (tier B) instead.
+                    ctx = dataclasses.replace(
+                        base_ctx, use_cadence=(period_id == current))
+                    home_wp, away_wp, details = sim.simulate(
+                        inputs, schedule_by_team, ctx, n_sims=sims)
                     version = sim.MODEL_VERSION
                 else:
                     home_wp, away_wp, details = model.compute_wp(

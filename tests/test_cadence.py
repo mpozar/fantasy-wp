@@ -170,8 +170,9 @@ def test_use_cadence_flag_gates_the_model():
     late = {sim._norm_name(PITCHER): "2026-06-01"}
 
     def sp_budget(use_cadence, last):
-        bs = build_budgets([sp], sched, use_cadence=use_cadence,
-                           team_total_ros_games={TEAM: 60}, last_start_by_pitcher=last)
+        bs = build_budgets([sp], sched, sim.SimContext(
+            use_cadence=use_cadence,
+            team_total_ros_games={TEAM: 60}, last_start_by_pitcher=last))
         return next(b for b in bs if b.role == "SP")
 
     # Cadence ON → turn-aware: a different anchor gives a different distribution.

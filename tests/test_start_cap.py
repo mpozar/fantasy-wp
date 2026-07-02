@@ -56,8 +56,9 @@ def _g(d, probable=None, status="Scheduled"):
 
 
 def _sp_budget(sched, last):
-    bs = build_budgets([_sp()], sched, team_total_ros_games={TEAM: 60},
-                       last_start_by_pitcher={sim._norm_name(NAME): last})
+    bs = build_budgets([_sp()], sched, sim.SimContext(
+        team_total_ros_games={TEAM: 60},
+        last_start_by_pitcher={sim._norm_name(NAME): last}))
     return next(b for b in bs if b.role == "SP")
 
 

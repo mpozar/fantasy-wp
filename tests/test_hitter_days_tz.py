@@ -25,14 +25,20 @@ def _game(game_date, status="Scheduled", inning=None):
 SLOTS = {3: 1}
 
 
+def _ctx(as_of=None, slots=None, live_bat=None):
+    return sim.SimContext(lineup_slot_counts=SLOTS, as_of=as_of,
+                          slot_by_norm_name=slots,
+                          live_batters_by_team=live_bat or {})
+
+
 def test_scheduled_game_not_dropped_when_clock_rolls_past_it():
     """The bug: a game still 'Scheduled' on 06-05 got dropped once the host clock
     rolled to 06-06 (day < local-today). Now status drives it — an unplayed game
     keeps its projection regardless of as_of."""
     roster = [_hitter()]
     sched = {100: [_game("2026-06-05", status="Scheduled")]}
-    before = sim._hitter_days_slotted(roster, sched, SLOTS, as_of=date(2026, 6, 5))
-    after = sim._hitter_days_slotted(roster, sched, SLOTS, as_of=date(2026, 6, 6))
+    before = sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 5)))
+    after = sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 6)))
     assert before == after == {1: 1.0}
 
 
@@ -42,14 +48,14 @@ def test_final_game_contributes_zero_regardless_of_as_of():
     roster = [_hitter()]
     sched = {100: [_game("2026-06-05", status="Final")]}
     for ao in (date(2026, 6, 4), date(2026, 6, 5), date(2026, 6, 6)):
-        assert sim._hitter_days_slotted(roster, sched, SLOTS, as_of=ao) == {1: 0.0}
+        assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=ao)) == {1: 0.0}
 
 
 def test_in_progress_game_scales_smoothly_not_a_jump():
     """Mid-game → a fractional unit (the smooth handoff), never a clean 0 or 1."""
     roster = [_hitter()]
     sched = {100: [_game("2026-06-05", status="In Progress", inning=5)]}
-    u = sim._hitter_days_slotted(roster, sched, SLOTS, as_of=date(2026, 6, 5))
+    u = sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 5)))
     assert 0.0 < u[1] < 1.0
 
 
@@ -60,7 +66,7 @@ def test_il_player_still_floored_by_return_date():
     p["injury_status"] = "TEN_DAY_IL"
     p["injury_return_override"] = date(2026, 6, 7)
     sched = {100: [_game("2026-06-05", status="Scheduled")]}
-    u = sim._hitter_days_slotted([p], sched, SLOTS, as_of=date(2026, 6, 5))
+    u = sim._hitter_days_slotted([p], sched, _ctx(as_of=date(2026, 6, 5)))
     assert u.get(1, 0.0) == 0.0
 
 
@@ -90,8 +96,8 @@ def test_benched_hitter_dropped_from_inprogress_game():
     sched = {100: [_game("2026-06-05", status="In Progress", inning=5)]}
     ao = date(2026, 6, 5)
     # Active hitter slot (3) → fractional unit, as before. Benched (16) → 0.
-    assert 0.0 < sim._hitter_days_slotted(roster, sched, SLOTS, ao, _slots(3))[1] < 1.0
-    assert sim._hitter_days_slotted(roster, sched, SLOTS, ao, _slots(16))[1] == 0.0
+    assert 0.0 < sim._hitter_days_slotted(roster, sched, _ctx(as_of=ao, slots=_slots(3)))[1] < 1.0
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=ao, slots=_slots(16)))[1] == 0.0
 
 
 def test_benched_hitter_future_game_still_slotted():
@@ -99,7 +105,8 @@ def test_benched_hitter_future_game_still_slotted():
     # may be activated, so it still projects (parity with the pitcher streaming hedge).
     roster = [_named_hitter()]
     sched = {100: [_game("2026-06-06", status="Scheduled")]}
-    u = sim._hitter_days_slotted(roster, sched, SLOTS, date(2026, 6, 5), _slots(16))
+    u = sim._hitter_days_slotted(roster, sched,
+                                 _ctx(as_of=date(2026, 6, 5), slots=_slots(16)))
     assert u[1] == 1.0
 
 
@@ -117,13 +124,14 @@ def test_removed_hitter_dropped_from_inprogress_game():
     sched = {100: [_game("2026-06-05", status="In Progress", inning=5)]}
     ao = date(2026, 6, 5)
     # Still in → fractional remainder, as before. Removed → 0.
-    assert 0.0 < sim._hitter_days_slotted(roster, sched, SLOTS, ao, None, _live_bat(1))[1] < 1.0
-    assert sim._hitter_days_slotted(roster, sched, SLOTS, ao, None, _live_bat(0))[1] == 0.0
+    assert 0.0 < sim._hitter_days_slotted(roster, sched, _ctx(as_of=ao, live_bat=_live_bat(1)))[1] < 1.0
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=ao, live_bat=_live_bat(0)))[1] == 0.0
 
 
 def test_removed_hitter_future_game_still_slotted():
     # Pulled from today's game, but a later Scheduled game still projects.
     roster = [_named_hitter()]
     sched = {100: [_game("2026-06-06", status="Scheduled")]}
-    u = sim._hitter_days_slotted(roster, sched, SLOTS, date(2026, 6, 5), None, _live_bat(0))
+    u = sim._hitter_days_slotted(roster, sched,
+                                 _ctx(as_of=date(2026, 6, 5), live_bat=_live_bat(0)))
     assert u[1] == 1.0

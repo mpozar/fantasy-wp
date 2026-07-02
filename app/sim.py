@@ -18,7 +18,7 @@ import json
 import math
 import random
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 
 from app import db, ingame, mlb
@@ -640,6 +640,51 @@ class Budget:
     flags: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SimContext:
+    """Everything `build_budgets` consumes beyond the roster + schedule,
+    bundled so it threads `compute → simulate → build_budgets →
+    _hitter_days_slotted` as ONE argument instead of eight parallel optionals.
+
+    History: each live-data feature used to add its own `... | None = None`
+    parameter down that chain, and every default meant "feature silently off" —
+    a caller that forgot one got pre-feature behavior with no error (the
+    lineup_slot_counts GOTCHA below; the benched-gating "absent map ⇒ no
+    gating" trap). The defaults here still ARE the off-states — that's what
+    makes isolated tests cheap — but there is now exactly one construction
+    site in `cli.compute` for production, and a test that enables a feature
+    names the field it's enabling.
+
+    Adding a new sim input? Add a field here (off-state default + comment),
+    populate it in `cli.compute`, and read it via an alias at the top of
+    `build_budgets` — no signature changes anywhere.
+
+    Fields (default ⇒ that feature contributes nothing):
+      team_total_ros_games   MLB team → remaining games; SP flat-share + RP rates
+      lineup_slot_counts     league slot capacities. GOTCHA: without it the
+                             hitter optimizer has no slots and every hitter
+                             silently budgets 0 days.
+      live_by_team           live pitcher box lines (in-game QS/SVHD, exits)
+      live_batters_by_team   live batter lines (removed-hitter zeroing)
+      last_start_by_pitcher  cadence anchors (norm name → last start date)
+      use_cadence            rotation-turn extra-start model (current week only;
+                             future weeks use the flat ROS-share split)
+      as_of                  injected UTC "today" for IL logic; None ⇒ resolved
+                             to _utc_today() once at the build_budgets boundary
+      slot_by_norm_name      THIS side's daily lineup slots (benched gating).
+                             Side-specific: `simulate` fills it per side from
+                             MatchupInputs; None ⇒ no benched gating.
+    """
+    team_total_ros_games: dict[int, int] = field(default_factory=dict)
+    lineup_slot_counts: dict[int, int] = field(default_factory=dict)
+    live_by_team: dict[int, dict[str, dict]] = field(default_factory=dict)
+    live_batters_by_team: dict[int, dict[str, dict]] = field(default_factory=dict)
+    last_start_by_pitcher: dict[str, str] = field(default_factory=dict)
+    use_cadence: bool = True
+    as_of: date | None = None
+    slot_by_norm_name: dict[str, int] | None = None
+
+
 # ── In-progress game scaling ──────────────────────────────────────────
 #
 # An in-progress game has already produced some of its cat stats (already
@@ -1003,10 +1048,7 @@ def _max_slot_assignment(candidates: list[dict], slot_instances: list[int]) -> s
 
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
-                         lineup_slot_counts: dict[int, int],
-                         as_of: date | None = None,
-                         slot_by_norm_name: dict[str, int] | None = None,
-                         live_batters_by_team: dict[int, dict[str, dict]] | None = None,
+                         ctx: SimContext | None = None,
                          ) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
     lineup slot. Honors slot eligibility and league-configured slot counts, and
@@ -1022,7 +1064,11 @@ def _hitter_days_slotted(roster: list[dict],
     tiny (~10 hitters × ~10 slots) and runs once per team in build_budgets — well
     outside the per-sim loop — so the cost is immaterial.
     """
-    as_of = as_of or _utc_today()
+    ctx = ctx or SimContext()
+    lineup_slot_counts = ctx.lineup_slot_counts
+    slot_by_norm_name = ctx.slot_by_norm_name
+    live_batters_by_team = ctx.live_batters_by_team
+    as_of = ctx.as_of or _utc_today()
     units: dict[int, float] = {
         p["player_id"]: 0.0 for p in roster
         if _is_playable(p, as_of) and _is_hitter_candidate(p)
@@ -1351,16 +1397,12 @@ def _has_live_inprogress_start(full_name: str, schedule_by_team: dict,
 
 def build_budgets(roster: list[dict],
                   schedule_by_team: dict[int, list[dict]],
-                  team_total_ros_games: dict[int, int] | None = None,
-                  lineup_slot_counts: dict[int, int] | None = None,
-                  live_by_team: dict[int, dict[str, dict]] | None = None,
-                  last_start_by_pitcher: dict[str, str] | None = None,
-                  use_cadence: bool = True,
-                  as_of: date | None = None,
-                  slot_by_norm_name: dict[str, int] | None = None,
-                  live_batters_by_team: dict[int, dict[str, dict]] | None = None,
+                  ctx: SimContext | None = None,
                   ) -> list[Budget]:
     """Convert a roster + schedule into per-player production budgets.
+
+    Everything else the model consumes rides in `ctx` (see SimContext — each
+    field documents its off-state default).
 
     Inclusion rules:
       - IL slot or definitely-out injury status → skipped.
@@ -1371,24 +1413,31 @@ def build_budgets(roster: list[dict],
       - Hitters → run through the per-day lineup optimizer; their units
         are the sum of days they win a slot.
 
-    GOTCHA: pass `lineup_slot_counts` (the league's slot capacities, from
-    scoring_settings.lineup_slots_json — see cli.compute) or the optimizer has
-    no slots to fill and **every hitter silently comes back with 0 days / no
-    budget**. Easy to miss in ad-hoc analysis scripts; pitchers are unaffected.
+    GOTCHA: `ctx.lineup_slot_counts` (the league's slot capacities, from
+    scoring_settings.lineup_slots_json — see cli.compute) must be set or the
+    optimizer has no slots to fill and **every hitter silently comes back with
+    0 days / no budget**. Easy to miss in ad-hoc analysis scripts; pitchers
+    are unaffected.
     """
-    team_total_ros_games = team_total_ros_games or {}
-    lineup_slot_counts = lineup_slot_counts or {}
-    live_by_team = live_by_team or {}
-    last_start_by_pitcher = last_start_by_pitcher or {}
-    as_of = as_of or _utc_today()
+    ctx = ctx or SimContext()
+    if ctx.as_of is None:
+        ctx = replace(ctx, as_of=_utc_today())
+    # Local aliases — the body predates SimContext and reads these ~40 times.
+    team_total_ros_games = ctx.team_total_ros_games
+    lineup_slot_counts = ctx.lineup_slot_counts
+    live_by_team = ctx.live_by_team
+    live_batters_by_team = ctx.live_batters_by_team
+    last_start_by_pitcher = ctx.last_start_by_pitcher
+    use_cadence = ctx.use_cadence
+    as_of = ctx.as_of
+    slot_by_norm_name = ctx.slot_by_norm_name
 
     # End of the scoring window = latest scheduled game across the period (the
     # schedule is already period-clamped). Used for the physical start-count cap.
     _all_dates = [g["game_date"] for games in schedule_by_team.values()
                   for g in games if g.get("game_date")]
     window_end = date.fromisoformat(max(_all_dates)) if _all_dates else None
-    hitter_units = _hitter_days_slotted(roster, schedule_by_team, lineup_slot_counts,
-                                        as_of, slot_by_norm_name, live_batters_by_team)
+    hitter_units = _hitter_days_slotted(roster, schedule_by_team, ctx)
 
     out: list[Budget] = []
     for p in roster:
@@ -1749,44 +1798,29 @@ class MatchupInputs:
     away_state: dict[int, float]
     home_roster: list[dict]
     away_roster: list[dict]
+    # Per-side daily lineup slots (benched gating) — per-matchup like the
+    # rosters, so they live here rather than on the shared SimContext;
+    # `simulate` copies each into the side's ctx.slot_by_norm_name.
+    home_slot_by_norm_name: dict[str, int] | None = None
+    away_slot_by_norm_name: dict[str, int] | None = None
 
 
 def simulate(inputs: MatchupInputs,
              schedule_by_team: dict[int, list[dict]],
+             ctx: SimContext | None = None,
              n_sims: int = DEFAULT_SIMS,
-             team_total_ros_games: dict[int, int] | None = None,
-             lineup_slot_counts: dict[int, int] | None = None,
-             live_by_team: dict[int, dict[str, dict]] | None = None,
-             last_start_by_pitcher: dict[str, str] | None = None,
-             use_cadence: bool = True,
-             as_of: date | None = None,
-             home_slot_by_norm_name: dict[str, int] | None = None,
-             away_slot_by_norm_name: dict[str, int] | None = None,
-             live_batters_by_team: dict[int, dict[str, dict]] | None = None,
              ) -> tuple[float, float, dict]:
-    as_of = as_of or _utc_today()   # UTC, never host-local — resolved once per run
+    ctx = ctx or SimContext()
+    if ctx.as_of is None:
+        # UTC, never host-local — resolved once per run so both sides (and the
+        # hitter optimizer below them) see the same "today".
+        ctx = replace(ctx, as_of=_utc_today())
     home_budgets = build_budgets(
         inputs.home_roster, schedule_by_team,
-        team_total_ros_games=team_total_ros_games,
-        lineup_slot_counts=lineup_slot_counts,
-        live_by_team=live_by_team,
-        last_start_by_pitcher=last_start_by_pitcher,
-        use_cadence=use_cadence,
-        as_of=as_of,
-        slot_by_norm_name=home_slot_by_norm_name,
-        live_batters_by_team=live_batters_by_team,
-    )
+        replace(ctx, slot_by_norm_name=inputs.home_slot_by_norm_name))
     away_budgets = build_budgets(
         inputs.away_roster, schedule_by_team,
-        team_total_ros_games=team_total_ros_games,
-        lineup_slot_counts=lineup_slot_counts,
-        live_by_team=live_by_team,
-        last_start_by_pitcher=last_start_by_pitcher,
-        use_cadence=use_cadence,
-        as_of=as_of,
-        slot_by_norm_name=away_slot_by_norm_name,
-        live_batters_by_team=live_batters_by_team,
-    )
+        replace(ctx, slot_by_norm_name=inputs.away_slot_by_norm_name))
 
     home_wins = 0
     away_wins = 0

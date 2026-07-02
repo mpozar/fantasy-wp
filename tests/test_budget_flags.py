@@ -69,7 +69,7 @@ def test_flat_extra_flag_when_no_cadence_anchor():
     # fallback — flagged as such, and nothing else fires.
     budgets = build_budgets([_starter()],
                             {TEAM: [_game(status="Scheduled", probable=None)]},
-                            team_total_ros_games={TEAM: 60})
+                            sim.SimContext(team_total_ros_games={TEAM: 60}))
     assert _flags(budgets, "SP") == ["flat-extra"]
 
 
@@ -77,31 +77,31 @@ def test_cadence_flag_when_probable_anchors_the_walk():
     # An announced probable both fixes that start AND anchors the cadence walk
     # for the open tail — the extra piece is cadence-built, flagged as such.
     budgets = build_budgets([_starter()], {TEAM: [_game(status="Scheduled")]},
-                            team_total_ros_games={TEAM: 60})
+                            sim.SimContext(team_total_ros_games={TEAM: 60}))
     assert _flags(budgets, "SP") == ["cadence"]
 
 
 def test_qs_ingame_flag_on_live_start():
-    budgets = build_budgets([_starter()], {TEAM: [_game()]},
-                            team_total_ros_games={TEAM: 60},
-                            live_by_team=_live())
+    budgets = build_budgets([_starter()], {TEAM: [_game()]}, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=_live()))
     assert "qs-ingame" in _flags(budgets, "SP")
 
 
 def test_promoted_flag_on_spot_starter():
     budgets = build_budgets([_spot()], {TEAM: [_game(probable="Spot Starter")]},
-                            team_total_ros_games={TEAM: 60},
-                            live_by_team=_live(name="Spot Starter"))
+                            sim.SimContext(team_total_ros_games={TEAM: 60},
+                                           live_by_team=_live(name="Spot Starter")))
     f = _flags(budgets, "SP")
     assert "promoted" in f and "qs-ingame" in f
 
 
 def test_svhd_ingame_flag_on_live_reliever():
     budgets = build_budgets([_reliever()], {TEAM: [_game(probable=None)]},
-                            team_total_ros_games={TEAM: 60},
-                            live_by_team=_live(name="Test Closer",
-                                               games_started=0, outs=1,
-                                               entry_margin=2, exit_margin=2))
+                            sim.SimContext(
+                                team_total_ros_games={TEAM: 60},
+                                live_by_team=_live(name="Test Closer",
+                                                   games_started=0, outs=1,
+                                                   entry_margin=2, exit_margin=2)))
     assert "svhd-ingame" in _flags(budgets, "RP")
 
 
@@ -111,8 +111,8 @@ def test_benched_drop_flag():
         [_starter()],
         {TEAM: [_game(), _game(status="Scheduled", game_pk=1000,
                                game_date="2026-06-04", probable=None)]},
-        team_total_ros_games={TEAM: 60}, live_by_team=_live(),
-        slot_by_norm_name=slot_map)
+        sim.SimContext(team_total_ros_games={TEAM: 60}, live_by_team=_live(),
+                       slot_by_norm_name=slot_map))
     assert "benched-live-drop" in _flags(budgets, "SP")
 
 
@@ -120,8 +120,8 @@ def test_flags_do_not_change_numbers():
     # The provenance field must be inert: same inputs → same expected values
     # as reading them straight off the budget (flags are just labels).
     budgets = build_budgets([_starter(), _reliever()], {TEAM: [_game()]},
-                            team_total_ros_games={TEAM: 60},
-                            live_by_team=_live())
+                            sim.SimContext(team_total_ros_games={TEAM: 60},
+                                           live_by_team=_live()))
     for b in budgets:
         assert isinstance(b.flags, list)
         assert all(isinstance(x, str) for x in b.flags)

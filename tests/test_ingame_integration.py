@@ -52,14 +52,14 @@ def _live(**kw):
 
 
 def _qs(roster, schedule, live):
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     return next(b.expected.get(STAT_QS, 0.0) for b in budgets if b.role == "SP")
 
 
 def _svhd(roster, schedule, live):
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     # SVHD lives only on the pitcher's budget; sum across budgets so the lookup is
     # robust to whether he's classified RP or — when spot-starting — promoted to SP.
     return sum(b.expected.get(STAT_SVHD, 0.0) for b in budgets)
@@ -80,7 +80,8 @@ def _spot():
 
 
 def _sp_budget(roster, schedule, live):
-    bs = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60}, live_by_team=live)
+    bs = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     return next((b for b in bs if b.name == "Spot Starter"), None)
 
 
@@ -111,7 +112,8 @@ def test_reliever_not_promoted_without_a_start():
     # A genuine reliever (not the probable, no live start) stays RP — promotion must
     # not fire for ordinary relievers.
     g = {TEAM: [_game(status="In Progress", probable="Someone Else")]}
-    bs = build_budgets([_reliever()], g, team_total_ros_games={TEAM: 60}, live_by_team={})
+    bs = build_budgets([_reliever()], g,
+                       sim.SimContext(team_total_ros_games={TEAM: 60}))
     b = next(x for x in bs if x.name == "Test Closer")
     assert b.role == "RP" and b.expected.get(STAT_QS, 0) == 0
 
@@ -157,7 +159,8 @@ def test_qs_exited_shelled_is_zero():
 # pitching, the remaining sliver is projected as before.
 
 def _sp_full(roster, schedule, live):
-    bs = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60}, live_by_team=live)
+    bs = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     return next(b for b in bs if b.role == "SP")
 
 
@@ -186,14 +189,16 @@ def _slots(name, slot):
 
 
 def _qs_slots(roster, schedule, live, slots):
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live, slot_by_norm_name=slots)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live,
+        slot_by_norm_name=slots))
     return sum(b.expected.get(STAT_QS, 0.0) for b in budgets if b.role == "SP")
 
 
 def _svhd_slots(roster, schedule, live, slots):
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live, slot_by_norm_name=slots)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live,
+        slot_by_norm_name=slots))
     return sum(b.expected.get(STAT_SVHD, 0.0) for b in budgets)
 
 
@@ -338,8 +343,8 @@ def test_deep_inprogress_starter_keeps_qs_credit():
     roster = [_starter()]
     schedule = {TEAM: [_game(status="In Progress", inning=8)]}   # deep game
     live = _live(is_last=0, outs=21, er=1)                       # exited, 7 IP, 1 ER → QS
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     sp = [b for b in budgets if b.role == "SP"]
     assert sp, "deep in-progress starter's budget must be kept (else QS is lost)"
     assert sp[0].expected.get(STAT_QS, 0.0) > 0.9   # earned QS credited live
@@ -353,8 +358,8 @@ def test_no_minimal_budget_without_live_start():
     live = {TEAM: {sim._norm_name("Test Starter"):
                    dict(game_pk=999, name="Test Starter", is_last=0,
                         games_started=1, outs=21, er=1, k=5)}}
-    budgets = build_budgets(roster, schedule, team_total_ros_games={TEAM: 60},
-                            live_by_team=live)
+    budgets = build_budgets(roster, schedule, sim.SimContext(
+        team_total_ros_games={TEAM: 60}, live_by_team=live))
     # Final game → load path would exclude it live; here live_by_team is passed but
     # the game is Final, so _has_live_inprogress_start is False → no minimal budget.
     assert not [b for b in budgets if b.role == "SP"]

@@ -55,6 +55,16 @@ For each matchup, 10,000 sims of how the rest of the week plays out. Each sim:
 
 WP = fraction of sims a side wins.
 
+**`SimContext` (added 2026-07-02).** Everything `build_budgets` consumes beyond
+the roster + schedule — live pitcher/batter lines, cadence anchors, slot counts,
+`use_cadence`, `as_of`, the side's daily-lineup slot map — rides one frozen
+dataclass built in exactly one place (`cli.compute`; per-side slot maps come via
+`MatchupInputs`). It replaced eight `| None = None` parameters threaded through
+four layers, where every default meant "feature silently off" and a forgotten
+kwarg silently reverted behavior. Adding a new sim input = add a field with an
+off-state default + populate it in `cli.compute`; no signature changes. Field
+docs live on the class in `sim.py`.
+
 ### Player budgets
 
 Each `Budget` has:
@@ -169,7 +179,7 @@ It doesn't today because of two implementation gaps, plus one irreducible limit:
     only modestly and with wide error bars — which is why flat was the safe
     interim, and why a *broken* cadence (inventing 2nd starts) is worse than flat.
 
-The flag threads `compute → simulate → build_budgets`.
+The flag rides `SimContext.use_cadence`, set per period in `cli.compute`.
 
 **Degenerate cases** collapse cleanly: future weeks (no probables) → empty fixed
 piece, pure cadence (a full week ≈ `[0, 0.27, 0.73]` → ~1.7 starts); late in a
@@ -241,8 +251,8 @@ is immaterial. Regression: `tests/test_lineup_matching.py`.
 for is driven by game **status** (`_hitter_factor`: Final → 0, in-progress →
 innings-left/9, scheduled → 1.0), *not* a wall-clock date floor. Healthy players get
 no date floor at all — a played day falls out via its Final status, smoothly. The
-only "now" the sim needs (the IL-return heuristic) is an injected **UTC** `as_of`,
-threaded `simulate → build_budgets → _hitter_days_slotted / _is_playable`; the sim
+only "now" the sim needs (the IL-return heuristic) is an injected **UTC** `as_of`
+(`SimContext.as_of`, resolved once at the simulate/build_budgets boundary); the sim
 never calls `date.today()`, so it behaves identically on any host timezone. (Until
 2026-06-06 it *did* use host-local `date.today()`, which dropped a whole day's
 projection at 00:00 CEST — the midnight WP lurch in `INCIDENTS.md`.) Regression:
@@ -295,8 +305,8 @@ been replaced (`mlb.parse_boxscore`; stored on `live_batters.still_in`). The hit
 optimizer (`_hitter_days_slotted`) drops In-Progress games for a hitter whose live line
 is `still_in=False` (`_is_removed_from_game`), same as it does for a benched one —
 zeroing his remaining H/R/HR/SB. `load_live_batters_inprogress` builds the
-team→name→line map (In-Progress only); threaded `compute → simulate → build_budgets →
-_hitter_days_slotted`. Future games still count (he can play tomorrow). No live line ⇒
+team→name→line map (In-Progress only); rides `SimContext.live_batters_by_team`.
+Future games still count (he can play tomorrow). No live line ⇒
 not removed. Tests: `test_live_components.py` (parse_boxscore still_in), `test_hitter_
 days_tz.py` (removed → 0 / still-in → fractional / future game still slotted).
 
@@ -393,9 +403,9 @@ in-game QS/SVHD overrides need no gate of their own: they only act on In-Progres
 which the benched player no longer sees. **Future (Scheduled) games stay** — not yet
 locked, so the streaming hedge is intact. Keyed on `NON_COUNTING_SLOTS` (bench/IL), not
 "not a pitcher slot", so it's role-agnostic and two-way-safe (a player in *any* active
-slot isn't benched). `slot_by_norm_name` threads `compute → simulate → build_budgets`
-(per side) `→ _hitter_days_slotted`; absent map (tests / isolated callers) ⇒ no gating,
-prior behavior. The bug: 2026-06-28 Hunter Brown, benched all week, threw a 6 IP / 2 ER
+slot isn't benched). The per-side daily-lineup slot map rides
+`MatchupInputs.{home,away}_slot_by_norm_name` → `SimContext.slot_by_norm_name`;
+absent map (tests / isolated callers) ⇒ no gating, prior behavior. The bug: 2026-06-28 Hunter Brown, benched all week, threw a 6 IP / 2 ER
 QS → projected **+1.0 QS for the Bus** that ESPN won't score (the projection over-credited
 vs the banked `_count_qs`, which already excluded him). Tests: `test_ingame_integration.py`
 (benched SP exited / still-pitching / future-start-still-projected / benched RP),
