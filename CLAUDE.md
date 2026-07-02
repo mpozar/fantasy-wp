@@ -954,6 +954,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - **`pitcher_final_lines`** table — write-once archive of every Final starter/reliever line (`outs/er/k/p_h/p_bb/sv/hld`, `games_started`, `final_at`), durable past the `live_pitchers` prune. The line that earned/missed a QS/SVHD credit, answerable offline (this is how the Melton spot-start surfaced).
    - **`team_schedule.became_final_at`** — the first tick a game read Final (the credit boundary), instead of inferring it from `category_state` steps.
    - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
+   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
 

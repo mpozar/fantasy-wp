@@ -18,7 +18,7 @@ import json
 import math
 import random
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 from app import db, ingame, mlb
@@ -625,6 +625,19 @@ class Budget:
     # stat rates) so all pitching categories move together with the drawn count.
     extra_dist: list[float] | None = None
     extra_per_start: dict[int, float] | None = None
+    # Provenance: which special-case paths shaped this budget (telemetry only —
+    # never read by the sim). Emitted into details_json via budget_summary so a
+    # WP investigation can see the path without reverse-engineering it. Values:
+    #   promoted          gs/gp said RP but announced/live start promoted him to SP
+    #   cadence           extra starts from the rotation-turn model
+    #   flat-extra        extra starts from the flat ROS-share fallback
+    #   start-capped      physical start-count cap clipped the extra dist
+    #   qs-ingame         in-progress QS override replaced the rate-based share
+    #   svhd-ingame       in-progress SVHD override replaced the rate-based share
+    #   benched-live-drop benched at first pitch → In-Progress games dropped
+    #   live-keepalive    zero-unit budget kept so an exited starter's QS survives
+    #   two-way-sub       hitter days reduced by estimated pitching starts
+    flags: list[str] = field(default_factory=list)
 
 
 # ── In-progress game scaling ──────────────────────────────────────────
@@ -1162,21 +1175,22 @@ def _drop_inprogress_for_benched(schedule_by_team: dict[int, list[dict]],
 def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
                     schedule_by_team: dict[int, list[dict]],
                     live_by_team: dict[int, dict[str, dict]],
-                    team_id: int, gs_ros: float, sp_exit_inning: float) -> None:
+                    team_id: int, gs_ros: float, sp_exit_inning: float) -> bool:
     """Swap the in-progress start's QS share for the conditional in-game
     projection (`app.ingame`). Other games and other counters are untouched, so
     with no live game this is a no-op. (A benched pitcher never reaches here with a
-    live start — `build_budgets` drops his In-Progress game from the schedule first.)"""
+    live start — `build_budgets` drops his In-Progress game from the schedule first.)
+    Returns True when it materially changed expected[QS] (provenance flag)."""
     if gs_ros <= 0:
-        return
+        return False
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
     if not live or not live.get("games_started"):
-        return
+        return False
     ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
                 if g.get("game_status") == "In Progress"}
     g = ip_games.get(live["game_pk"])
     if g is None:
-        return
+        return False
     qs_rate = (ros.get(STAT_QS) or 0) / gs_ros
     outs_tot = ros.get(STAT_OUTS) or 0
     # Cap the inferred start length: a promoted/spot starter's tiny GS makes
@@ -1197,24 +1211,27 @@ def _override_sp_qs(budget: Budget, full_name: str, ros: dict,
     # share is present, so drop it as before.
     ip_share = 0.0 if exited else qs_rate * _sp_factor(g, sp_exit_inning)
     cur = budget.expected.get(STAT_QS, 0.0)
-    budget.expected[STAT_QS] = max(0.0, cur - ip_share) + ingame.project_qs(state)
+    new = max(0.0, cur - ip_share) + ingame.project_qs(state)
+    budget.expected[STAT_QS] = new
+    return abs(new - cur) > 1e-9
 
 
 def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
                       schedule_by_team: dict[int, list[dict]],
                       live_by_team: dict[int, dict[str, dict]],
                       team_id: int, gp_ros: float, units_p: float,
-                      rp_remaining: float) -> None:
+                      rp_remaining: float) -> bool:
     """Swap each in-progress game's SVHD share for the in-game projection: the
     live line if the reliever has appeared, else a game-script-gated rate for a
     closer who hasn't entered yet. No-op when nothing is live. (A benched reliever
-    never reaches here — `build_budgets` drops his In-Progress games first.)"""
+    never reaches here — `build_budgets` drops his In-Progress games first.)
+    Returns True when it materially changed expected[SVHD] (provenance flag)."""
     if gp_ros <= 0 or rp_remaining <= 0:
-        return
+        return False
     ip_games = {g["game_pk"]: g for g in schedule_by_team.get(team_id, [])
                 if g.get("game_status") == "In Progress"}
     if not ip_games:
-        return
+        return False
     svhd_rate = min((ros.get(STAT_SVHD) or 0) / gp_ros, MAX_SVHD_RATE)
     appearance_per_factor = units_p / rp_remaining   # expected apps per _rp_factor
     live = (live_by_team.get(team_id) or {}).get(_norm_name(full_name))
@@ -1222,7 +1239,8 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
     # override entirely (it's keyed off the fantasy RP role; an RP-classified spot
     # starter would otherwise get a phantom SV/HLD). The QS path handles his start.
     if live and live.get("games_started"):
-        return
+        return False
+    changed = False
     for game_pk, g in ip_games.items():
         factor = _rp_factor(g)
         if factor <= 0:
@@ -1252,10 +1270,14 @@ def _override_rp_svhd(budget: Budget, full_name: str, ros: dict,
                 recorded_out=live["outs"] >= 1,
                 svhd_rate=svhd_rate,
             )
-            budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + ingame.project_svhd(state)
+            new = max(0.0, cur - base_share) + ingame.project_svhd(state)
+            budget.expected[STAT_SVHD] = new
         else:
             gate = ingame.game_script_gate(margin, g.get("current_inning") or 0)
-            budget.expected[STAT_SVHD] = max(0.0, cur - base_share) + base_share * gate
+            new = max(0.0, cur - base_share) + base_share * gate
+            budget.expected[STAT_SVHD] = new
+        changed = changed or abs(new - cur) > 1e-9
+    return changed
 
 
 def _cap_svhd_rate(stat_id: int, rate: float) -> float:
@@ -1400,6 +1422,11 @@ def build_budgets(roster: list[dict],
             # hedge). No-op for an active-slot pitcher or when no slot map is supplied.
             sched = _drop_inprogress_for_benched(
                 schedule_by_team, team_id, p["full_name"], slot_by_norm_name)
+            # Provenance flags for this pitcher's budget (see Budget.flags).
+            # Telemetry only — collected along the way, attached at the end.
+            pflags: list[str] = []
+            if sched is not schedule_by_team:
+                pflags.append("benched-live-drop")
             # Classify SP vs RP by projected usage, not ESPN's
             # defaultPositionId — handles RP-eligible swingmen and two-way
             # players (Ohtani has pos=10 but gs/gp=1.0 → SP).
@@ -1415,6 +1442,8 @@ def build_budgets(roster: list[dict],
             promoted_sp = (not ratio_sp) and _is_announced_or_live_starter(
                 p["full_name"], team_id, sched, live_by_team)
             is_sp = ratio_sp or promoted_sp
+            if promoted_sp:
+                pflags.append("promoted")
 
             if is_sp:
                 # SP starts split into a FIXED piece (announced probables + any
@@ -1463,6 +1492,7 @@ def build_budgets(roster: list[dict],
                     p["full_name"], team_id, sched,
                     last_start_by_pitcher, ret,
                 ) if use_cadence else None
+                extra_src = "cadence" if extra_dist is not None else None
                 if extra_dist is None:
                     open_weight = _open_sp_game_weight(
                         team_id, sched, sp_exit_inning, ret,
@@ -1473,6 +1503,7 @@ def build_budgets(roster: list[dict],
                         flat_mean = rate * open_weight
                         if flat_mean > 0:
                             extra_dist = _split_mean_to_dist(flat_mean)
+                            extra_src = "flat-extra"
                 if extra_dist is not None:
                     # Physical backstop: a pitcher can't start more often than the
                     # rotation allows, so cap the *extra* (speculative) piece such
@@ -1498,10 +1529,15 @@ def build_budgets(roster: list[dict],
                             phys = None
                         if phys is not None:
                             max_extra = phys - math.ceil(probable_units - 1e-9)
+                            pre_cap = extra_dist
                             extra_dist = _cap_extra_dist(extra_dist, max_extra)
+                            if extra_dist is not pre_cap:
+                                pflags.append("start-capped")
                     # Probables are the fixed units; the open tail is sampled.
                     # sp_est_units = E[extra starts], used for the two-way
                     # subtraction and the displayed start count.
+                    if extra_src:
+                        pflags.append(extra_src)
                     sp_extra_dist = extra_dist
                     sp_extra_per_start = _per_start_rates(ros, sp_rate_denom)
                     sp_est_units = _expected_extra_starts(extra_dist)
@@ -1543,6 +1579,7 @@ def build_budgets(roster: list[dict],
                                                    live_by_team, team_id)):
                 budget = Budget(player_id=p["player_id"], name=p["full_name"],
                                 role="SP", units=0.0, expected={})
+                pflags.append("live-keepalive")
             if budget:
                 if role_p == "SP" and promoted_sp:
                     # The cumulative counters used the per-out denom; QS is a
@@ -1557,11 +1594,15 @@ def build_budgets(roster: list[dict],
                 # Operates on the fixed `expected` only (a live start is a
                 # probable, hence fixed); the extra piece is never live.
                 if role_p == "SP":
-                    _override_sp_qs(budget, p["full_name"], ros, sched,
-                                    live_by_team, team_id, gs_ros, sp_exit_inning)
+                    if _override_sp_qs(budget, p["full_name"], ros, sched,
+                                       live_by_team, team_id, gs_ros, sp_exit_inning):
+                        pflags.append("qs-ingame")
                 else:
-                    _override_rp_svhd(budget, p["full_name"], ros, sched,
-                                      live_by_team, team_id, gp_ros, units_p, rp_remaining)
+                    if _override_rp_svhd(budget, p["full_name"], ros, sched,
+                                         live_by_team, team_id, gp_ros, units_p,
+                                         rp_remaining):
+                        pflags.append("svhd-ingame")
+                budget.flags.extend(pflags)
                 out.append(budget)
 
         # ── Hitter budget ──────────────────────────────────────────────
@@ -1572,11 +1613,14 @@ def build_budgets(roster: list[dict],
             # *estimated* (un-probabled) start days here to avoid counting them
             # both batting and pitching. For a future week that's all of their
             # SP starts; for the current week it's just the un-announced ones.
+            two_way_sub = _has_pitcher_ros(ros) and sp_est_units > 0 and units_h > 0
             if _has_pitcher_ros(ros):
                 units_h = max(0.0, units_h - sp_est_units)
             denom_h = ros.get(STAT_HIT_G) or 0
             budget = _make_budget(p, ros, units_h, denom_h, HITTER_COUNTERS, "HIT")
             if budget:
+                if two_way_sub:
+                    budget.flags.append("two-way-sub")
                 out.append(budget)
 
     return out
@@ -1817,6 +1861,10 @@ def simulate(inputs: MatchupInputs,
                 else:
                     rec["exp_era"]  = None
                     rec["exp_whip"] = None
+            # Provenance (see Budget.flags) — which special-case paths shaped
+            # this budget. Omitted when empty to keep the payload lean.
+            if b.flags:
+                rec["flags"] = b.flags
             out.append(rec)
         return out
 
