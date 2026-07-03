@@ -678,6 +678,25 @@ trap 'rm -f .app.lock' EXIT
 > the cron runs on a laptop that **dark-wake-sleeps**: a ~1h tick gap dumps a slate's
 > worth of change onto one post-wake tick (often at the ~07:00 settle), so a drop can
 > *look* like one big step when it's really accumulated. Incidents: `INCIDENTS.md`.
+>
+> **Full-day-offline variant (the big synchronized ~09:00 CET / 07:00 UTC lurch).**
+> When the laptop is asleep/offline through the *entire* slate — not just a 1h nap —
+> the scrape **never runs during any in-progress game**, so *zero* live banking happens
+> all day; every scored cat stays frozen at its pre-sleep value. When the machine wakes,
+> the games are already Final, so the scrape (In-Progress-only) still can't read them —
+> the whole day banks in one shot at the next **~07:00 UTC REST settle**. Signature: the
+> same tick moves **many matchups at once, same direction** (a normal settle nudges one
+> or two). Confirm it's this and not real play: `SELECT DISTINCT computed_at FROM
+> wp_snapshots WHERE computed_at BETWEEN <evening> AND <morning> ORDER BY computed_at`
+> and look for a multi-hour **gap** (e.g. 2026-07-02: no computes 20:00 UTC → 05:20 UTC,
+> then a 116-value banked batch at 07:00 hit 4/6 matchups −8 to −21pp). Also
+> `SELECT ... COUNT(changed category_state rows) per tick` — a normal tick changes 0
+> overnight; the settle tick changes ~100+. So "what caused the jump at 9 AM?" on such a
+> day resolves to **the offline-all-day backlog settling**, not any single play. Same
+> laptop-sleep root cause as the stale-schedule (`daily.sh` skips) and
+> `ANOM_STALE_SNAPSHOTS` flag. Real fix = run the pipeline always-on, or add a second
+> overnight REST settle (~05:00-06:00 UTC, after West-coast games end) so results bank
+> near real time instead of piling onto 07:00.
 
 ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. The UI loads an initial REST snapshot then receives real-time updates via a **FastCast WebSocket** (`fastcast.semfs.engsvc.go.com`). The REST endpoint we use is updated by ESPN's backend on a slower aggregation cycle, so we can't get true real-time data from it.
 
