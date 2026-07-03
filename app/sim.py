@@ -634,6 +634,8 @@ class Budget:
     #   start-capped      physical start-count cap clipped the extra dist
     #   qs-ingame         in-progress QS override replaced the rate-based share
     #   svhd-ingame       in-progress SVHD override replaced the rate-based share
+    #   relief-svhd       SP's SVHD re-sourced from projected relief appearances
+    #                     (starts bank none) — swingman/spot-starter, see _sp_relief_svhd
     #   benched-live-drop benched at first pitch → In-Progress games dropped
     #   live-keepalive    zero-unit budget kept so an exited starter's QS survives
     #   two-way-sub       hitter days reduced by estimated pitching starts
