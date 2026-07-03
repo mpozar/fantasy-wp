@@ -18,11 +18,17 @@ permissions:
   pages: write
   id-token: write
 
-# Only the latest published snapshot matters, so cancel an in-flight deploy when a
-# newer 5-min tick lands — keeps rapid ticks from queueing up.
+# Only the latest published snapshot matters, but NEVER cancel an in-flight
+# deploy: on 2026-07-02 GitHub's Pages backend slowed deploys from ~1 min to
+# 4-10+ min, and with cancel-in-progress the 5-min ticks cancelled every deploy
+# before it finished — no deploy completed and the site froze on stale data.
+# With `false` the in-flight deploy completes, and GitHub still collapses
+# *waiting* runs in the group to the newest one ("higher priority waiting
+# request"), so rapid ticks can't queue up and the site updates once per
+# deploy-duration at worst.
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
