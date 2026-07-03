@@ -109,6 +109,22 @@ per-start event, not per-out — placed so the in-game `_override_sp_qs` (which 
 `qs_rate × sp_factor` for the in-progress start and adds the live estimate) still composes
 without double-counting. Real SPs (ratio-classified) are unchanged. Tests: `test_ingame_integration.py`.
 
+**SVHD follows relief appearances, not the start (fixed 2026-07-03).** `_make_budget`
+fills *every* pitcher counter from season rates, and QS gets a dedicated SP override
+but SVHD's override is RP-only — so a promoted swingman's season saves/holds used to
+smear onto his one start (Tyler Phillips: `ros_svhd/sp_rate_denom × units` = `2.73/6.8`
+≈ **0.40 SVHD on a game he's starting**, which can't bank a save/hold). Now the SP branch
+**strips SVHD from both the fixed start and the sampled extra starts**, then re-adds only
+the SVHD he'd earn from *projected relief appearances* this week via `_sp_relief_svhd`:
+`min(ros_svhd/(gp−gs), MAX_SVHD_RATE) × ((gp−gs)/team_ros_games × rp_remaining)` — his
+non-start appearance share × remaining relief-eligible team games × saves/holds per relief
+appearance. **Auto-scales to 0** as ROS `GS → GP` (a true rotation regular has no relief
+appearances left to project); Phillips dropped 0.40 → ~0.14, flagged `relief-svhd`. No-op
+for real SPs (≈0 season SVHD). Does not exclude his own start day from the relief-eligible
+count — a rate-based expectation, so the ~1-game overlap is negligible (same simplification
+the RP branch makes). Tests: `test_ingame_integration.py` (`test_promoted_starter_svhd_*`,
+`test_starter_with_no_relief_share_projects_no_svhd`, `_sp_relief_svhd` scaling).
+
 ### SP start estimation (rotation cadence + per-sim start-count sampling)
 
 A rostered SP's starts for the week split into two pieces that **never overlap**

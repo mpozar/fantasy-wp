@@ -128,6 +128,63 @@ def test_final_start_does_not_promote_or_strip_relief():
     assert b is not None and b.role == "RP"
 
 
+# ── SVHD survives promotion, but follows relief appearances, not the start ─────
+# A starting appearance banks no save/hold, so a promoted swingman's season
+# saves/holds attach to his projected RELIEF appearances that week — not smeared
+# onto the game he's starting (which produced the bogus 0.40 for Tyler Phillips).
+
+def _spot_swing(svhd=3):
+    # _spot() (ROS ~90% reliever: GS 3 / GP 30) but carrying real relief SVHD.
+    d = _spot()
+    d["ros_stats"] = {**d["ros_stats"], STAT_SVHD: svhd}
+    return d
+
+
+def test_promoted_starter_svhd_from_relief_not_the_start():
+    # Promoted to SP for his announced start (QS credited), yet his relief SVHD
+    # survives — sourced from projected relief appearances, flagged distinctly.
+    g = {TEAM: [_game(status="Scheduled", inning=None, state=None, probable="Spot Starter")]}
+    b = _sp_budget([_spot_swing()], g, {})
+    assert b is not None and b.role == "SP"
+    assert b.expected.get(STAT_QS, 0) > 0.2            # start QS intact
+    assert b.expected.get(STAT_SVHD, 0) > 0            # relief SVHD survives
+    assert "relief-svhd" in b.flags
+
+
+def test_promoted_starter_svhd_scales_with_relief_opportunities():
+    # SVHD tracks relief appearances, not the start: adding relief-eligible team
+    # games (he isn't the probable for them) raises his SVHD.
+    one = {TEAM: [_game(status="Scheduled", inning=None, state=None, probable="Spot Starter")]}
+    more = {TEAM: [_game(status="Scheduled", inning=None, state=None, probable="Spot Starter"),
+                   _game(status="Scheduled", inning=None, state=None, probable="Someone Else"),
+                   _game(status="Scheduled", inning=None, state=None, probable="Someone Else")]}
+    s1 = _sp_budget([_spot_swing()], one, {}).expected.get(STAT_SVHD, 0)
+    s2 = _sp_budget([_spot_swing()], more, {}).expected.get(STAT_SVHD, 0)
+    assert 0 < s1 < s2                                 # more relief games → more SVHD
+
+
+def test_starter_with_no_relief_share_projects_no_svhd():
+    # A pitcher whose ROS role is a pure starter (GS == GP) banks no save/hold
+    # even with season SVHD on the books — the relief piece auto-scales to 0.
+    d = _spot_swing()
+    d["ros_stats"] = {**d["ros_stats"], STAT_GS: 30, STAT_PITCH_GP: 30}
+    g = {TEAM: [_game(status="Scheduled", inning=None, state=None, probable="Spot Starter")]}
+    b = _sp_budget([d], g, {})
+    assert b is not None and b.role == "SP"
+    assert b.expected.get(STAT_SVHD, 0) == 0
+
+
+def test_sp_relief_svhd_helper_scales_down_toward_starter_role():
+    # Unit-level: the relief-SVHD helper shrinks to 0 as ROS GS approaches GP.
+    swing = sim._sp_relief_svhd({STAT_SVHD: 6}, 3, 30, 5.0, 60)
+    near = sim._sp_relief_svhd({STAT_SVHD: 6}, 28, 30, 5.0, 60)
+    pure = sim._sp_relief_svhd({STAT_SVHD: 6}, 30, 30, 5.0, 60)
+    assert swing > near > pure == 0.0
+    # No relief SVHD without saves/holds on the books or schedule room.
+    assert sim._sp_relief_svhd({}, 3, 30, 5.0, 60) == 0.0
+    assert sim._sp_relief_svhd({STAT_SVHD: 6}, 3, 30, 0.0, 60) == 0.0
+
+
 # ── QS through build_budgets ──────────────────────────────────────────────────
 
 def test_qs_no_live_data_uses_rate_estimate():

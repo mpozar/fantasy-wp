@@ -1380,6 +1380,35 @@ def _per_start_rates(ros: dict, denom: float) -> dict[int, float]:
     return rates
 
 
+def _sp_relief_svhd(ros: dict, gs_ros: float, gp_ros: float,
+                    rp_remaining: float, total_ros: float) -> float:
+    """SVHD a *starting* pitcher can still bank from RELIEF appearances this
+    week — for swingmen / spot-starters whose ROS role is still part-reliever.
+
+    A start banks no save/hold, so a starter's SVHD attaches only to his
+    projected *non-start* appearances:
+
+        (relief-appearance share) × (remaining relief-eligible team games)
+        × (saves+holds per relief appearance)
+
+    where relief share = (gp_ros − gs_ros) / team_ros_games (mirrors the RP
+    branch's `(gp_ros/total_ros) × rp_remaining`, but on non-start appearances
+    only), and the per-relief-appearance rate uses `gp_ros − gs_ros` as the
+    denominator because his season saves/holds all came in relief. Auto-scales
+    to ~0 as a pitcher's ROS GS approaches GP (a true rotation regular has no
+    relief appearances left to project). Returns 0 with no projected relief
+    role or no schedule room. Does not exclude his specific start day from the
+    relief-eligible count — a rate-based expectation, so the ~1-game overlap is
+    negligible (same simplification the RP branch already makes)."""
+    relief_gp = (gp_ros or 0) - (gs_ros or 0)
+    ros_svhd = ros.get(STAT_SVHD) or 0
+    if relief_gp <= 0 or ros_svhd <= 0 or total_ros <= 0 or rp_remaining <= 0:
+        return 0.0
+    relief_units = (relief_gp / total_ros) * rp_remaining
+    svhd_per_relief = min(ros_svhd / relief_gp, MAX_SVHD_RATE)
+    return svhd_per_relief * relief_units
+
+
 @dataclass(frozen=True)
 class PitcherSituation:
     """One pitcher's current circumstances, resolved once per build_budgets pass.
@@ -1693,6 +1722,23 @@ def build_budgets(roster: list[dict],
                                          team_id, gp_ros, units_p,
                                          rp_remaining):
                         pflags.append("svhd-ingame")
+                # A start banks no save/hold: strip the season-rate SVHD smear
+                # from both the fixed start budget and the sampled extra starts,
+                # then re-add only the SVHD he'd earn from projected RELIEF
+                # appearances this week (swingmen / spot-starters still part-
+                # reliever by ROS role; ~0 for a true rotation regular). SVHD
+                # follows relief appearances, never the start he's making.
+                if role_p == "SP":
+                    budget.expected.pop(STAT_SVHD, None)
+                    if budget.extra_per_start:
+                        budget.extra_per_start.pop(STAT_SVHD, None)
+                    relief_svhd = _sp_relief_svhd(
+                        ros, gs_ros, gp_ros,
+                        _rp_remaining_units(team_id, sched, ret),
+                        team_total_ros_games.get(team_id, 0))
+                    if relief_svhd > 0:
+                        budget.expected[STAT_SVHD] = relief_svhd
+                        pflags.append("relief-svhd")
                 budget.flags.extend(pflags)
                 out.append(budget)
 
