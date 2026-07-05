@@ -1149,6 +1149,42 @@ time and the signatures that explain ~every swing fast:
     projection-sensitive and look far more volatile than a tidy 1–1 final suggests —
     expect hard intraday whipsaws driven purely by *which side banks the next event
     first*, not by a real change in who's "ahead." Don't call this a bug.
+14. **A projection swing with *flat banked stats and an unchanged schedule* is a
+    roster/lineup change — diff the budgets to find who.** When `category_wp` avgs
+    move but banked `category_state` is flat AND `team_schedule` wasn't refreshed,
+    an active player was added / dropped / benched, changing projected *remaining*
+    production and flipping contested cats. Diff `details_json.{home,away}_budgets`
+    player-by-player across the two ticks: a name whose `units→0`/vanishes was pulled
+    from the active lineup; a new name was added. It's usually the **opponent** side
+    that changed (the side you're asking about didn't move — its own avgs are flat).
+    Examples (2026-07-02/03): Desert Dawgs dropped **Matt Chapman** → their projected
+    H fell 38.4→34.9, flipping H+R to the Giraffes (**+12pp**); WAR dropped **Bryce
+    Elder** (a projected SP start) → their K/QS fell, handing the Knights (**+11pp**).
+    Contrast #7's *phantom* start (persists for days); a roster move is a clean
+    one-tick step that then holds.
+15. **A benched starter's projected start counts until *first pitch*, then drops —
+    a discrete opponent-favoring swing at game time, NOT gradual "end-of-day
+    convergence."** `benched-live-drop` only zeroes a benched player's game once it's
+    **In Progress** (a manager can still activate him up to game time), so a starter
+    sitting on the bench (`team_rosters.lineup_slot_id` = a bench slot) keeps his full
+    projected line — K/QS/OUTS/ER + his ERA/WHIP contribution — on his team's books
+    all through Pre-Game, then loses it the instant his real game starts. Signature:
+    the *losing* side's projected K/QS fall and ERA/WHIP worsen **exactly at that
+    game's first pitch**, and the vanished pitcher carried the `benched-live-drop`
+    flag. Diagnose by diffing budgets across the first-pitch tick + checking the
+    pitcher's bench slot and his `team_schedule` status flipping to In Progress.
+    Example (2026-07-05): the Bus benched **Kyle Bradish**; at first pitch his line
+    (5.9 K, 0.6 QS, 3.6 ERA / 1.24 WHIP) dropped, the Bus's projected K fell 7.5→1.6,
+    and the **Shih Tzus firmed ~95%→97.6%**. (Side effect: a benched SP slightly
+    *over*-credits his own team pre-game, correcting at first pitch — by design.)
+16. **A "locked" rate cat (ERA/WHIP at 85–95%) is still the starter's to swing.**
+    When judging which players can move a matchup — or attributing a rate-cat swing —
+    don't dismiss a starter because the category looks settled: the win% already bakes
+    in his *expected* line, so the residual tail IS the variance of his actual start.
+    On the final day especially, one start is a large share of the remaining innings,
+    so a gem vs. a blow-up is precisely what decides an 85/15 ERA/WHIP category.
+    (2026-07-05: Hancock was ~70% of Jo Mamas' remaining innings — the whole lever for
+    their 11% ERA / 6% WHIP longshot, despite the point estimate looking lopsided.)
 
 > **Meta-lesson from a multi-swing investigation (parallel weekend matchups):** the
 > recurring live-week swing pattern is **overshoot-and-correct** — a side's WP drops
