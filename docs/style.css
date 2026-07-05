@@ -710,3 +710,56 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   }
   ol.contrib .m { font-size: .75rem; }
 }
+
+/* ── Game-day spotlight (authored, auto-expiring; see renderSpotlight) ───────── */
+.spotlight {
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 1rem 1.15rem 1.15rem;
+  margin-bottom: 1.5rem;
+}
+.spot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; }
+.spotlight h2 { margin: 0; font-size: 1.15rem; line-height: 1.25; }
+.spot-close {
+  border: none; background: none; color: var(--muted); font-size: 1rem;
+  cursor: pointer; line-height: 1; padding: .15rem .35rem; border-radius: 6px; flex: none;
+}
+.spot-close:hover { background: var(--line); color: var(--fg); }
+.spot-sub { margin: .4rem 0 .8rem; color: var(--muted); font-size: .9rem; line-height: 1.45; }
+.spot-h { margin: .6rem 0 .4rem; font-size: .95rem; }
+.spot-table-wrap { overflow-x: auto; }
+.spot-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.spot-table th {
+  text-align: left; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); font-weight: 600; padding: .3rem .5rem; border-bottom: 1px solid var(--line);
+}
+.spot-table td { padding: .45rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.spot-table tr:last-child td { border-bottom: none; }
+.spot-player { white-space: nowrap; font-weight: 600; }
+.spot-mgr { white-space: nowrap; }
+.spot-watch { color: var(--fg); line-height: 1.35; min-width: 15rem; }
+.spot-team {
+  display: inline-block; font-size: .66rem; font-weight: 700; letter-spacing: .03em;
+  padding: .08rem .32rem; border-radius: 5px; margin-right: .3rem; vertical-align: middle;
+}
+.spot-team.sea { background: #d8f0ee; color: #0c5b57; }
+.spot-team.tor { background: #dbe7ff; color: #1b3f86; }
+.spot-wp { display: inline-block; margin-left: .3rem; font-size: .78rem; font-weight: 700; color: var(--fav-fg); }
+.spot-wp-opp { color: var(--muted); font-weight: 400; }
+.spot-notes { display: grid; gap: .6rem; margin: .9rem 0 .25rem; }
+.spot-note { background: var(--bat); border-radius: 8px; padding: .55rem .7rem; }
+.spot-note h4 { margin: 0 0 .2rem; font-size: .82rem; }
+.spot-note p { margin: 0; font-size: .86rem; line-height: 1.4; }
+.spot-minor { margin-top: .8rem; font-size: .85rem; }
+.spot-minor summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.spot-minor ul { margin: .5rem 0 0; padding-left: 1.1rem; }
+.spot-minor li { margin-bottom: .3rem; line-height: 1.35; }
+
+@media (max-width: 560px) {
+  .spot-player, .spot-mgr { white-space: normal; }
+  .spot-wp-opp { display: none; }
+  .spot-watch { min-width: 0; }
+}

@@ -667,6 +667,65 @@ function renderWeek(data, week) {
   bindChartHovers(root);
 }
 
+// Game-day spotlight — an authored, auto-expiring card pinned above the matchups.
+// Content lives in spotlight.json (LLM-authored, like the chart annotations); this
+// renders it only when `active` and its `date` equals "today" in the file's
+// timezone, so the card removes itself once the day passes — no cleanup needed, and
+// fast.sh never touches it (it only writes data.json). Live WP badges are pulled
+// from the already-loaded `data` so the numbers stay current even though the prose
+// is fixed as-of-first-pitch.
+async function renderSpotlight(data) {
+  const el = document.getElementById("spotlight");
+  if (!el) return;
+  let s;
+  try {
+    const r = await fetch("spotlight.json", { cache: "no-store" });
+    if (!r.ok) { el.hidden = true; return; }
+    s = await r.json();
+  } catch { el.hidden = true; return; }
+  const today = new Date().toLocaleDateString("en-CA", s.tz ? { timeZone: s.tz } : {});
+  if (!s.active || s.date !== today) { el.hidden = true; el.innerHTML = ""; return; }
+
+  const byId = {};
+  data.weeks.forEach((w) => (w.matchups || []).forEach((m) => { byId[m.matchup_id] = m; }));
+  const liveWp = (mid, manager) => {
+    const m = byId[mid];
+    if (!m) return "";
+    const mine = m.home.name === manager ? m.home : m.away.name === manager ? m.away : null;
+    if (!mine) return "";
+    const opp = mine === m.home ? m.away : m.home;
+    const pct = (x) => `${Math.round(x.wp * 100)}%`;
+    return `<span class="spot-wp" title="current win probability">${pct(mine)}` +
+           `<span class="spot-wp-opp"> · vs ${escHtml(opp.name)} ${pct(opp)}</span></span>`;
+  };
+  const teamBadge = (t) => `<span class="spot-team ${t === "SEA" ? "sea" : "tor"}">${escHtml(t)}</span>`;
+
+  const watchRows = (s.watch || []).map((p) => `
+    <tr>
+      <td class="spot-player">${teamBadge(p.team)} ${escHtml(p.player)}</td>
+      <td class="spot-mgr">${escHtml(p.manager)} ${liveWp(p.matchup_id, p.manager)}</td>
+      <td class="spot-watch">${escHtml(p.watch)}</td>
+    </tr>`).join("");
+  const minorRows = (s.minor || []).map((m) =>
+    `<li><strong>${escHtml(m.label)}:</strong> ${escHtml(m.body)}</li>`).join("");
+  const noteBlocks = (s.notes || []).map((n) =>
+    `<div class="spot-note"><h4>${escHtml(n.title)}</h4><p>${escHtml(n.body)}</p></div>`).join("");
+
+  el.innerHTML =
+    `<div class="spot-head"><h2>${escHtml(s.headline)}</h2>` +
+    `<button class="spot-close" aria-label="Hide spotlight" title="Hide">✕</button></div>` +
+    (s.subhead ? `<p class="spot-sub">${escHtml(s.subhead)}</p>` : "") +
+    `<h3 class="spot-h">🔴 Watch these</h3>` +
+    `<div class="spot-table-wrap"><table class="spot-table">` +
+    `<thead><tr><th>Player</th><th>Manager · WP</th><th>What to watch</th></tr></thead>` +
+    `<tbody>${watchRows}</tbody></table></div>` +
+    (noteBlocks ? `<div class="spot-notes">${noteBlocks}</div>` : "") +
+    (minorRows ? `<details class="spot-minor"><summary>⚪ Barely matters / out tonight</summary><ul>${minorRows}</ul></details>` : "");
+  el.hidden = false;
+  const close = el.querySelector(".spot-close");
+  if (close) close.addEventListener("click", () => { el.hidden = true; });
+}
+
 function render(data) {
   document.getElementById("league-name").textContent = data.league.name;
   const ts = new Date(data.generated_at);
@@ -711,6 +770,7 @@ function render(data) {
     ` · <button id="about-toggle" class="about-toggle" aria-expanded="false" aria-controls="about-panel">` +
       `<span class="caret">▸</span> How this works</button>`;
 
+  renderSpotlight(data);
   renderWeek(data, defaultWeek);
 
   document.getElementById("week-select").addEventListener("change", async (e) => {
