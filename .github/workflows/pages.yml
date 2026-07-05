@@ -34,7 +34,8 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      # Whichever attempt landed the deploy (see the retry steps below).
+      url: ${{ steps.deploy1.outputs.page_url || steps.deploy2.outputs.page_url || steps.deploy3.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -45,6 +46,30 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: "docs"
+      # GitHub's Pages backend intermittently returns "Deployment failed, try
+      # again later" — a transient the next 5-min tick clears on its own, but it
+      # marks the run red and GitHub emails on every failed run (~1 in 4 at this
+      # cadence = the email storm). Retry the deploy in-run with short backoff so
+      # a transient no longer fails the run: same 5-min freshness, far fewer red
+      # runs. The uploaded artifact ("github-pages") persists across attempts, and
+      # a later attempt just supersedes any half-created earlier deployment
+      # (last-write-wins = latest data). Only an all-attempts-fail run stays red.
       - name: Deploy to GitHub Pages
-        id: deployment
+        id: deploy1
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Backoff before retry 1
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 20
+      - name: Deploy to GitHub Pages (retry 1)
+        id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Backoff before retry 2
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        run: sleep 40
+      - name: Deploy to GitHub Pages (retry 2, final)
+        id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
         uses: actions/deploy-pages@v4
