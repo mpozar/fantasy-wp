@@ -1244,6 +1244,42 @@ time and the signatures that explain ~every swing fast:
 > does this for the postponed-game case; the status-lag-sliver case is still open
 > (it only ever costs a late, cosmetic climb to 100%, never the result).
 
+> **Investigation discipline — hard-won 2026-07-09 after a run of misdiagnoses.** A
+> chain of WP-move investigations went wrong the same ways; these guards are the fix:
+> - **Decompose before you attribute; salient ≠ causal.** A WP move usually has >1
+>   simultaneous input change. List *every* budget/category delta at the tick and weight
+>   by impact — **a category that flips past 50% moves WP far more than one that shifts
+>   within a lean** — before naming a driver. The loudest roster change is not
+>   automatically the cause: a Norsemen −17pp drop was pinned on "Trout benched" when a
+>   quiet bullpen K collapse (48%→23%, the only cat that *flipped*) was the bigger half.
+>   A proper split (convolve the 10 cats' win/tie/loss into P(cats-won > cats-lost),
+>   revert one side's cats at a time) put it ~half Trout / ~half bullpen — not "the
+>   cause was Trout."
+> - **Verify model mechanics in the code, never from memory — cite the line.** Asserting
+>   how a slot/status/role is treated without reading the function caused two wrong
+>   diagnoses. The facts: **lineup slot 17 = IL, 16 = bench** (`IL_SLOT=17`); **benched
+>   (16) players still get optimal-utilization slotting** (`_hitter_days_slotted` ignores
+>   the manager's bench — only the IL slot excludes, via `_is_playable`); `IL-slot +
+>   ACTIVE` = a just-activated player, projected from the next game day (fixed
+>   2026-07-09), *not* a stash.
+> - **Hold verified conclusions under pushback; re-derive the specific point.** A user
+>   correcting a peripheral detail (a date) is not a refutation of a mechanism you've
+>   confirmed — don't panic-recant. (I disclaimed a bug I'd *just fixed* because a
+>   7/8-vs-7/9 date threw me.)
+> - **Check data retention up front.** Historical rosters/schedule are overwritten
+>   (current-state only) and `details_json` budgets are a **display summary** (counting
+>   stats + derived rates, *no* rate components), so **a past tick's sim inputs cannot be
+>   faithfully rebuilt** — an exact MC re-run of a historical drop is impossible. Decide
+>   this before burning turns reconstructing; give the best available estimate and say
+>   it's an estimate. (Retention of per-tick live game-state / budget components is the
+>   only thing that would make historical drops exactly reconstructable.)
+> - **Calibrate confidence to evidence; impact is marginal, not gross.** Say "a driver" /
+>   "primary vs secondary" / "~half each" — not "the cause" — until decomposed or
+>   measured. A removed player's effect is his *marginal* value (the optimizer backfills;
+>   the matchup may be decided on the other side), not his stat line: "activating Trout
+>   recovers ~15pp" was really ~0.4pp because replacements already filled his slots and
+>   the matchup was lost on pitching.
+
 ## Operations
 
 ### Running manually
