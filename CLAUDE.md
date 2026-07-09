@@ -291,6 +291,23 @@ projection at 00:00 CEST — the midnight WP lurch in `INCIDENTS.md`.) Regressio
 - `FIFTEEN_DAY_IL/DL` → today + 10
 - `SIXTY_DAY_IL/DL` → today + 30
 - `OUT`, `INJURY_RESERVE`, unknown → None (indefinite, excluded entirely)
+
+**Just-activated-off-IL: still IL-slotted today, available tomorrow (fixed 2026-07-09).**
+A player in the **IL slot (17) with a *playable* status (`ACTIVE`/etc.)** is a player
+just activated off the IL, not a stash. When a manager activates mid-day after games
+have started, the league defers it to the next game day, so ESPN leaves him in the IL
+slot for *today* and active from tomorrow — and the model only ever sees one
+period-level `lineup_slot_id` (today's = IL) and does **not** ingest future-day
+lineups. The old rule treated `IL-slot + ACTIVE` as "manager intends out for the
+period" and **zeroed him** (Mike Trout, activated 12:10 PT, showed 0 games). Now
+`_is_playable` returns True for that case and `_est_return_date` return-dates him to
+**tomorrow** — so today's (already-started) game is filtered out but the **rest of the
+matchup is projected**. Genuine IL statuses use their return estimate; `OUT`/`INJURY_RESERVE`
+in the IL slot are still excluded. Tests: `test_il_activation.py`. NOTE: the WP impact
+can still be tiny — the hitter optimizer had already backfilled his slots with
+replacements (so he's a marginal upgrade, not from-zero), and if the matchup is being
+decided on the *pitching* side a returning bat won't move it (Trout's return moved the
+Norsemen ~0.4pp: they were losing K/QS/ERA/WHIP, which a hitter can't touch).
 - `ACTIVE`, `NORMAL`, `DAY_TO_DAY`, `QUESTIONABLE`, `PROBABLE`, null → today (playable now)
 
 **Real return dates from ESPN.** `refresh-rosters` pulls ESPN's public injuries feed (`espn_public.fetch_injuries`, excludes Day-To-Day) into the `player_injuries` table; `load_team_roster` attaches each rostered player's `return_date` as `injury_return_override`. That overrides the fixed-days heuristic above with an actual estimated activation date — and also catches IL moves/activations the fantasy `injury_status` hasn't reflected yet (e.g. status `ACTIVE` but ESPN has them out until tomorrow → benched until then). The heuristic remains the fallback when ESPN has no entry. Far-future return dates (e.g. a 60-day IL returning in September) naturally exclude the player from the current week.

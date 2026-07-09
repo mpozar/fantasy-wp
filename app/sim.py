@@ -158,6 +158,13 @@ def _est_return_date(p: dict, today: date) -> date | None:
     if override is not None:
         return override
     inj = (p.get("injury_status") or "").upper()
+    if p.get("lineup_slot_id") == IL_SLOT and inj in PLAYABLE_INJURY_STATUSES:
+        # Just activated off the IL but still occupying the IL slot for *today*:
+        # when games have already started, the league defers a mid-day activation
+        # to the next game day, so ESPN leaves him IL-slotted today and active
+        # from tomorrow. Treat him as returning tomorrow — out today, available
+        # for the rest of the matchup — rather than out for the whole period.
+        return today + timedelta(days=1)
     if inj in PLAYABLE_INJURY_STATUSES:
         return today
     days = IL_RETURN_DAYS.get(inj)
@@ -173,13 +180,17 @@ def _is_playable(p: dict, as_of: date | None = None) -> bool:
       - Active slot: use injury_status. Healthy and DAY_TO_DAY/QUESTIONABLE/
         PROBABLE → playable. IL types → playable with an estimated return
         date (filtered per-game downstream). OUT/INJURY_RESERVE → excluded.
-      - IL slot: only include when the status explicitly maps to an IL
-        return estimate. A manager-stashed player in IL slot with ACTIVE
-        status is treated as the manager intends — out for the period.
+      - IL slot: include when the status maps to an IL return estimate (real
+        stint), OR when it's a playable status (ACTIVE/etc.) — that's a player
+        just activated off the IL who's still IL-slotted for *today only*
+        (a mid-day activation the league defers to the next game day); he's
+        available for the rest of the matchup, so `_est_return_date` return-dates
+        him to tomorrow. Only a genuinely out status (OUT/INJURY_RESERVE) in the
+        IL slot is excluded outright.
     """
     inj = (p.get("injury_status") or "").upper()
     if p.get("lineup_slot_id") == IL_SLOT:
-        return inj in IL_RETURN_DAYS
+        return inj in IL_RETURN_DAYS or inj in PLAYABLE_INJURY_STATUSES
     return _est_return_date(p, as_of or _utc_today()) is not None
 
 # Fallback RP appearance rate when ROS projection or team-total games are
