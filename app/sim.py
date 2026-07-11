@@ -1152,7 +1152,13 @@ def _hitter_days_slotted(roster: list[dict],
             # Two-way players starting on the mound today can't bat.
             if _is_probable_starter_on(p, date_str, schedule_by_team):
                 continue
-            factor = max(_hitter_factor(g) for g in team_games_today)
+            # SUM across the day's games, not max: on a doubleheader a hitter in
+            # the day's lineup bats in BOTH games, so both count (a Final game
+            # contributes 0, an in-progress one its remaining fraction, a
+            # Scheduled one 1.0). The old max() silently dropped the second game
+            # of a doubleheader — fixed 2026-07-11. Slot assignment stays per-day
+            # (one lineup slot per day); only the credited production sums.
+            factor = sum(_hitter_factor(g) for g in team_games_today)
             if factor <= 0:
                 continue
             eligible = {s for s in (p.get("eligible_slots") or [])

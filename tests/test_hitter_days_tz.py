@@ -135,3 +135,26 @@ def test_removed_hitter_future_game_still_slotted():
     u = sim._hitter_days_slotted(roster, sched,
                                  _ctx(as_of=date(2026, 6, 5), live_bat=_live_bat(0)))
     assert u[1] == 1.0
+
+
+# ── Doubleheaders: a hitter bats in BOTH games of a two-game day (fixed 2026-07-11;
+# the per-date logic used to credit max()=one game). ─────────────────────────────
+
+def test_doubleheader_counts_both_scheduled_games():
+    roster = [_hitter()]
+    sched = {100: [_game("2026-06-06"), _game("2026-06-06")]}  # two games, same date
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 5)))[1] == 2.0
+
+
+def test_doubleheader_final_plus_scheduled_counts_one():
+    # First game already Final (factor 0) + second Scheduled (1.0) → 1.0 — the
+    # postponed-game-becomes-doubleheader shape once one game has been played.
+    roster = [_hitter()]
+    sched = {100: [_game("2026-06-06", status="Final"), _game("2026-06-06")]}
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 6)))[1] == 1.0
+
+
+def test_single_game_day_unchanged():
+    roster = [_hitter()]
+    sched = {100: [_game("2026-06-06")]}
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 5)))[1] == 1.0

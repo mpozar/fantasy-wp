@@ -261,7 +261,7 @@ Day-conflict resolution (so a two-way isn't counted batting *and* pitching the s
 2. List rostered hitters whose MLB team plays that day, who aren't IL'd, who aren't pitching that day (two-way), and who have eligible slots
 3. Sort by `_hitter_per_game_impact` (R + 0.6·H + 0.3·SB + 0.5·HR per game)
 4. **Optimal bipartite matching** (`_max_slot_assignment`, Kuhn's augmenting paths) assigns hitters to slot instances — impact-sorted, so a capacity-bound day seats the highest-impact subset
-5. Each hitter who wins a slot gets `+1 × _hitter_factor(today's game)` toward their `units`
+5. Each hitter who wins a slot gets the **sum of `_hitter_factor` across that day's games** toward their `units` — so a **doubleheader counts as both games** (Final game → 0, in-progress → its remaining fraction, Scheduled → 1.0). This was `max()` (i.e. one game/day) until **2026-07-11**, which silently under-projected doubleheaders: when a postponed game folds into a same-day doubleheader, `max` made a hitter's remaining slate *shrink* by a game instead of stay flat — e.g. MIL@PIT's 7/10 postponement → 7/11 doubleheader dropped Yelich/Turang/Gonzales 6→5 games and abruptly moved a matchup ~12pp. Relievers already sum per-game (`_rp_remaining_units`) and starters are per-game via probables, so the bug was hitter-only. Slot assignment stays per-day (one lineup slot/day); only the credited production sums. Tests: `test_hitter_days_tz.py`.
 
 Step 4 was greedy first-fit until 2026-06-05. Greedy could spend a *flexible*
 bat on an early slot and then waste a *scarce* slot only that bat could fill —
