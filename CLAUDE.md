@@ -2,6 +2,31 @@
 
 Context for future Claude sessions working on this repo. The README has the user-facing pitch; this file is the implementer's mental model — design decisions, gotchas, and how to investigate things.
 
+## The contract (non-negotiable; everything else in this file is reference)
+
+1. **WP investigation** ("what caused / why did / any flags") → the
+   `wp-investigate` skill: run `scripts/wp_diff.py` **before any causal
+   claim**; weigh every delta (a leader-flipped category dominates); label
+   unconfirmed claims **"hypothesis:"**; log the outcome in `INVESTIGATIONS.md`.
+2. **Stat IDs from `app/stats.py`, never memory** (OPS=18, QS=63 — both have
+   been mislabeled before, causing real misattributions).
+3. **DB is UTC; the owner speaks Europe/Oslo local** ("CET" = CEST in summer).
+   Convert explicitly before quoting any time.
+4. **Verify mechanics in code, cite `file:line`** — slot **17 = IL, 16 =
+   bench**; the optimizer ignores the manager's bench (only IL excludes).
+5. **The editable install is live**: an `app/` edit runs on the next 5-min
+   cron tick. Never leave unwanted working-tree edits sitting.
+6. **Never leave anything staged**: `fast.sh`'s bare `git commit` sweeps the
+   whole index every 5 min. Stage+commit atomically, only after
+   `pgrep -fl 'scripts/(fast|medium|daily).sh'` comes back clear.
+7. **Never delete wp_snapshots**; hand-edits are marked `edited=1` and logged
+   in `INCIDENTS.md`.
+8. **Secrets stay in `~/.zshenv`** — read into a variable, never inline.
+9. **Bump `?v=N`** in `index.html` on any `docs/` UI change; verify front-end
+   in a real browser (there is no node toolchain).
+10. **A correlated multi-matchup swing is systemic** even if only warns fired
+    — absence of error flags is NOT reassurance (2026-06-04).
+
 ## What this is
 
 Win-probability dashboard for one ESPN H2H fantasy baseball league (Quintonia, leagueId=71455, season=2026). Python cron jobs pull data from ESPN + MLB statsapi, store in SQLite, run a Monte Carlo simulation, and publish a static site to GitHub Pages.
@@ -997,6 +1022,33 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 > `INV_WP_DETAILS_MISMATCH` check skips them; any *un*marked row whose `home_wp`
 > column disagrees with its `details_json` tally is a real bug.
 
+> **Step 0 — always, before any hypothesis:**
+> ```sh
+> .venv/bin/python scripts/wp_diff.py <matchup_id|team-name> "<start>" "<end>"
+> ```
+> (naive times = Europe/Oslo). One command prints the full decomposition the
+> method below assembles by hand: the tick series with sleep-gap warnings,
+> per-cat win-share deltas with **leader flips marked**, per-player budget
+> diffs with provenance flags, banked-state deltas, games-gone-Final,
+> `live_recon`, overlapping validation flags, and which points survived the
+> site's downsample. The `wp-investigate` skill holds the procedure and
+> output rules; **log every investigation's outcome in `INVESTIGATIONS.md`**.
+>
+> **Signature table — symptom → likely mechanism → confirm** (details in the
+> numbered playbook below):
+>
+> | signature | likely mechanism | confirm via |
+> |---|---|---|
+> | banked deltas move, budgets flat, during a slate | live play banking (overshoot-and-correct if it reverts) | opponent's `category_state` deltas (meta-lesson) |
+> | banked flat, a budget player added/removed | roster/lineup move — usually the *opponent's* | budget diff names (#14) |
+> | discrete drop exactly at a game's first pitch | benched starter's projected start dropping | `benched-live-drop` flag + bench slot (#15) |
+> | step at ~07:00 UTC, rate cats only | daily REST component settle — benign | Δ concentrated in ERA/WHIP/OPS/QS (#4) |
+> | many matchups move same tick, same direction | systemic: offline-all-day settle lurch OR data bug | `computed_at` gap; `ANOM_CORRELATED_SWING` |
+> | wrong for DAYS, corrects at a refresh boundary | phantom schedule game / stale budget input | past-dated non-Final `team_schedule` row (#7) |
+> | decided matchup stuck at ~9x% overnight | finalization lag (status-lag sliver) | fractional remaining avg in `category_wp` |
+> | one-tick blip that snaps back | transient bad read — don't over-attribute | (#6) |
+> | touches BOTH near-0 and near-100 | over-credited stat (QS/SVHD double-count family) | `live_recon` result vs scrape; `INV_SITE_QS_OVERCREDIT` |
+
 Common case: user notices a sudden WP shift and asks why. Method:
 
 1. **Pull the snapshot history** for the matchup:
@@ -1244,41 +1296,26 @@ time and the signatures that explain ~every swing fast:
 > does this for the postponed-game case; the status-lag-sliver case is still open
 > (it only ever costs a late, cosmetic climb to 100%, never the result).
 
-> **Investigation discipline — hard-won 2026-07-09 after a run of misdiagnoses.** A
-> chain of WP-move investigations went wrong the same ways; these guards are the fix:
-> - **Decompose before you attribute; salient ≠ causal.** A WP move usually has >1
->   simultaneous input change. List *every* budget/category delta at the tick and weight
->   by impact — **a category that flips past 50% moves WP far more than one that shifts
->   within a lean** — before naming a driver. The loudest roster change is not
->   automatically the cause: a Norsemen −17pp drop was pinned on "Trout benched" when a
->   quiet bullpen K collapse (48%→23%, the only cat that *flipped*) was the bigger half.
->   A proper split (convolve the 10 cats' win/tie/loss into P(cats-won > cats-lost),
->   revert one side's cats at a time) put it ~half Trout / ~half bullpen — not "the
->   cause was Trout."
-> - **Verify model mechanics in the code, never from memory — cite the line.** Asserting
->   how a slot/status/role is treated without reading the function caused two wrong
->   diagnoses. The facts: **lineup slot 17 = IL, 16 = bench** (`IL_SLOT=17`); **benched
->   (16) players still get optimal-utilization slotting** (`_hitter_days_slotted` ignores
->   the manager's bench — only the IL slot excludes, via `_is_playable`); `IL-slot +
->   ACTIVE` = a just-activated player, projected from the next game day (fixed
->   2026-07-09), *not* a stash.
-> - **Hold verified conclusions under pushback; re-derive the specific point.** A user
->   correcting a peripheral detail (a date) is not a refutation of a mechanism you've
->   confirmed — don't panic-recant. (I disclaimed a bug I'd *just fixed* because a
->   7/8-vs-7/9 date threw me.)
-> - **Check data retention up front.** Historical rosters/schedule are overwritten
->   (current-state only) and `details_json` budgets are a **display summary** (counting
->   stats + derived rates, *no* rate components), so **a past tick's sim inputs cannot be
->   faithfully rebuilt** — an exact MC re-run of a historical drop is impossible. Decide
->   this before burning turns reconstructing; give the best available estimate and say
->   it's an estimate. (Retention of per-tick live game-state / budget components is the
->   only thing that would make historical drops exactly reconstructable.)
-> - **Calibrate confidence to evidence; impact is marginal, not gross.** Say "a driver" /
->   "primary vs secondary" / "~half each" — not "the cause" — until decomposed or
->   measured. A removed player's effect is his *marginal* value (the optimizer backfills;
->   the matchup may be decided on the other side), not his stat line: "activating Trout
->   recovers ~15pp" was really ~0.4pp because replacements already filled his slots and
->   the matchup was lost on pitching.
+> **Investigation discipline (2026-07-09, after a run of misdiagnoses).** The
+> operative rules live in the **`wp-investigate` skill** (procedure + output
+> contract) and `scripts/wp_diff.py` does the decomposition mechanically —
+> follow them. The load-bearing facts, kept here for reference:
+> - **Salient ≠ causal**: weigh every simultaneous delta; a category that
+>   flips leaders dominates within-lean shifts (the Norsemen −17pp drop was
+>   ~half a bullpen-K flip, not "Trout benched"). A removed player's impact is
+>   his **marginal** value — the optimizer backfills ("Trout recovers ~15pp"
+>   was really ~0.4pp).
+> - **Slot facts** (verify in code, cite the line): `IL_SLOT=17`, bench=16;
+>   `_hitter_days_slotted` ignores the manager's bench (only IL excludes, via
+>   `_is_playable`); `IL-slot + ACTIVE` = just-activated, projected from the
+>   next game day.
+> - **Retention**: historical rosters/schedule are overwritten and
+>   `details_json` budgets are display summaries — **a past tick cannot be
+>   re-simmed**; give estimates labeled as estimates.
+> - **Under pushback, re-derive the specific point** — a peripheral correction
+>   (a date) doesn't refute a verified mechanism; don't panic-recant.
+> - **Log the outcome in `INVESTIGATIONS.md`** — the feedback loop that shows
+>   whether this process is actually holding.
 
 ## Operations
 
@@ -1538,7 +1575,8 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 
 ## When the user asks about a WP swing
 
-Read this file's "Investigating WP changes" section first. The most common causes (in rough order of frequency):
+Use the `wp-investigate` skill: run `scripts/wp_diff.py` first (step 0), then
+read this file's "Investigating WP changes" section. The most common causes (in rough order of frequency):
 1. Probable pitcher announcement (an SP's units step toward 1 from its estimate)
 2. Roster move (player added/removed)
 3. ESPN stat backfill (live category state updates retroactively)
