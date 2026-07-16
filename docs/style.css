@@ -395,6 +395,14 @@ ol.contrib .m {
   padding: .35rem 0;
 }
 
+/* Placeholder shown in Details while the week's history file is still loading. */
+.chart-loading {
+  color: var(--muted);
+  font-style: italic;
+  font-size: .85rem;
+  padding: .5rem 0 .75rem;
+}
+
 /* ── Week picker + future-week styling ── */
 .week-picker {
   display: inline-flex;

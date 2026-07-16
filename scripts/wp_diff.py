@@ -305,13 +305,22 @@ def _print_published(mid, start, end):
     except (OSError, json.JSONDecodeError):
         print("  docs/data.json unreadable")
         return
-    hist = None
+    # History is split out of data.json into per-week files (see cli.publish);
+    # find the matchup's week in data.json, then read its history file.
+    period = None
     for wk in data.get("weeks", []):
         for mm in wk.get("matchups", []):
             if mm.get("matchup_id") == mid:
-                hist = mm.get("history") or []
-    if hist is None:
+                period = wk["matchup_period_id"]
+    if period is None:
         print("  matchup not in data.json")
+        return
+    try:
+        hist_file = json.loads(
+            (DOCS_DATA_JSON.parent / "history" / f"{period}.json").read_text())
+        hist = hist_file.get("history", {}).get(str(mid)) or []
+    except (OSError, json.JSONDecodeError):
+        print(f"  docs/history/{period}.json unreadable")
         return
     pts = [p for p in hist
            if start <= datetime.fromisoformat(p["computed_at"]) <= end]

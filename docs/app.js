@@ -4,6 +4,35 @@ async function load() {
   return r.json();
 }
 
+// Per-week WP history (docs/history/<period>.json) — split out of data.json so
+// the scoreboard paints fast, then fetched eagerly in the background right after
+// first render (current week first, not waiting for a Details panel to open) and
+// hydrated onto week.matchups[].history in place, so everything downstream
+// (renderChart, the point-click category table) is unchanged.
+// `cache: "no-cache"` revalidates via ETag: settled weeks' files come back as
+// cheap 304s on repeat visits; only the live week's (rewritten every publish)
+// re-downloads.
+async function fetchWeekHistory(week) {
+  try {
+    const r = await fetch(`history/${week.matchup_period_id}.json`, { cache: "no-cache" });
+    if (!r.ok) return null;
+    return (await r.json()).history || {};
+  } catch { return null; }
+}
+
+async function hydrateHistory(week) {
+  const hist = await fetchWeekHistory(week);
+  week.matchups.forEach((m) => { m.history = (hist && hist[m.matchup_id]) || []; });
+  week.historyLoaded = true;
+  // If this week is on screen, re-render so its charts fill in.
+  if (active.week === week) rerenderPreservingPanels();
+}
+
+function loadAllHistory(data, firstWeek) {
+  hydrateHistory(firstWeek).then(() =>
+    Promise.all(data.weeks.filter((w) => w !== firstWeek).map(hydrateHistory)));
+}
+
 // WP-chart SVG viewBox width — shared by renderChart (drawing) and
 // bindChartHovers (pixel-space hover mapping) so they can't drift apart.
 const CHART_VIEWBOX_W = 600;
@@ -435,7 +464,9 @@ function renderDetails(m, cats, week, scope, idx) {
   // and for past weeks (upcoming weeks have no history yet).
   const chart = m.history && m.history.length > 1
     ? `<h3>Win probability over time</h3>${renderChart(m.history, m.model_version, week, scope, chartAnnotate ? summaryCache[m.matchup_id] : null)}`
-    : "";
+    : (!week.historyLoaded
+        ? `<h3>Win probability over time</h3><div class="chart-loading">Loading chart…</div>`
+        : "");
   // Weekly write-up (if a summary has been generated). Filled from cache on
   // re-render; the expand handler injects it on first open after the lazy fetch.
   const sum = summaryCache[m.matchup_id];
@@ -820,6 +851,10 @@ document.addEventListener("click", (e) => {
   if (!open) panel.scrollIntoView({behavior: "smooth", block: "nearest"});
 });
 
-load().then(render).catch((e) => {
+load().then((data) => {
+  render(data);
+  // Charts' history loads in the background AFTER the scoreboard is on screen.
+  loadAllHistory(data, active.week);
+}).catch((e) => {
   document.getElementById("matchups").textContent = "Error: " + e.message;
 });

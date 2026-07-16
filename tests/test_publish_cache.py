@@ -112,7 +112,9 @@ def _pub_setup(tmp_path, monkeypatch):
     written = {}
     monkeypatch.setattr(pathlib.Path, "write_text",
                         lambda self, txt, *a, **k: written.__setitem__("json", txt))
-    monkeypatch.setattr(pathlib.Path, "stat", lambda self, *a, **k: type("S", (), {"st_size": 0})())
+    # st_mode reads as a directory so mkdir(exist_ok=True)'s is_dir() probe works.
+    monkeypatch.setattr(pathlib.Path, "stat",
+                        lambda self, *a, **k: type("S", (), {"st_size": 0, "st_mode": 0o040755})())
     return dbfile, rendered, written
 
 def test_publish_cache_reuse_rebuild_identical(tmp_path, monkeypatch):
@@ -138,3 +140,44 @@ def test_publish_cache_reuse_rebuild_identical(tmp_path, monkeypatch):
     rendered.clear()
     cli.publish.callback(rebuild=True)                 # --rebuild → everything
     assert sorted(rendered) == [10, 11]
+
+
+# ── history split: per-week files, slim data.json, rewrite only on rebuild ──
+
+def test_publish_splits_history_into_week_files(tmp_path, monkeypatch):
+    real_write, real_stat = pathlib.Path.write_text, pathlib.Path.stat
+    dbfile, rendered, written = _pub_setup(tmp_path, monkeypatch)
+    # Real writes into tmp (the shared setup stubs them out globally).
+    monkeypatch.setattr(pathlib.Path, "write_text", real_write)
+    monkeypatch.setattr(pathlib.Path, "stat", real_stat)
+    monkeypatch.setattr(cli, "DOCS_DATA_JSON", tmp_path / "data.json")
+    monkeypatch.setattr(
+        cli, "_matchup_block",
+        lambda conn, teams, m, *, started, live, cat_history=False: {
+            "matchup_id": m["id"],
+            "history": [{"computed_at": "2026-06-10T11:00", "home_wp": 0.6,
+                         "away_wp": 0.4, "model_version": "mc-v1"}],
+        })
+
+    cli.publish.callback(rebuild=False)
+
+    # data.json matchups carry no history; the per-week files do, keyed by id.
+    data = json.loads((tmp_path / "data.json").read_text())
+    for wk in data["weeks"]:
+        assert all("history" not in m for m in wk["matchups"])
+    h10 = json.loads((tmp_path / "history" / "10.json").read_text())
+    h11 = json.loads((tmp_path / "history" / "11.json").read_text())
+    assert h10["history"]["101"][0]["home_wp"] == 0.6
+    assert h11["history"]["111"][0]["home_wp"] == 0.6
+
+    # Cache hit → existing history files are NOT rewritten…
+    (tmp_path / "history" / "10.json").write_text("SENTINEL")
+    cli.publish.callback(rebuild=False)
+    assert (tmp_path / "history" / "10.json").read_text() == "SENTINEL"
+    # …but a missing file is recreated even for a cached week.
+    (tmp_path / "history" / "11.json").unlink()
+    cli.publish.callback(rebuild=False)
+    assert (tmp_path / "history" / "11.json").exists()
+    # --rebuild rewrites everything, replacing the sentinel.
+    cli.publish.callback(rebuild=True)
+    assert (tmp_path / "history" / "10.json").read_text() != "SENTINEL"

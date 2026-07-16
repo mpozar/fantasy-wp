@@ -30,11 +30,14 @@ source "$(dirname "$0")/_common.sh"
         exit 1
     fi
 
-    if git diff --quiet docs/data.json && \
-       git diff --cached --quiet docs/data.json; then
-        log fast "no data.json changes; skipping commit"
+    # publish writes data.json + per-week history files (docs/history/*.json).
+    # Add first, then check the staged diff — `git diff` alone can't see a
+    # brand-new (untracked) history file. Adding unchanged files stages nothing,
+    # so the skip path still leaves the index untouched.
+    git add docs/data.json docs/history
+    if git diff --cached --quiet docs/data.json docs/history; then
+        log fast "no data.json/history changes; skipping commit"
     else
-        git add docs/data.json
         git -c user.name="Mike Pozar" \
             -c user.email="mpozar@gmail.com" \
             commit -m "auto: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null

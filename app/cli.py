@@ -1354,6 +1354,34 @@ def publish(rebuild: bool) -> None:
             weeks_out.append(week)
             fresh_blocks[period_id] = (stamp, json.dumps(week, separators=(",", ":")))
 
+        out_path = DOCS_DATA_JSON
+        # Split each matchup's WP `history` out of data.json into per-week side
+        # files (docs/history/<period>.json). The history series was ~98% of the
+        # 6 MB payload, all of it behind collapsed Details panels — moving it out
+        # lets the scoreboard render off a small data.json while the site fetches
+        # the charts' data in the background (docs/app.js hydrates on arrival).
+        # Written BEFORE data.json so the page never sees a data.json that points
+        # at not-yet-written history. Rewritten only when the week's block was
+        # rebuilt (cache-miss ⇒ its history changed) or the file is missing.
+        history_dir = out_path.parent / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        slim_weeks = []
+        for week in weeks_out:
+            pid = week["matchup_period_id"]
+            hist_path = history_dir / f"{pid}.json"
+            if pid in fresh_blocks or not hist_path.exists():
+                hist_path.write_text(json.dumps({
+                    "matchup_period_id": pid,
+                    "generated_at": now,
+                    "history": {str(m["matchup_id"]): m.get("history") or []
+                                for m in week["matchups"]},
+                }, separators=(",", ":")))
+            slim_weeks.append({
+                **week,
+                "matchups": [{k: v for k, v in m.items() if k != "history"}
+                             for m in week["matchups"]],
+            })
+
         out = {
             "league": {
                 "id": LEAGUE_ID,
@@ -1369,12 +1397,10 @@ def publish(rebuild: bool) -> None:
             "current_matchup_period": current,
             "last_regular_season_period": last_reg,
             "generated_at": now,
-            "weeks": weeks_out,
+            "weeks": slim_weeks,
         }
-        out_path = DOCS_DATA_JSON
         # Compact (no indent/whitespace) — data.json is machine-generated and
-        # fetched on every page load; pretty-printing ~doubled the payload, which
-        # matters now that the live week carries per-point category history.
+        # fetched on every page load; pretty-printing ~doubled the payload.
         out_path.write_text(json.dumps(out, separators=(",", ":")))
         # Persist the per-week cache only after the write succeeds (a failed write
         # must not leave the cache claiming a week is current when data.json isn't).
