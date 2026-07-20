@@ -1526,12 +1526,14 @@ def playoffs_cmd(sims: int | None, samples: int | None) -> None:
         conn.execute("INSERT OR REPLACE INTO playoff_odds_runs "
                      "(computed_at, payload_json) VALUES (?,?)", (now, blob))
         conn.commit()
-        top = blocks[0]
+        # blocks[0] is the playoff-odds sort leader, which near 100% flips on
+        # single-sim wobble — report the champion-odds leader instead.
+        fav = max(blocks, key=lambda b: b["p_champion"])
         click.echo(
             f"Playoff odds: {n_sims} season sims over {len(remaining)} remaining "
             f"matchups + bracket (periods {last_reg + 1}..{last_playoff}, "
             f"{n_samples} team-week samples/round). "
-            f"Favorite: {top['name']} P(champ)={top['p_champion']:.1%}")
+            f"Title favorite: {fav['name']} P(champ)={fav['p_champion']:.1%}")
     finally:
         conn.close()
 
