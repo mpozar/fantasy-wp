@@ -1896,6 +1896,16 @@ def _simulate_team(current_state: dict[int, float],
     return counters
 
 
+def sample_team_totals(budgets: list[Budget], n: int) -> list[dict[int, float]]:
+    """Draw n independent samples of one team's weekly counter totals from a
+    fresh 0-0 state. The sim has no cross-team interaction (each side's
+    production is sampled independently, then compared), so any hypothetical
+    matchup between two teams is just `_decide` over a pair of these draws —
+    the factorization app/playoffs.py uses to price all 66 possible playoff
+    pairings from 12 per-team sample sets instead of 66 pairwise sims."""
+    return [_simulate_team({}, budgets) for _ in range(n)]
+
+
 # ── Top-level entrypoint ──
 
 @dataclass

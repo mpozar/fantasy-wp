@@ -193,6 +193,13 @@ CREATE TABLE IF NOT EXISTS published_week_cache (
     block_json TEXT
 );
 
+-- One row per `app playoffs` run: the full published odds payload, kept so
+-- future UI can show "odds moved this week" deltas without re-simulating.
+CREATE TABLE IF NOT EXISTS playoff_odds_runs (
+    computed_at  TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL
+);
+
 -- ── Per-reliever live appearance state (for in-game SVHD save/hold judging) ──
 -- A save/hold is determined by the conditions WHEN the reliever entered and
 -- exited — not the current score. `live_pitchers` is rewritten every tick and

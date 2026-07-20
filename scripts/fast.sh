@@ -34,9 +34,9 @@ source "$(dirname "$0")/_common.sh"
     # Add first, then check the staged diff — `git diff` alone can't see a
     # brand-new (untracked) history file. Adding unchanged files stages nothing,
     # so the skip path still leaves the index untouched.
-    git add docs/data.json docs/history
-    if git diff --cached --quiet docs/data.json docs/history; then
-        log fast "no data.json/history changes; skipping commit"
+    git add docs/data.json docs/history docs/playoffs.json
+    if git diff --cached --quiet docs/data.json docs/history docs/playoffs.json; then
+        log fast "no data.json/history/playoffs changes; skipping commit"
     else
         git -c user.name="Mike Pozar" \
             -c user.email="mpozar@gmail.com" \

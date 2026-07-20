@@ -500,6 +500,7 @@ def refresh_schedule() -> None:
     days of MLB games — future weeks store null probables, and the simulator
     falls back to a ROS-share estimate for SP starts in those weeks.
     """
+    from app import playoffs as playoffs_mod
     shape = espn.fetch_league_shape()
     current = shape.current_matchup_period
     last = shape.last_regular_season_period
@@ -510,7 +511,10 @@ def refresh_schedule() -> None:
     total_espn_pp = 0
     conn = db.connect()
     try:
-        for period_id in range(current, last + 1):
+        # Through the playoff rounds too (periods last+1..last+3, still inside
+        # MLB's regular season) — `app playoffs` builds bracket-week budgets
+        # from these slates.
+        for period_id in range(current, last + playoffs_mod.NUM_PLAYOFF_PERIODS + 1):
             start, end = mlb.matchup_period_window(period_id)
             games = mlb.fetch_schedule(start, end)
             # ESPN only lists probables ~5 days out, so only the current week is
@@ -556,7 +560,7 @@ def refresh_schedule() -> None:
         conn.close()
 
     click.echo(
-        f"Refreshed schedule: periods {current}..{last}, "
+        f"Refreshed schedule: periods {current}..{last + playoffs_mod.NUM_PLAYOFF_PERIODS}, "
         f"team_game_rows={total_games}, starts_recorded={total_starts}, "
         f"espn_probables_filled={total_espn_pp}"
     )
@@ -1422,6 +1426,116 @@ def publish(rebuild: bool) -> None:
 # data.json. The DB keeps every snapshot (so no history is ever lost); we
 # only thin what the static site downloads. ~200 points is far more than the
 # ~640px-wide chart can resolve, so downsampled graphs look identical to full.
+@cli.command("playoffs")
+@click.option("--sims", type=int, default=None,
+              help="Season-simulation count (default: playoffs.DEFAULT_SEASON_SIMS).")
+@click.option("--samples", type=int, default=None,
+              help="Sampled team-weeks per team per playoff round "
+                   "(default: playoffs.DEFAULT_TEAM_SAMPLES).")
+def playoffs_cmd(sims: int | None, samples: int | None) -> None:
+    """Simulate the rest of the regular season + the playoff bracket and
+    write docs/playoffs.json (per-team odds of playoffs / bye / final /
+    championship + full seed distribution)."""
+    from app import playoffs
+
+    n_sims = sims or playoffs.DEFAULT_SEASON_SIMS
+    n_samples = samples or playoffs.DEFAULT_TEAM_SAMPLES
+    conn = db.connect()
+    try:
+        ss = conn.execute(
+            "SELECT * FROM scoring_settings WHERE league_id=? AND season_id=?",
+            (LEAGUE_ID, SEASON_ID),
+        ).fetchone()
+        current = _current_matchup_period(conn)
+        last_reg = _last_regular_season_period(conn)
+        if ss is None or current is None or last_reg is None:
+            raise click.ClickException("Missing league metadata. Run `app fetch` first.")
+
+        teams = {r["id"]: dict(r)
+                 for r in conn.execute("SELECT * FROM teams").fetchall()}
+        team_ids = sorted(teams)
+        wins, losses, h2h = playoffs.load_records(conn, team_ids)
+        remaining = playoffs.load_remaining(conn)
+        missing_wp = sum(1 for m in remaining if not m["had_snapshot"])
+        if missing_wp:
+            click.echo(f"  ({missing_wp} remaining matchup(s) had no WP snapshot; "
+                       "using 0.5)", err=True)
+
+        # Playoff-round budgets: today's rosters, flat SP model (the cadence
+        # anchor is weeks stale by September — same rule as compute --future),
+        # ROS spread over everything left INCLUDING the playoff weeks.
+        now = _now_iso()
+        lineup_slot_counts: dict[int, int] = {}
+        if ss["lineup_slots_json"]:
+            try:
+                lineup_slot_counts = {int(k): int(v) for k, v in
+                                      json.loads(ss["lineup_slots_json"]).items()}
+            except (json.JSONDecodeError, ValueError, TypeError):
+                lineup_slot_counts = {}
+        last_playoff = last_reg + playoffs.NUM_PLAYOFF_PERIODS
+        ctx = sim.SimContext(
+            team_total_ros_games=sim.load_total_remaining_games(
+                conn, current, last_playoff),
+            lineup_slot_counts=lineup_slot_counts,
+            use_cadence=False,
+        )
+        rosters = {t: sim.load_team_roster(conn, current, t) for t in team_ids}
+        value_samples: dict[int, list[list[tuple[float, ...]]]] = {
+            t: [] for t in team_ids}
+        for period_id in range(last_reg + 1, last_playoff + 1):
+            schedule_by_team = sim.load_schedule_by_team(conn, period_id, now=now)
+            if not schedule_by_team:
+                raise click.ClickException(
+                    f"No team_schedule rows for playoff period {period_id}. "
+                    "Run `app refresh-schedule` first.")
+            for t in team_ids:
+                budgets = sim.build_budgets(rosters[t], schedule_by_team, ctx)
+                value_samples[t].append([
+                    playoffs.totals_to_values(c)
+                    for c in sim.sample_team_totals(budgets, n_samples)])
+
+        odds = playoffs.simulate_odds(team_ids, wins, h2h, remaining,
+                                      value_samples, n_sims=n_sims)
+
+        blocks = []
+        for t in team_ids:
+            o = odds[t]
+            blocks.append({
+                "team_id": t,
+                "name": teams[t].get("name"),
+                "abbrev": teams[t].get("abbrev"),
+                "owner": teams[t].get("owner"),
+                "w": wins[t], "l": losses[t],
+                **{k: round(v, 4) for k, v in o.items() if k != "seed_dist"},
+                "seed_dist": [round(p, 4) for p in o["seed_dist"]],
+            })
+        blocks.sort(key=lambda b: (-b["p_playoffs"], -b["p_champion"], -b["w"]))
+        payload = {
+            "generated_at": now,
+            "model_version": playoffs.MODEL_VERSION,
+            "n_sims": n_sims,
+            "team_samples": n_samples,
+            "playoff_team_count": playoffs.PLAYOFF_TEAM_COUNT,
+            "bye_seeds": playoffs.BYE_SEEDS,
+            "playoff_periods": list(range(last_reg + 1, last_playoff + 1)),
+            "remaining_matchups": len(remaining),
+            "teams": blocks,
+        }
+        blob = json.dumps(payload, separators=(",", ":"))
+        (DOCS_DATA_JSON.parent / "playoffs.json").write_text(blob)
+        conn.execute("INSERT OR REPLACE INTO playoff_odds_runs "
+                     "(computed_at, payload_json) VALUES (?,?)", (now, blob))
+        conn.commit()
+        top = blocks[0]
+        click.echo(
+            f"Playoff odds: {n_sims} season sims over {len(remaining)} remaining "
+            f"matchups + bracket (periods {last_reg + 1}..{last_playoff}, "
+            f"{n_samples} team-week samples/round). "
+            f"Favorite: {top['name']} P(champ)={top['p_champion']:.1%}")
+    finally:
+        conn.close()
+
+
 MAX_HISTORY_POINTS = 200
 RECENT_FULL_HOURS = 18   # keep points from the last ~game-day at full 5-min
                          # resolution (live week only) so the "Today" chart zoom

@@ -757,6 +757,61 @@ async function renderSpotlight(data) {
   if (close) close.addEventListener("click", () => { el.hidden = true; });
 }
 
+// ── Playoff odds section ──────────────────────────────────────────────
+// Rendered from playoffs.json (written by `app playoffs` on the medium cron
+// tier: 10k season sims over the remaining schedule's WPs + a sampled-team-week
+// bracket sim). Fetched in the background after first paint like the history
+// files; a missing file (first deploy, playoffs over) leaves the section hidden.
+async function renderPlayoffs() {
+  const el = document.getElementById("playoffs");
+  if (!el) return;
+  let p;
+  try {
+    const r = await fetch("playoffs.json", { cache: "no-cache" });
+    if (!r.ok) return;
+    p = await r.json();
+  } catch { return; }
+
+  const pct = (x) =>
+    x >= 0.9995 ? "100%" :
+    x < 0.0005 ? "—" :
+    (x * 100).toFixed(x >= 0.095 ? 0 : 1) + "%";
+  const cell = (x, cls = "") =>
+    `<td class="num po-cell ${cls}" style="--p:${x.toFixed(3)}">${pct(x)}</td>`;
+  const seedCells = (t) =>
+    t.seed_dist.slice(0, p.playoff_team_count)
+      .map((s) => cell(s, "po-seed")).join("");
+  const rows = p.teams.map((t) => `
+    <tr>
+      <td class="po-team">
+        <div class="team-name">${escHtml(t.name ?? "")}</div>
+        <div class="team-owner">${escHtml(t.owner ?? "")}</div>
+      </td>
+      <td class="num po-rec">${t.w}–${t.l}</td>
+      ${cell(t.p_playoffs)}${cell(t.p_bye)}${cell(t.p_final)}${cell(t.p_champion)}
+      ${seedCells(t)}
+    </tr>`).join("");
+
+  el.innerHTML = `
+    <h2>Playoff odds</h2>
+    <p class="po-hint">${p.n_sims.toLocaleString()} simulated seasons — every remaining
+      matchup drawn from its current win probability (live for this week), then the
+      ${p.playoff_team_count}-team bracket (top ${p.bye_seeds} seeds bye, 1-week rounds,
+      seeding ties: head-to-head, then coin flip) played out with simulated
+      September team-weeks.</p>
+    <div class="po-table-wrap"><table class="po-table">
+      <thead><tr>
+        <th></th><th>Record</th><th>Playoffs</th><th>Bye</th><th>Final</th><th>Champ</th>
+        ${Array.from({ length: p.playoff_team_count }, (_, i) => `<th class="po-seed-h">#${i + 1}</th>`).join("")}
+      </tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="po-foot">Updated <time datetime="${p.generated_at}">${fmtSnapTime(p.generated_at)}</time>.
+      Bracket weeks use today's rosters and rest-of-season projections — September
+      call-ups, trades, and injuries aren't knowable, so odds at the extremes read
+      a touch overconfident. #1–#${p.playoff_team_count} columns are seed probabilities.</p>`;
+  el.hidden = false;
+}
+
 function render(data) {
   document.getElementById("league-name").textContent = data.league.name;
   const ts = new Date(data.generated_at);
@@ -853,8 +908,10 @@ document.addEventListener("click", (e) => {
 
 load().then((data) => {
   render(data);
-  // Charts' history loads in the background AFTER the scoreboard is on screen.
+  // Charts' history + playoff odds load in the background AFTER the
+  // scoreboard is on screen.
   loadAllHistory(data, active.week);
+  renderPlayoffs();
 }).catch((e) => {
   document.getElementById("matchups").textContent = "Error: " + e.message;
 });

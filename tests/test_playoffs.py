@@ -1,0 +1,130 @@
+"""Playoff odds: seeding tiebreak chain, bracket structure, value comparison,
+and season-sim sanity. Pure-logic tests over app/playoffs.py."""
+import random
+
+import pytest
+
+from app import playoffs
+from app.playoffs import decide_values, seed_order, simulate_odds
+from app.sim import CATEGORIES, TIEBREAKER_STAT_ID
+
+
+def _h2h(team_ids, wins_pairs=()):
+    g = {t: {u: 0 for u in team_ids} for t in team_ids}
+    for w, l, n in wins_pairs:
+        g[w][l] = n
+    return g
+
+
+# ── seed_order: record → H2H among tied (reset per seat) → coin flip ──
+
+def test_seed_order_by_record():
+    ids = [1, 2, 3]
+    order = seed_order({1: 5, 2: 9, 3: 7}, _h2h(ids), random.Random(0))
+    assert order == [2, 3, 1]
+
+
+def test_seed_order_two_way_tie_h2h():
+    ids = [1, 2, 3]
+    # 1 and 2 tied; 2 swept the season series → 2 seeds ahead.
+    order = seed_order({1: 8, 2: 8, 3: 2},
+                       _h2h(ids, [(2, 1, 2)]), random.Random(0))
+    assert order == [2, 1, 3]
+
+
+def test_seed_order_three_way_tie_resets_chain():
+    """ESPN seats the H2H winner, then RESTARTS the chain for the rest.
+
+    A beat B twice; B beat C twice; C beat A twice — 2 group wins each, coin
+    flip for the first seat. Seed the flip so A is seated: among the remaining
+    {B, C}, B swept C, so B must seed ahead of C via the RESET H2H — an
+    implementation that kept the original 3-team group wins (B=2, C=2) would
+    coin-flip them instead.
+    """
+    ids = [1, 2, 3]
+    g = _h2h(ids, [(1, 2, 2), (2, 3, 2), (3, 1, 2)])
+    for seed in range(40):
+        order = seed_order({1: 8, 2: 8, 3: 8}, g, random.Random(seed))
+        if order[0] == 1:
+            assert order == [1, 2, 3]
+            break
+    else:
+        pytest.fail("no seed produced A first — coin flip not exercised")
+
+
+def test_seed_order_coin_flip_covers_both():
+    ids = [1, 2]
+    got = {tuple(seed_order({1: 5, 2: 5}, _h2h(ids, [(1, 2, 1), (2, 1, 1)]),
+                            random.Random(s)))
+           for s in range(30)}
+    assert got == {(1, 2), (2, 1)}   # tied H2H → pure coin flip, both orders occur
+
+
+# ── decide_values: most cats, hits tiebreak, higher seed on dead heat ──
+
+def _vals(overrides=None):
+    """A flat value tuple with per-stat overrides, in CATEGORIES order."""
+    base = {sid: 10.0 for sid, _ in CATEGORIES}
+    base.update(overrides or {})
+    return tuple(base[sid] for sid, _ in CATEGORIES)
+
+
+def test_decide_values_most_cats_and_reversed():
+    rev = next(sid for sid, r in CATEGORIES if r)          # e.g. ERA
+    fwd = next(sid for sid, r in CATEGORIES if not r and sid != TIEBREAKER_STAT_ID)
+    hi = _vals({rev: 5.0, fwd: 12.0})                    # wins both
+    assert decide_values(hi, _vals()) is True
+    assert decide_values(_vals(), hi) is False
+
+
+def test_decide_values_hits_tiebreak_and_dead_heat():
+    lo_hits = _vals({TIEBREAKER_STAT_ID: 9.0})
+    assert decide_values(_vals(), lo_hits) is True         # cats tied, hits win
+    assert decide_values(lo_hits, _vals()) is False
+    assert decide_values(_vals(), _vals()) is True         # dead heat → higher seed
+
+
+# ── simulate_odds: structure + degenerate cases ──
+
+def _flat_samples(team_ids, strength=None):
+    """One constant sample per round; `strength[t]` breaks every pairing."""
+    strength = strength or {}
+    return {t: [[_vals({TIEBREAKER_STAT_ID: 10.0 + strength.get(t, 0)})]
+                for _ in range(playoffs.NUM_PLAYOFF_PERIODS)]
+            for t in team_ids}
+
+
+def test_simulate_odds_degenerate_dominant_team():
+    """Team 1 wins every remaining matchup (wp=1) and every pairing → seed 1,
+    bye, and championship with certainty; a 0-win team with no remaining
+    matchups can't make the playoffs."""
+    ids = list(range(1, 13))
+    wins = {t: 12 - t for t in ids}                # strictly ordered records
+    remaining = [{"home": 1, "away": 12, "home_wp": 1.0}]
+    strength = {t: -t for t in ids}                # better record ⇒ stronger
+    odds = simulate_odds(ids, wins, _h2h(ids), remaining,
+                         _flat_samples(ids, strength), n_sims=200,
+                         rng=random.Random(1))
+    assert odds[1]["p_playoffs"] == odds[1]["p_bye"] == odds[1]["p_champion"] == 1.0
+    assert odds[1]["seed_dist"][0] == 1.0
+    assert odds[12]["p_playoffs"] == 0.0
+    assert odds[7]["p_playoffs"] == 0.0            # seeds 7+ out in every sim
+
+
+def test_simulate_odds_probabilities_consistent():
+    ids = list(range(1, 13))
+    wins = {t: 8 for t in ids}
+    remaining = [{"home": a, "away": b, "home_wp": 0.5}
+                 for a in ids for b in ids if a < b][:20]
+    odds = simulate_odds(ids, wins, _h2h(ids), remaining,
+                         _flat_samples(ids), n_sims=500,
+                         rng=random.Random(7))
+    assert abs(sum(o["p_champion"] for o in odds.values()) - 1.0) < 1e-9
+    assert abs(sum(o["p_playoffs"] for o in odds.values())
+               - playoffs.PLAYOFF_TEAM_COUNT) < 1e-9
+    assert abs(sum(o["p_bye"] for o in odds.values()) - playoffs.BYE_SEEDS) < 1e-9
+    assert abs(sum(o["p_final"] for o in odds.values()) - 2.0) < 1e-9
+    for o in odds.values():                        # every seed dist sums to 1
+        assert abs(sum(o["seed_dist"]) - 1.0) < 1e-9
+        assert o["p_bye"] <= o["p_playoffs"] + 1e-9
+        assert o["p_champion"] <= o["p_final"] + 1e-9

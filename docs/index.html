@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>Quintonia Baseball — Win Probability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css?v=21">
+  <link rel="stylesheet" href="style.css?v=22">
   <!-- GoatCounter: privacy-friendly, anonymous visit counts (no cookies/PII). Dashboard: https://mpozar.goatcounter.com -->
   <script data-goatcounter="https://mpozar.goatcounter.com/count"
           async src="//gc.zgo.at/count.js"></script>
@@ -127,11 +127,16 @@
 
     <p class="about-foot">
       The chart under each matchup's "Details" toggle shows how Win
-      Probability has moved over the course of the week. Source &
+      Probability has moved over the course of the week. The Playoff odds
+      section at the bottom simulates the remaining schedule from each
+      matchup's win probability (10,000 seasons), applies ESPN's seeding
+      tiebreakers, and plays out the 6-team bracket with simulated September
+      team-weeks. Source &
       methodology: <a href="https://github.com/mpozar/fantasy-wp" target="_blank" rel="noopener">github.com/mpozar/fantasy-wp</a>.
     </p>
   </section>
   <main id="matchups"></main>
-  <script src="app.js?v=30"></script>
+  <section id="playoffs" class="playoffs" hidden></section>
+  <script src="app.js?v=31"></script>
 </body>
 </html>

@@ -403,6 +403,42 @@ ol.contrib .m {
   padding: .5rem 0 .75rem;
 }
 
+/* ── Playoff odds section (playoffs.json, rendered by renderPlayoffs) ── */
+.playoffs {
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem 1.1rem;
+}
+.playoffs h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
+.po-hint, .po-foot {
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1.4;
+  margin: .25rem 0 .6rem;
+}
+.po-foot { margin: .6rem 0 0; }
+.po-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.po-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: .88rem; }
+.po-table th {
+  text-align: right; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); font-weight: 600; padding: .3rem .45rem; border-bottom: 1px solid var(--line);
+}
+.po-table th:first-child { text-align: left; }
+.po-table td { padding: .4rem .45rem; border-bottom: 1px solid var(--line); }
+.po-table tr:last-child td { border-bottom: none; }
+.po-team { white-space: nowrap; }
+.po-rec { font-feature-settings: "tnum"; color: var(--muted); }
+/* Same probability→color idiom as the category win-rate cells. */
+.po-cell {
+  background: hsl(calc(var(--p) * 120), 60%, 92%);
+  font-feature-settings: "tnum";
+  text-align: right;
+  white-space: nowrap;
+}
+.po-seed-h, .po-seed { font-size: .8rem; }
+
 /* ── Week picker + future-week styling ── */
 .week-picker {
   display: inline-flex;
