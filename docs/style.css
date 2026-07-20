@@ -429,6 +429,18 @@ ol.contrib .m {
 .po-table td { padding: .4rem .45rem; border-bottom: 1px solid var(--line); }
 .po-table tr:last-child td { border-bottom: none; }
 .po-team { white-space: nowrap; }
+/* The existing .team-name/.team-owner rules are scoped to .team-row (the
+   matchup tables), so restate the hierarchy here: bold team, muted manager. */
+.po-team .team-name {
+  font-weight: 600;
+  font-size: .95rem;
+  line-height: 1.2;
+}
+.po-team .team-owner {
+  font-size: .78rem;
+  color: var(--muted);
+  margin-top: 1px;
+}
 .po-rec { font-feature-settings: "tnum"; color: var(--muted); }
 /* Same probability→color idiom as the category win-rate cells. */
 .po-cell {
