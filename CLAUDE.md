@@ -530,6 +530,70 @@ If the user complains that a category WP "feels too lopsided," it's almost alway
 - `MAX_SVHD_RATE = 0.80` — caps per-appearance SV+HLD rate. Realistic elite RPs top out near 0.75-0.80.
 - `RP_APPEARANCE_RATE = 0.40` — fallback only, used when ROS GP or team-total games unavailable. Normal path is per-player derived.
 
+## Playoff odds (playoffs-v1, added 2026-07-20)
+
+`app/playoffs.py` + the `app playoffs` command. Simulates the rest of the
+regular season and the playoff bracket; writes `docs/playoffs.json` (table +
+odds-over-time history) and archives each run in `playoff_odds_runs`.
+
+**League structure** (verified against ESPN mSettings + their H2H-Most-Categories
+support doc, 2026-07-20): standings = weekly **matchup** W-L record
+(`H2H_MOST_CATEGORIES`; hits tiebreak ⇒ no tied weeks). 6 playoff teams, top 2
+byes, 1-week rounds, **no reseed**: R1 3v6 + 4v5; semis 1 vs W(4v5), 2 vs W(3v6);
+final. Playoff periods = `last_reg+1..last_reg+3` (23–25 in 2026) —
+`refresh-schedule` fetches their MLB slates too. Seeding ties: **H2H record among
+the tied teams → coin flip**, seating one team then *resetting the chain* for the
+rest (ESPN's documented behavior). Two league-specific collapses, revisit if the
+league changes shape: single division ⇒ the intradivisional step can't
+discriminate (skipped); double round-robin ⇒ the "equal games among tied teams"
+validity condition for H2H always holds.
+
+**Two layers:**
+1. *Season*: 10k sims; every `UNDECIDED` matchup is a Bernoulli draw from its
+   **latest snapshot WP** (current week ⇒ the live WP). Wins + the full H2H grid
+   accumulate per sim; seeding runs the exact chain above.
+2. *Bracket*: the MC sim has **no cross-team interaction**, so a hypothetical
+   pairing = compare two independently sampled team-weeks. Per team per playoff
+   period: `sim.sample_team_totals(build_budgets(today's roster, that week's
+   schedule, use_cadence=False), 1000)` reduced to 10-cat value tuples
+   (`playoffs.totals_to_values`). A round draws one tuple per side →
+   `decide_values` (most cats → hits tiebreak → **dead heat advances the higher
+   seed**). ROS shares spread over `current..last_reg+3`.
+
+**Cron/publish wiring:** medium.sh runs `app playoffs` after `compute --future`
+(**non-fatal** — odds are derived; a failure must not kill the roster refresh).
+The run is archived **without** history (insert first), then
+`playoffs.load_odds_history` rebuilds the full series from the archive and embeds
+it in playoffs.json — archive blobs stay per-run sized, no compounding.
+fast.sh commits `docs/playoffs.json` alongside data.json/history. Front-end:
+`renderPlayoffs`/`renderPoChart` in app.js — table with seed-probability columns,
+odds-over-time chart with a Playoffs/Bye/Champion toggle; top 6 teams by payload
+order get the 6-hue palette (`PO_COLORS`), rest muted gray with hover + table-chip
+identity. Tests: `tests/test_playoffs.py` (tiebreak chain incl. the 3-way reset,
+dead-heat rule, probability-conservation invariants, history loader).
+
+**Gotchas & how to investigate "why are X's odds low/high":**
+- **Record ≠ roster.** Seeding runs on record; the bracket runs on *projected
+  rosters*. A team can be seed-1 favorite and a bracket underdog. Worked example
+  (2026-07-20): WAR 13-2 (best cat record .629) but P(champ) ~11% vs the 12-3
+  Norsemen's ~34% — WAR projects elite H (77% vs Po9) but underdog in 6/10 cats
+  (K 10%: 54 vs 72 projected; SVHD 3%: 3.8 vs 6.7 — four modest RPs vs six
+  high-leverage arms). Season per-cat records agreed (K 7-8, ERA 5-10): their
+  13-2 was built on batting cats + SVHD. Method: per-cat pairwise win rates from
+  `sample_team_totals` + per-cat season records from `db.latest_category_state`
+  over decided matchups — **never aggregate raw `category_state` rows; the
+  tick-weighted sum is garbage** (same per-stat-read rule as everywhere else).
+- **The log's "Title favorite" is the champion-odds leader**, chosen via
+  `max(p_champion)` — NOT payload row 1, which sorts by p_playoffs first and
+  flips on single-sim wobble near 100% (a 0.9999 vs 1.0000 artifact, seen
+  2026-07-20).
+- **MC noise:** ±~0.5pp on mid-range odds at 10k sims; don't read tick-to-tick
+  history-chart jitter as signal.
+- **Known blind spots** (disclosed in the UI footer): today's rosters + ROS
+  projections for September (no trades/call-ups/streaming — a pitching-light
+  contender WILL look worse than its September self); weeks independent ⇒
+  extremes read overconfident; LM can override seeding by hand.
+
 ## Matchup periods & the Monday rollover
 
 Matchup periods are weekly (Mon→Sun) **except** the All-Star break, which ESPN
