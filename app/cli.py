@@ -1521,11 +1521,16 @@ def playoffs_cmd(sims: int | None, samples: int | None) -> None:
             "remaining_matchups": len(remaining),
             "teams": blocks,
         }
-        blob = json.dumps(payload, separators=(",", ":"))
-        (DOCS_DATA_JSON.parent / "playoffs.json").write_text(blob)
+        # Archive this run WITHOUT history (blobs stay per-run sized), then
+        # assemble the odds-over-time series from the archive — including the
+        # row just inserted — and publish it with the payload for the chart.
         conn.execute("INSERT OR REPLACE INTO playoff_odds_runs "
-                     "(computed_at, payload_json) VALUES (?,?)", (now, blob))
+                     "(computed_at, payload_json) VALUES (?,?)",
+                     (now, json.dumps(payload, separators=(",", ":"))))
         conn.commit()
+        payload["history"] = playoffs.load_odds_history(conn)
+        (DOCS_DATA_JSON.parent / "playoffs.json").write_text(
+            json.dumps(payload, separators=(",", ":")))
         # blocks[0] is the playoff-odds sort leader, which near 100% flips on
         # single-sim wobble — report the champion-odds leader instead.
         fav = max(blocks, key=lambda b: b["p_champion"])

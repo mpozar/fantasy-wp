@@ -762,6 +762,124 @@ async function renderSpotlight(data) {
 // tier: 10k season sims over the remaining schedule's WPs + a sampled-team-week
 // bracket sim). Fetched in the background after first paint like the history
 // files; a missing file (first deploy, playoffs over) leaves the section hidden.
+// Categorical palette (validated reference set): the top 6 teams by playoff
+// odds get distinct hues; the rest render muted gray — 12 distinct hues would
+// be unreadable, and the tail's identity stays reachable via the line hover
+// tooltip and the matching chip in the table. Light values; the site is
+// light-only.
+const PO_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100", "#1baf7a", "#eb6834"];
+const PO_GRAY = "#b9bfc9";
+const PO_METRICS = [
+  { idx: 0, label: "Playoffs" },
+  { idx: 1, label: "Bye" },
+  { idx: 2, label: "Champion" },
+];
+let poMetric = 0;
+
+const poPct = (x) =>
+  x >= 0.9995 ? "100%" :
+  x < 0.0005 ? "—" :
+  (x * 100).toFixed(x >= 0.095 ? 0 : 1) + "%";
+
+// Odds-over-time line chart: one series per team from payload.history
+// (one point per `app playoffs` run), y = the toggled metric. Same SVG
+// idiom as renderChart; gray tail drawn first so colored lines paint on top.
+function renderPoChart(p, colorOf) {
+  const hist = (p.history || []).filter((h) => h.teams);
+  if (!hist.length) return "";
+  const W = CHART_VIEWBOX_W, H = 180, padL = 40, padR = 46, padT = 12, padB = 22;
+  const innerH = H - padT - padB;
+  const t0 = new Date(hist[0].t).getTime();
+  const tN = new Date(hist[hist.length - 1].t).getTime();
+  const span = Math.max(tN - t0, 1);
+  const x = (t) => padL + ((t - t0) / span) * (W - padL - padR);
+  const y = (v) => padT + (1 - v) * innerH;
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1.0];
+  const grid = yTicks.map((v) =>
+    `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" class="grid ${v === 0.5 ? "mid" : ""}"></line>` +
+    `<text x="${padL - 6}" y="${y(v) + 3}" class="axis">${(v * 100) | 0}%</text>`).join("");
+  const xLabels = hist.length > 1 ? `
+    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtWeekdayTime(hist[0].t)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(hist[hist.length - 1].t)}</text>` : "";
+
+  // Colored series last (paint on top of the gray tail), then direct labels.
+  const teams = [...p.teams].reverse();
+  let lines = "", hovers = "";
+  const labels = [];
+  for (const t of teams) {
+    const color = colorOf(t.team_id);
+    const pts = hist
+      .map((h) => ({ h, v: (h.teams[t.team_id] || [])[poMetric] }))
+      .filter((e) => e.v != null);
+    if (!pts.length) continue;
+    const coords = pts.map((e) => `${x(new Date(e.h.t).getTime()).toFixed(1)},${y(e.v).toFixed(1)}`);
+    lines += pts.length === 1
+      ? `<circle cx="${coords[0].split(",")[0]}" cy="${coords[0].split(",")[1]}" r="3" fill="${color}" class="po-line" data-team="${t.team_id}"></circle>`
+      : `<polyline points="${coords.join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="po-line" data-team="${t.team_id}"></polyline>`;
+    hovers += `<polyline points="${coords.join(" ")}" fill="none" stroke="transparent" stroke-width="14" class="po-hover" data-abbrev="${escHtml(t.abbrev ?? t.name)}" data-team="${t.team_id}"></polyline>`;
+    if (color !== PO_GRAY) {
+      labels.push({ y: y(pts[pts.length - 1].v), color, text: t.abbrev ?? "" });
+    }
+  }
+  // End-of-line labels for the colored series, nudged apart (≥11px).
+  labels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labels.length; i++) {
+    labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 11);
+  }
+  const labelSvg = labels.map((l) =>
+    `<text x="${W - padR + 4}" y="${Math.min(l.y, padT + innerH) + 3}" class="po-label" fill="${l.color}">${l.text}</text>`).join("");
+
+  return `
+    <div class="po-chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" class="po-chart" preserveAspectRatio="xMidYMid meet">
+        ${grid}${xLabels}${lines}${labelSvg}
+        <g class="po-hover-layer">${hovers}</g>
+      </svg>
+      <div class="chart-tooltip" aria-hidden="true"></div>
+    </div>`;
+}
+
+// Hover: nearest run by x on the hovered team's line → "ABB 34% · Mon 3:05 PM".
+function bindPoChartHovers(el, p) {
+  const wrap = el.querySelector(".po-chart-wrap");
+  if (!wrap) return;
+  const svg = wrap.querySelector("svg");
+  const tooltip = wrap.querySelector(".chart-tooltip");
+  const hist = (p.history || []).filter((h) => h.teams);
+  const t0 = new Date(hist[0].t).getTime();
+  const tN = new Date(hist[hist.length - 1].t).getTime();
+  wrap.querySelectorAll(".po-hover").forEach((line) => {
+    line.addEventListener("mousemove", (e) => {
+      const rect = svg.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0,
+        ((e.clientX - rect.left) / rect.width * CHART_VIEWBOX_W - 40) / (CHART_VIEWBOX_W - 40 - 46)));
+      const target = t0 + frac * Math.max(tN - t0, 1);
+      let best = hist[0], bd = Infinity;
+      for (const h of hist) {
+        const d = Math.abs(new Date(h.t).getTime() - target);
+        if (d < bd) { bd = d; best = h; }
+      }
+      const v = (best.teams[line.dataset.team] || [])[poMetric];
+      if (v == null) return;
+      tooltip.innerHTML = `<div class="tt-time">${fmtWeekdayTime(best.t)}</div>` +
+        `<div class="tt-row">${escHtml(line.dataset.abbrev)} ${poPct(v)}</div>`;
+      tooltip.style.left = `${e.clientX - rect.left}px`;
+      tooltip.classList.add("visible");
+    });
+    line.addEventListener("mouseenter", () => {
+      svg.classList.add("dimming");
+      const vis = svg.querySelector(`.po-line[data-team="${line.dataset.team}"]`);
+      if (vis) vis.classList.add("hot");
+    });
+    line.addEventListener("mouseleave", () => {
+      tooltip.classList.remove("visible");
+      svg.classList.remove("dimming");
+      svg.querySelectorAll(".po-line.hot").forEach((l) => l.classList.remove("hot"));
+    });
+  });
+}
+
 async function renderPlayoffs() {
   const el = document.getElementById("playoffs");
   if (!el) return;
@@ -772,25 +890,33 @@ async function renderPlayoffs() {
     p = await r.json();
   } catch { return; }
 
-  const pct = (x) =>
-    x >= 0.9995 ? "100%" :
-    x < 0.0005 ? "—" :
-    (x * 100).toFixed(x >= 0.095 ? 0 : 1) + "%";
+  // Stable per-team color: top 6 of the current payload sort get the palette.
+  const chipColor = {};
+  p.teams.forEach((t, i) => { chipColor[t.team_id] = i < PO_COLORS.length ? PO_COLORS[i] : PO_GRAY; });
+  const colorOf = (tid) => chipColor[tid] ?? PO_GRAY;
+
   const cell = (x, cls = "") =>
-    `<td class="num po-cell ${cls}" style="--p:${x.toFixed(3)}">${pct(x)}</td>`;
+    `<td class="num po-cell ${cls}" style="--p:${x.toFixed(3)}">${poPct(x)}</td>`;
   const seedCells = (t) =>
     t.seed_dist.slice(0, p.playoff_team_count)
       .map((s) => cell(s, "po-seed")).join("");
   const rows = p.teams.map((t) => `
     <tr>
       <td class="po-team">
-        <div class="team-name">${escHtml(t.name ?? "")}</div>
+        <div class="team-name"><span class="po-chip" style="background:${colorOf(t.team_id)}"></span>${escHtml(t.name ?? "")}</div>
         <div class="team-owner">${escHtml(t.owner ?? "")}</div>
       </td>
       <td class="num po-rec">${t.w}–${t.l}</td>
       ${cell(t.p_playoffs)}${cell(t.p_bye)}${cell(t.p_final)}${cell(t.p_champion)}
       ${seedCells(t)}
     </tr>`).join("");
+
+  const metricControl =
+    `<span class="chart-scope" role="group" aria-label="Odds metric">` +
+    `<span class="chart-scope-label">Odds</span>` +
+    PO_METRICS.map((m) =>
+      `<button class="scope-btn po-metric-btn${m.idx === poMetric ? " active" : ""}" data-pom="${m.idx}">${m.label}</button>`
+    ).join("") + `</span>`;
 
   el.innerHTML = `
     <h2>Playoff odds</h2>
@@ -805,11 +931,27 @@ async function renderPlayoffs() {
         ${Array.from({ length: p.playoff_team_count }, (_, i) => `<th class="po-seed-h">#${i + 1}</th>`).join("")}
       </tr></thead>
       <tbody>${rows}</tbody></table></div>
+    ${(p.history || []).length ? `
+    <div class="po-chart-head"><h3>Odds over time</h3>${metricControl}</div>
+    <div id="po-chart-box">${renderPoChart(p, colorOf)}</div>` : ""}
     <p class="po-foot">Updated <time datetime="${p.generated_at}">${fmtSnapTime(p.generated_at)}</time>.
       Bracket weeks use today's rosters and rest-of-season projections — September
       call-ups, trades, and injuries aren't knowable, so odds at the extremes read
       a touch overconfident. #1–#${p.playoff_team_count} columns are seed probabilities.</p>`;
   el.hidden = false;
+  bindPoChartHovers(el, p);
+
+  el.querySelectorAll(".po-metric-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = Number(btn.dataset.pom);
+      if (next === poMetric) return;
+      poMetric = next;
+      el.querySelectorAll(".po-metric-btn").forEach((b) =>
+        b.classList.toggle("active", Number(b.dataset.pom) === next));
+      const box = document.getElementById("po-chart-box");
+      if (box) { box.innerHTML = renderPoChart(p, colorOf); bindPoChartHovers(el, p); }
+    });
+  });
 }
 
 function render(data) {

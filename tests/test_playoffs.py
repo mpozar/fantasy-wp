@@ -128,3 +128,24 @@ def test_simulate_odds_probabilities_consistent():
         assert abs(sum(o["seed_dist"]) - 1.0) < 1e-9
         assert o["p_bye"] <= o["p_playoffs"] + 1e-9
         assert o["p_champion"] <= o["p_final"] + 1e-9
+
+
+# ── load_odds_history: chronological slim series from the runs archive ──
+
+def test_load_odds_history_reads_archive():
+    import json as _json
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE playoff_odds_runs (computed_at TEXT PRIMARY KEY, payload_json TEXT)")
+    for i, ts in enumerate(["2026-07-20T06:00:00+00:00", "2026-07-20T10:00:00+00:00"]):
+        conn.execute("INSERT INTO playoff_odds_runs VALUES (?,?)", (ts, _json.dumps({
+            "generated_at": ts,
+            "teams": [{"team_id": 5, "p_playoffs": 0.9, "p_bye": 0.5 + i / 10,
+                       "p_final": 0.4, "p_champion": 0.3}],
+        })))
+    conn.execute("INSERT INTO playoff_odds_runs VALUES ('2026-07-20T11:00:00+00:00', 'garbage')")
+    hist = playoffs.load_odds_history(conn)
+    assert [h["t"] for h in hist] == ["2026-07-20T06:00:00+00:00", "2026-07-20T10:00:00+00:00"]
+    assert hist[0]["teams"]["5"] == [0.9, 0.5, 0.3]      # [playoffs, bye, champion]
+    assert hist[1]["teams"]["5"][1] == 0.6               # garbage row skipped, order kept

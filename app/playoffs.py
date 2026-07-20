@@ -35,6 +35,7 @@ slightly overconfident.
 
 from __future__ import annotations
 
+import json
 import random
 import sqlite3
 
@@ -99,6 +100,29 @@ def load_remaining(conn: sqlite3.Connection) -> list[dict]:
         "home_wp": r["home_wp"] if r["home_wp"] is not None else 0.5,
         "had_snapshot": r["home_wp"] is not None,
     } for r in rows]
+
+
+def load_odds_history(conn: sqlite3.Connection) -> list[dict]:
+    """Chronological per-run odds for the site's odds-over-time chart:
+    [{"t": iso, "teams": {"<team_id>": [p_playoffs, p_bye, p_champion]}}].
+
+    Reads the playoff_odds_runs archive; rows are stored WITHOUT their own
+    history (cli strips it before insert) so this never recurses/compounds.
+    Unparseable rows are skipped rather than killing the run.
+    """
+    out = []
+    for r in conn.execute("SELECT computed_at, payload_json FROM playoff_odds_runs "
+                          "ORDER BY computed_at"):
+        try:
+            d = json.loads(r["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        out.append({
+            "t": d.get("generated_at") or r["computed_at"],
+            "teams": {str(t["team_id"]): [t["p_playoffs"], t["p_bye"], t["p_champion"]]
+                      for t in d.get("teams", [])},
+        })
+    return out
 
 
 # ── Sampled team-weeks → category value tuples ─────────────────────────

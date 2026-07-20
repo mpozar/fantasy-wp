@@ -438,6 +438,41 @@ ol.contrib .m {
   white-space: nowrap;
 }
 .po-seed-h, .po-seed { font-size: .8rem; }
+/* Series color chip in the team column, matching the odds-over-time lines. */
+.po-chip {
+  display: inline-block;
+  width: 9px; height: 9px;
+  border-radius: 3px;
+  margin-right: .45em;
+  vertical-align: baseline;
+}
+.po-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem 1.25rem;
+  margin: 1rem 0 .25rem;
+}
+.po-chart-head h3 {
+  margin: 0;
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.po-chart-wrap {
+  position: relative;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.po-chart { width: 100%; height: auto; display: block; }
+.po-label { font-size: 9px; font-weight: 700; }
+/* Hovering one line (its wide hit target) dims the rest so it pops;
+   bindPoChartHovers pairs hit → visual line via data-team classes. */
+.po-chart.dimming .po-line { opacity: .25; transition: opacity .08s ease; }
+.po-chart.dimming .po-line.hot { opacity: 1; }
+.po-hover { cursor: crosshair; }
 
 /* ── Week picker + future-week styling ── */
 .week-picker {
@@ -641,11 +676,13 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 }
 .chart-tooltip .tt-swatch.home { background: var(--home); }
 .chart-tooltip .tt-swatch.away { background: var(--away); }
-.wp-chart .grid {
+.wp-chart .grid,
+.po-chart .grid {
   stroke: var(--line);
   stroke-width: 1;
 }
-.wp-chart .grid.mid {
+.wp-chart .grid.mid,
+.po-chart .grid.mid {
   stroke: #c4cad6;
   stroke-dasharray: 2 3;
 }
@@ -708,7 +745,8 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
 .matchup-writeup ul { margin: 4px 0 8px; padding-left: 18px; }
 .matchup-writeup li { margin: 2px 0; }
 .matchup-writeup .wu-result { font-size: 14px; }
-.wp-chart .axis {
+.wp-chart .axis,
+.po-chart .axis {
   fill: var(--muted);
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
