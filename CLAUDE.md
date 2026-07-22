@@ -1265,7 +1265,13 @@ time and the signatures that explain ~every swing fast:
     caused a real misattribution (an *H* swing reported as an *R* swing). Sanity
     check: if a "category" you've labeled R shows a projected avg ~52, it's H, not R
     (weekly R tops out ~40); if a rate cat's `home_avg` is >1.0 it can't be OPS as
-    displayed (see #11).
+    displayed (see #11). **Same rule for player→MLB-team identity: the 2026 league's
+    stored data is the source of truth, NOT real-world roster memory.** (2026-07-22:
+    assumed Ranger Suárez was a Phillie from memory — he's a Red Sox in this league,
+    proTeamId 2→MLBAM 111 — and wrongly dismissed his *correct* stored Red Sox
+    schedule as "incoherent." Resolve team via `players.pro_team_id` →
+    `teams.ESPN_TO_MLBAM`, never memory. There's no ESPN↔MLBAM player-id crosswalk,
+    so player→team matching is name-only anyway.)
 11. **`category_wp[].home_avg`/`away_avg` are trustworthy for counting cats but NOT
     the displayed value for rate cats.** For OPS/ERA/WHIP the stored `avg` is an
     internal/derived scale (OPS showed ~1.0–1.6, not ~.800) and won't match the
