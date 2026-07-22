@@ -2,6 +2,17 @@
 
 Context for future Claude sessions working on this repo. The README has the user-facing pitch; this file is the implementer's mental model — design decisions, gotchas, and how to investigate things.
 
+> **This doc is a map, not ground truth — the CODE wins.** Every mechanical
+> claim here (what a function does, a slot rule, a threshold, a filter) may have
+> drifted since it was written. Before asserting any such claim, open the code
+> and cite `file:line`; a statement here is a pointer to *go read*, never the
+> basis for an assertion. Distrust absolutes — "hard filter", "always", "never",
+> "only", "excluded". This is not aspirational: real misdiagnoses have come from
+> trusting a stale line here instead of the code (2026-07-22 "IL slot is a hard
+> filter" — wrong). The checkable classes (symbol names, numeric constants, the
+> stat-id map) are guarded by `tests/test_docs_consistency.py` /
+> `scripts/audit_docs.py`; behavioral prose is on you to verify in code.
+
 ## The contract (non-negotiable; everything else in this file is reference)
 
 1. **WP investigation** ("what caused / why did / any flags") → the

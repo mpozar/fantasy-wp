@@ -43,9 +43,18 @@ conversation.**
      (revert one side at a time) only if the user needs the split.
 
 3. **Verify mechanics in code before asserting them — cite `file:line`.**
-   Slots: **17 = IL, 16 = bench**; benched players still get optimizer
-   slotting (only IL excludes). Roles, caps, overrides: read the function,
-   don't recall it. The stat map comes from `app/stats.py`, never memory.
+   HARD RULE (not a reminder): **every mechanical claim in your answer carries a
+   `file:line` you opened *this session*.** No citation ⇒ you didn't verify it ⇒
+   don't assert it (downgrade to "hypothesis:" or go read the function). This is
+   the rule that keeps getting broken by trusting a remembered/ documented claim;
+   the citation requirement is the forcing function. **CLAUDE.md and this skill
+   are a *map*, not ground truth — code wins.** A doc/memory statement is a
+   pointer to go read, never the basis for an assertion (the 2026-07-22 "IL slot
+   is a hard filter" misdiagnosis came from trusting the doc; it was wrong — IL
+   players with a return estimate ARE projected, gated by return date). Slots:
+   **17 = IL, 16 = bench** — but IL is *not* a blanket exclude; read
+   `_is_playable`/`_est_return_date` rather than recalling a rule. Roles, caps,
+   overrides, the stat map (`app/stats.py`): read the function, never memory.
 
 4. **Label everything by evidence class in the answer:**
    - *verified* — a query/output above confirms it (say which).

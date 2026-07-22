@@ -90,3 +90,39 @@ def test_il_out_hitter_gets_no_days():
     sched = {100: [_game("2026-07-10"), _game("2026-07-11")]}
     days = sim._hitter_days_slotted([_hitter(IL, "OUT")], sched, _ctx(as_of))
     assert days.get(1, 0) == 0
+
+
+# ── build_budgets: an IL-slotted returning SP is projected (NOT hard-excluded) ──
+# Locks the behavior a stale CLAUDE.md note mis-described as "IL slot = hard
+# filter, stay excluded." The 2026-07-22 Suárez case: IL-slotted, FIFTEEN_DAY_DL,
+# ESPN return date = today → he DOES get a projected start on an open game.
+
+def _il_sp(override):
+    return {"player_id": 9, "full_name": "Backfromil Ace", "pro_team_id": 100,
+            "default_position_id": 1, "injury_status": "FIFTEEN_DAY_DL",
+            "lineup_slot_id": IL, "injury_return_override": override,
+            "ros_stats": {sim.STAT_GS: 30, sim.STAT_PITCH_GP: 30,
+                          sim.STAT_OUTS: 540, sim.STAT_K: 180}}
+
+
+def _open_game(d):
+    return {"game_pk": 1, "game_date": d, "game_status": "Scheduled",
+            "current_inning": None, "inning_state": None,
+            "probable_pitcher_name": None, "is_home": 1, "opponent_pro_team_id": 200}
+
+
+def test_il_slotted_sp_with_return_today_is_projected_a_start():
+    sched = {100: [_open_game(TODAY.isoformat())]}
+    ctx = sim.SimContext(team_total_ros_games={100: 30}, as_of=TODAY)
+    sp = [b for b in sim.build_budgets([_il_sp(TODAY)], sched, ctx) if b.role == "SP"]
+    assert sp and sp[0].units > 0        # included & projected, NOT hard-excluded
+
+
+def test_il_slotted_sp_returning_after_the_window_projects_nothing():
+    # Return date past every scheduled game → the per-game return-date gate
+    # zeroes him (the inclusion is date-gated, not unconditional).
+    sched = {100: [_open_game(TODAY.isoformat())]}
+    ctx = sim.SimContext(team_total_ros_games={100: 30}, as_of=TODAY)
+    sp = [b for b in sim.build_budgets([_il_sp(TODAY + timedelta(days=30))], sched, ctx)
+          if b.role == "SP"]
+    assert not sp or sp[0].units == 0
