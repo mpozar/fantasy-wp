@@ -13,7 +13,10 @@ Context for future Claude sessions working on this repo. The README has the user
 3. **DB is UTC; the owner speaks Europe/Oslo local** ("CET" = CEST in summer).
    Convert explicitly before quoting any time.
 4. **Verify mechanics in code, cite `file:line`** — slot **17 = IL, 16 =
-   bench**; the optimizer ignores the manager's bench (only IL excludes).
+   bench**; the hitter optimizer ignores the manager's bench (a BE hitter is
+   still slotted). IL slot is **not** a blanket exclude: an IL-slotted player
+   with a return estimate is included and gated per-game by his return date
+   (`_is_playable`/`_est_return_date`); only genuinely-out statuses are dropped.
 5. **The editable install is live**: an `app/` edit runs on the next 5-min
    cron tick. Never leave unwanted working-tree edits sitting.
 6. **Never leave anything staged**: `fast.sh`'s bare `git commit` sweeps the
@@ -349,7 +352,25 @@ Norsemen ~0.4pp: they were losing K/QS/ERA/WHIP, which a hitter can't touch).
 
 The fallback estimate is conservative (counts from today, not from IL placement date which ESPN doesn't expose). Games before the return date are filtered out of `_open_sp_game_weight`, `_probable_starts_for`, `_rp_remaining_units`, and the hitter optimizer.
 
-IL slot (17) is also a hard filter — manager-stashed players in IL slot stay excluded even if their status is "ACTIVE". BE slot (16) is included for pitchers (managers cycle SPs and RPs through bench day-to-day); hitters in BE go through the optimizer.
+**IL slot (17) is NOT a hard filter** (corrected 2026-07-22 — the old note here
+wrongly claimed it excluded IL-slotted players outright). `_is_playable`
+(`sim.py`) includes an IL-slotted player when his status maps to an IL return
+estimate (`IL_RETURN_DAYS` — the `*_DAY_IL/DL` statuses) **or** is a playable
+status (`ACTIVE`/etc.); only genuinely-out statuses (`OUT`/`INJURY_RESERVE`, or
+any status with no return estimate) in the IL slot are excluded. Inclusion is
+then **gated per-game by the estimated return date** (`_est_return_date`, which
+prefers ESPN's `injury_return_override`): games before it are filtered out, games
+on/after it count. So a still-IL-slotted pitcher with a return date of *today*
+(e.g. Ranger Suárez 2026-07-22, `FIFTEEN_DAY_DL`, ESPN return 7/22) **does get
+projected** for today's+ games — the model bets he'll be activated, since a
+player literally cannot score from the IL slot until his manager moves him to an
+active slot. **This is deliberate (owner decision 2026-07-22): keep projecting
+likely-activated returners, same philosophy as projecting BE-slot pitchers**,
+accepting that an IL-stashed player who never gets activated will over-credit his
+fantasy team. (It's also what let the doubleheader fix surface Suárez's start and
+move WAR ~−7pp — see INVESTIGATIONS.md.) BE slot (16) is included for pitchers
+(managers cycle SPs/RPs through bench day-to-day); hitters in BE go through the
+optimizer.
 
 ### In-progress game scaling
 
@@ -1402,9 +1423,14 @@ time and the signatures that explain ~every swing fast:
 >   his **marginal** value — the optimizer backfills ("Trout recovers ~15pp"
 >   was really ~0.4pp).
 > - **Slot facts** (verify in code, cite the line): `IL_SLOT=17`, bench=16;
->   `_hitter_days_slotted` ignores the manager's bench (only IL excludes, via
->   `_is_playable`); `IL-slot + ACTIVE` = just-activated, projected from the
->   next game day.
+>   `_hitter_days_slotted` ignores the manager's bench (a BE hitter is still
+>   slotted). IL slot is **not** a blanket exclude (`_is_playable`, `sim.py`):
+>   an IL-slotted player with a return estimate (`*_DAY_IL/DL`) or playable
+>   status is included and gated per-game by `_est_return_date`; only
+>   `OUT`/`INJURY_RESERVE` (no return estimate) are dropped. So a still-IL-slotted
+>   pitcher with a near return date DOES project (owner-confirmed 2026-07-22 —
+>   see the IL-handling section). `IL-slot + ACTIVE` = just-activated, projected
+>   from the next game day.
 > - **Retention**: historical rosters/schedule are overwritten and
 >   `details_json` budgets are display summaries — **a past tick cannot be
 >   re-simmed**; give estimates labeled as estimates.
