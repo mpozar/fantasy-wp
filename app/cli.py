@@ -98,16 +98,34 @@ def _overlay_espn_probables(games: list[dict], start, end) -> int:
     hasn't posted one yet — ESPN's feed leads MLB statsapi by a day or two.
     Fill-only: MLB wins once it posts (we never overwrite an existing probable),
     so the tentative ESPN listing is just an early stand-in. Best-effort: a feed
-    error leaves the MLB data untouched. Returns the number of games filled."""
+    error leaves the MLB data untouched. Returns the number of games filled.
+
+    Doubleheader guard: `espn_public.fetch_probables` is keyed by
+    `(game_date, pro_team_id)` with ONE probable per key, so on a doubleheader
+    date it can't tell the team's two games apart — a blind fill would smear
+    that single ESPN name across BOTH games, masking the still-open game (and
+    possibly overriding the one MLB will start with someone else). So we skip
+    the overlay for any `(date, team)` that has more than one game and leave
+    those to MLB: the started game gets MLB's real probable, the open game
+    stays open until MLB names it. Single-game days are unaffected.
+    """
     try:
         esp = espn_public.fetch_probables(start, end)
     except Exception:  # noqa: BLE001 — best effort; fall back to MLB-only
         return 0
+    # Count this team's games per date so doubleheaders (>1) are left to MLB.
+    games_per_day_team: dict[tuple, int] = {}
+    for g in games:
+        key = (g["game_date"], g["espn_team_id"])
+        games_per_day_team[key] = games_per_day_team.get(key, 0) + 1
     n = 0
     for g in games:
         if g.get("probable_pitcher_name"):
             continue
-        name = esp.get((g["game_date"], g["espn_team_id"]))
+        key = (g["game_date"], g["espn_team_id"])
+        if games_per_day_team[key] > 1:
+            continue  # doubleheader — ESPN can't disambiguate; leave to MLB
+        name = esp.get(key)
         if name:
             g["probable_pitcher_name"] = name
             n += 1

@@ -696,6 +696,22 @@ When a probable pitcher gets announced for an upcoming game (typically by MLB ~2
 
 **Source lag — ESPN leads MLB statsapi, so we overlay it.** Primary probable source is MLB statsapi (`mlb.fetch_schedule`), but ESPN's feed surfaces expected probables a day or two earlier. So `fetch_schedule`'s results get a **fill-only overlay** from ESPN's public API (`espn_public.fetch_probables` → `_overlay_espn_probables` in cli.py): for any game where MLB has *no* probable yet, we fill in ESPN's. MLB always wins once it posts (we never overwrite an existing probable), so ESPN is just an early stand-in for the un-announced tail; the cadence model only kicks in for games neither source has named. Wired into `refresh-schedule` (current period only — ESPN has nothing useful for future weeks) and `refresh-live` (its 4-day window, every tick). Observed 2026-06-03: ESPN had Roupp (Sat) and Gausman (Sun) while MLB's feed still showed those games open; the overlay now fills them so both project a confirmed 1.0 start instead of a ~0.88/0.34 cadence estimate. **Caveat:** ESPN's early probables are tentative and can change — but since we only fill where MLB is blank and MLB overrides on post, the blast radius is just the few-day tail.
 
+**Doubleheader guard (fixed 2026-07-22).** `fetch_probables` is keyed by
+`(game_date, pro_team_id)` — one probable per team per day — so on a
+doubleheader date it can't distinguish the team's two games. A blind fill
+**smeared** ESPN's single name across BOTH games, which (a) masked the
+still-open game as non-open — so the cadence/open-game logic couldn't project
+anyone for it — and (b) could stamp a guessed pitcher on the game MLB starts
+with someone else. So `_overlay_espn_probables` now **skips any `(date, team)`
+that has more than one game** and leaves doubleheaders to MLB: the started game
+gets MLB's real per-game probable, the open game stays open until MLB names it.
+Single-game days are unaffected. (2026-07-22 Red Sox DH: ESPN "Jake Bennett"
+smeared onto both games; game 2 — a likely Suárez spot start — was invisible as
+open until this fix.) Note the `mlbam_id` on a probable is NOT a
+real-vs-guessed signal: MLB-sourced probables carry it, ESPN-overlay ones are
+name-only (`mlbam_id` NULL) — ~44% of stored probables. Tests:
+`test_overlay_probables.py`.
+
 ## Cron architecture
 
 Three tiers, all hold a shared `.app.lock` (in `_common.sh`):
