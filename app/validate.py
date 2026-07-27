@@ -493,18 +493,39 @@ def check_pipeline_freshness(conn, now_iso: str | None) -> list[Finding]:
     the site then serves stale data with no error. Flag when the newest snapshot or
     fetch is too old to be live.
 
-    Scoped to the **current** week's matchups (the earliest *undecided* period — past
-    weeks are decided, future weeks aren't fetched). Those are the rows the crons
-    write every tick, so they're the freshness signal — and scoping lets the
-    `MAX(...)` use idx_category_state_recent (its leading column) instead of
-    full-scanning the 8.8M-row category_state table (~10s → ~10ms, the validate
-    hotspot). No undecided week ⇒ season over / nothing live ⇒ nothing to flag."""
+    Scoped to the **current** period — the one `fast.sh` recomputes every 5-min tick
+    (source-of-truth = `team_rosters`, written only for the current period; matches
+    `cli._current_matchup_period`) — NOT the earliest *undecided* period. They
+    coincide mid-week but diverge at the Sun→Mon rollover: once the live week is
+    decided but the next hasn't started, earliest-undecided points at an UPCOMING
+    week that only `medium` (every 4h) refreshes, so its snapshots are legitimately
+    >STALE_MINUTES old and would false-fire "cron stalled" every Monday (2026-07-27:
+    week 16 decided, earliest-undecided=17 upcoming → spurious ANOM_STALE_SNAPSHOTS).
+    The current period is what stays on the 5-min cadence, so *its* staleness is the
+    true stall signal. Scoping to a small matchup_id set also keeps `MAX(...)` on
+    idx_category_state_recent instead of full-scanning the 8.8M-row category_state
+    table (~10s → ~10ms, the validate hotspot).
+
+    Season fully over (all matchups decided) ⇒ crons legitimately idle ⇒ no flag."""
     if not now_iso:
         return []
+    if not conn.execute("SELECT 1 FROM matchups "
+                        "WHERE winner='UNDECIDED' OR winner IS NULL LIMIT 1").fetchone():
+        return []   # season over — nothing to keep fresh
+    try:
+        row = conn.execute(
+            "SELECT matchup_period_id FROM team_rosters "
+            "GROUP BY matchup_period_id ORDER BY MAX(fetched_at) DESC LIMIT 1").fetchone()
+        cur_period = row["matchup_period_id"] if row else None
+    except Exception:   # no team_rosters (fresh DB / unit tests) → fall back below
+        cur_period = None
+    if cur_period is None:   # fall back to the earliest period (as cli does)
+        row = conn.execute("SELECT MIN(matchup_period_id) AS p FROM matchups").fetchone()
+        cur_period = row["p"] if row else None
+    if cur_period is None:
+        return []
     cur = [r["id"] for r in conn.execute(
-        "SELECT id FROM matchups WHERE matchup_period_id = "
-        "(SELECT MIN(matchup_period_id) FROM matchups WHERE winner='UNDECIDED' OR winner IS NULL)"
-    )]
+        "SELECT id FROM matchups WHERE matchup_period_id=?", (cur_period,))]
     if not cur:
         return []
     ph = ",".join("?" * len(cur))

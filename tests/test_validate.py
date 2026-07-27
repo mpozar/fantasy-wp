@@ -324,6 +324,8 @@ def _mem_db():
                  "PRIMARY KEY (matchup_id, computed_at))")
     conn.execute("CREATE TABLE matchups (id INT PRIMARY KEY, matchup_period_id INT, "
                  "home_team_id INT, away_team_id INT, winner TEXT)")
+    conn.execute("CREATE TABLE team_rosters (matchup_period_id INT, fantasy_team_id INT, "
+                 "player_id INT, lineup_slot_id INT, status TEXT, fetched_at TEXT)")
     return conn
 
 def _put_matchup(conn, mid, period=10, winner="UNDECIDED"):
@@ -521,8 +523,6 @@ def _mem_db_qs(tmp_path):
             lineup_slot_id INT, fetched_at TEXT);
         CREATE TABLE players (id INT PRIMARY KEY, full_name TEXT, pro_team_id INT,
             default_position_id INT, eligible_slots_json TEXT, injury_status TEXT);
-        CREATE TABLE team_rosters (matchup_period_id INT, fantasy_team_id INT,
-            player_id INT, lineup_slot_id INT, status TEXT);
         CREATE TABLE player_injuries (norm_name TEXT, return_date TEXT);
         CREATE TABLE player_projections (player_id INT, split_id INT, stat_id INT, value REAL);
         CREATE TABLE pitcher_final_lines (game_date TEXT, name TEXT, games_started INT,
@@ -538,7 +538,8 @@ def _mem_db_qs(tmp_path):
     conn.execute("INSERT INTO live_pitchers VALUES "
                  "(9001, 1, 'Jacob deGrom', 26, 0, 1, 1, 18, 0, 7, 4, 1, 0, 0, 't')")
     conn.execute("INSERT INTO players VALUES (101, 'Jacob deGrom', 26, 13, '[]', NULL)")
-    conn.execute("INSERT INTO team_rosters VALUES (10, 20, 101, 13, NULL)")
+    conn.execute("INSERT INTO team_rosters (matchup_period_id, fantasy_team_id, "
+                 "player_id, lineup_slot_id, status) VALUES (10, 20, 101, 13, NULL)")
     conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-07', 20, 101, 13, 't')")
     # category_state QS for team 20: settled floor 2 in the morning, scrape banks
     # deGrom (→3) at night. SVHD steady at 3. Away team 21: QS 2 / SVHD 3 (no live).
@@ -699,3 +700,39 @@ def test_site_wp_below_decided_threshold_not_flagged(tmp_path):
               "matchups": [{"matchup_id": 96, "home": home, "away": away}]}]
     f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
     assert not any(x.code == "INV_SITE_WP_CATEGORY_CONTRADICTION" for x in f)
+
+
+# ── rollover: freshness scopes to the CURRENT period (fast's), not earliest-undecided ──
+def _put_roster(conn, period, at):
+    conn.execute("INSERT INTO team_rosters VALUES (?,?,?,?,?,?)", (period, 20, 1, 13, "NORMAL", at))
+    conn.commit()
+
+def test_pipeline_freshness_rollover_ignores_upcoming_week():
+    # Sun→Mon: current week (16) decided but fast keeps computing it (fresh snapshot);
+    # next week (17) is undecided/upcoming, only medium-refreshed (stale). Must NOT
+    # false-fire on 17 — scope is the current period (16), which is fresh.
+    conn = _mem_db()
+    _put_matchup(conn, 96, period=16, winner="HOME")     # current, decided
+    _put_matchup(conn, 97, period=17, winner="UNDECIDED")  # upcoming, undecided
+    _put_roster(conn, 16, "2026-07-27T07:20:00+00:00")   # rosters written for wk16 = current
+    conn.execute("INSERT INTO wp_snapshots VALUES (96,?,1.0,0.0,'mc-v1','{}')",
+                 ("2026-07-27T07:20:00+00:00",))          # wk16 fresh
+    _put_state(conn, 96, 20, {1: 30}, "2026-07-27T07:20:00+00:00")
+    conn.execute("INSERT INTO wp_snapshots VALUES (97,?,0.5,0.5,'mc-v1','{}')",
+                 ("2026-07-27T06:02:00+00:00",))          # wk17 stale (78 min)
+    _put_state(conn, 97, 20, {1: 0}, "2026-07-27T06:02:00+00:00")
+    conn.commit()
+    assert v.check_pipeline_freshness(conn, "2026-07-27T07:20:30+00:00") == []
+
+def test_pipeline_freshness_flags_stale_current_period():
+    # Same shape but the CURRENT period (16) itself is stale → real stall → flag.
+    conn = _mem_db()
+    _put_matchup(conn, 96, period=16, winner="HOME")
+    _put_matchup(conn, 97, period=17, winner="UNDECIDED")
+    _put_roster(conn, 16, "2026-07-27T06:00:00+00:00")
+    conn.execute("INSERT INTO wp_snapshots VALUES (96,?,1.0,0.0,'mc-v1','{}')",
+                 ("2026-07-27T06:00:00+00:00",))          # wk16 stale (80 min)
+    _put_state(conn, 96, 20, {1: 30}, "2026-07-27T06:00:00+00:00")
+    conn.commit()
+    codes = {x.code for x in v.check_pipeline_freshness(conn, "2026-07-27T07:20:00+00:00")}
+    assert "ANOM_STALE_SNAPSHOTS" in codes
