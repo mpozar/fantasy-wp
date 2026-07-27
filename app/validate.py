@@ -105,6 +105,8 @@ RAIL_FLIP = 0.10               # WP within this of a rail (0 or 1) is "at the ra
 
 QS_OVERCREDIT_TOL = 0.5        # published QS/SVHD may exceed the independently-supported
                                # max(scrape, settled_floor + box) by at most this (rounding)
+WP_DECIDED = 0.99              # a published WP this lopsided should not have its own
+                               # displayed category majority favor the OTHER side
 
 
 @dataclass
@@ -741,6 +743,28 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                                    f"period {pid} records not mirrored: home "
                                    f"{hr['W']}-{hr['L']}-{hr['T']} vs away "
                                    f"{ar['W']}-{ar['L']}-{ar['T']} — category results desynced"))
+            # WP↔category consistency: a near-decided matchup whose displayed
+            # category results hand the MAJORITY to the OTHER side is a display bug —
+            # the scoreboard contradicts its own WP. (2026-07-27 m96: WP 100% Norsemen
+            # yet the cells showed Bear 5-4 via a settle-stale OPS + an un-credited QS.)
+            # INV_SITE_DB_MISMATCH can't catch this — it skips the rate cats where the
+            # divergence hides. Warn, not error: a decisive WP *can* legitimately lead a
+            # current-category deficit projected to flip, but at ≥WP_DECIDED a
+            # contradicting majority is almost always a stale-cell display lag to eyeball.
+            hb, ab = m.get("home") or {}, m.get("away") or {}
+            hwp, awp = hb.get("wp"), ab.get("wp")
+            if hwp is not None and awp is not None and max(hwp, awp) >= WP_DECIDED:
+                def _wins(blk):
+                    return sum(1 for c in (blk.get("batting") or []) + (blk.get("pitching") or [])
+                               if c.get("result") == "WIN")
+                fav_side, fav_cats, opp_cats = (("home", _wins(hb), _wins(ab)) if hwp >= awp
+                                                else ("away", _wins(ab), _wins(hb)))
+                if opp_cats > fav_cats:
+                    out.append(Finding("INV_SITE_WP_CATEGORY_CONTRADICTION", "warn",
+                        m.get("matchup_id"),
+                        f"period {pid} WP favors {fav_side} ({max(hwp, awp):.0%}) but displayed "
+                        f"categories give the opponent the majority ({fav_cats} vs {opp_cats}) "
+                        f"— scoreboard contradicts its own WP (likely a stale rate/QS cell)"))
     return out
 
 

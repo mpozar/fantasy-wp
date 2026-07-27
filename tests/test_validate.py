@@ -661,3 +661,41 @@ def test_resolve_only_touches_open():
     # second resolve finds nothing open → 0, and must not overwrite the original note
     assert v.resolve(conn, "ANOM_WP_SWING", now="2026-06-05T09:00:00+00:00", by="y", note="second") == 0
     assert conn.execute("SELECT resolution_note FROM validation_flags").fetchone()[0] == "first"
+
+
+# ── WP↔category consistency (INV_SITE_WP_CATEGORY_CONTRADICTION) ──
+# A near-decided matchup whose displayed category majority favors the OTHER side
+# is a display bug (2026-07-27 m96: WP 100% Norsemen, cells showed Bear 5-4 via a
+# settle-stale OPS + un-credited QS). INV_SITE_DB_MISMATCH can't catch it (skips rate cats).
+
+def _blk_results(win_stat_ids, wp):
+    bat = [{"stat_id": s, "score": 1.0,
+            "result": "WIN" if s in win_stat_ids else "LOSS"} for s in (1, 5, 20, 23, 18)]
+    pit = [{"stat_id": s, "score": 1.0,
+            "result": "WIN" if s in win_stat_ids else "LOSS"} for s in (48, 63, 47, 41, 83)]
+    return {"batting": bat, "pitching": pit, "wp": wp}
+
+def test_site_wp_contradicts_category_majority_flagged(tmp_path):
+    home = _blk_results({1, 5, 20, 23}, 1.0)            # WP 100% but only 4 cats
+    away = _blk_results({18, 48, 63, 47, 41, 83}, 0.0)  # loser shown winning 6
+    weeks = [{"matchup_period_id": 16, "state": "final",
+              "matchups": [{"matchup_id": 96, "home": home, "away": away}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    assert any(x.code == "INV_SITE_WP_CATEGORY_CONTRADICTION" for x in f)
+
+def test_site_wp_consistent_majority_ok(tmp_path):
+    home = _blk_results({1, 5, 20, 23}, 0.0)
+    away = _blk_results({18, 48, 63, 47, 41, 83}, 1.0)  # favorite wins 6 → consistent
+    weeks = [{"matchup_period_id": 16, "state": "final",
+              "matchups": [{"matchup_id": 96, "home": home, "away": away}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    assert not any(x.code == "INV_SITE_WP_CATEGORY_CONTRADICTION" for x in f)
+
+def test_site_wp_below_decided_threshold_not_flagged(tmp_path):
+    # 70% favorite currently behind in categories → legit mid-week, must NOT flag.
+    home = _blk_results({1, 5, 20, 23}, 0.70)
+    away = _blk_results({18, 48, 63, 47, 41, 83}, 0.30)
+    weeks = [{"matchup_period_id": 16, "state": "live",
+              "matchups": [{"matchup_id": 96, "home": home, "away": away}]}]
+    f = v.check_published_site(_write_site(tmp_path, weeks), "2026-06-04T21:31:00+00:00")
+    assert not any(x.code == "INV_SITE_WP_CATEGORY_CONTRADICTION" for x in f)

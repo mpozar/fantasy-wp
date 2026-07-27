@@ -1369,7 +1369,9 @@ def publish(rebuild: bool) -> None:
                 "active_intervals": _active_intervals(conn, period_id, now),
                 "matchups": [
                     _matchup_block(conn, teams, m, started=started,
-                                   live=(state == "live"), cat_history=with_cat)
+                                   live=(state == "live"),
+                                   is_current=(period_id == current),
+                                   cat_history=with_cat)
                     for m in ms
                 ],
             }
@@ -1695,13 +1697,24 @@ _RATE_NO_DATA = 999.0  # derive_era/whip sentinel for no innings pitched
 
 
 def _apply_derived_rates(home_state: dict[int, dict],
-                         away_state: dict[int, dict]) -> None:
-    """Overwrite OPS/ERA/WHIP score+result in both team states with values
-    derived from the current component counters — the scraped rate freezes when
-    the live scrape goes idle while its components keep updating via REST, so it
-    drifts from both ESPN and the team's own components. Mutates in place. Mirrors
-    `sim._decide`'s comparison (incl. the no-data sentinel via `sim.cat_value`) so
-    the published number and result stay consistent with the WP's decision."""
+                         away_state: dict[int, dict], *,
+                         derived: bool = True) -> None:
+    """Set OPS/ERA/WHIP score+result in both team states. Mutates in place.
+    Mirrors `sim._decide`'s comparison so the published number and result stay
+    consistent with the WP's decision.
+
+    `derived=True` (a live fold happened this publish — components are fresh):
+    derive each rate from the component counters. This beats a lagging scrape
+    mid-slate (the scraped rate freezes while its components keep moving via REST).
+
+    `derived=False` (NO live components were folded — idle/finished week): the raw
+    component counters are settle-stale and **time-mismatched** with the frozen
+    scrape (e.g. a scored-cat H frozen at the last scrape over an AB that REST kept
+    settling → a bogus OPS that can flip the category — 2026-07-27 m96). Re-deriving
+    then is *worse* than the scrape, so trust the **atomically-scraped displayed
+    rate** already in state (authoritative for current standing; playbook: never
+    raw-derive a rate off unfolded banked components). Falls back to deriving only
+    if a side has no scraped rate at all."""
     def components(state: dict[int, dict]) -> dict[int, float]:
         return {sid: v["score"] for sid, v in state.items()
                 if v.get("score") is not None}
@@ -1709,7 +1722,13 @@ def _apply_derived_rates(home_state: dict[int, dict],
     home_c, away_c = components(home_state), components(away_state)
     for sid, derive in sim.RATE_DERIVERS.items():
         ndigits = _RATE_DECIMALS[sid]
-        hv, av = derive(home_c), derive(away_c)
+        if derived:
+            hv, av = derive(home_c), derive(away_c)
+        else:
+            hv = (home_state.get(sid) or {}).get("score")
+            av = (away_state.get(sid) or {}).get("score")
+            if hv is None or av is None:   # no scraped rate → fall back to deriving
+                hv, av = derive(home_c), derive(away_c)
         reversed_ = stats.is_reversed(sid)
         if hv == av:
             h_res, a_res = "TIE", "TIE"
@@ -1786,11 +1805,18 @@ def _fold_live_components(conn, home_state, away_state,
     REST-lagged `category_state` components, so during live games the scoreboard
     drifts stale while the projection (which folds in the live box scores) moves —
     e.g. a team shown at ERA 2.38 while its projection and the live scrape both read
-    4.5 after a rough inning. No-op when nothing is live."""
+    4.5 after a rough inning. No-op when nothing is live.
+
+    Returns True iff live components were actually folded (unsettled lines present).
+    The caller uses this to decide whether the displayed rate cats may be re-derived
+    from the (now-fresh) component counters: when nothing was folded, the raw REST
+    components are settle-stale and time-mismatched with the frozen scrape, so
+    deriving from them produces a bogus rate — the caller must trust the scraped
+    rate instead (see `_apply_derived_rates`)."""
     settle = _settle_boundary()
     unsettled = sim.load_unsettled_lines(conn, since_date=settle)
     if not unsettled["pitchers"] and not unsettled["batters"]:
-        return
+        return False
     for state, tid in ((home_state, home_team_id), (away_state, away_team_id)):
         baseline = {sid: c.get("score") for sid, c in state.items()
                     if c.get("score") is not None}
@@ -1800,10 +1826,38 @@ def _fold_live_components(conn, home_state, away_state,
         for sid, val in recon.items():
             if val is not None:
                 state.setdefault(sid, {"score": None, "result": None})["score"] = val
+    return True
+
+
+def _apply_qs_svhd_floor(conn, matchup_id: int, home_team_id: int,
+                         away_team_id: int, home_state: dict[int, dict],
+                         away_state: dict[int, dict]) -> None:
+    """Raise displayed QS/SVHD to the durable settled floor when the live scrape
+    lags it. Mutates the states in place (score only; results are recomputed by
+    `_apply_counting_results` afterward).
+
+    QS/SVHD are scored display cats the scrape banks into category_state only
+    *while it runs* (during a slate). Once games finish and the scrape idles, a
+    QS/SVHD earned in a just-Final game can sit un-banked for hours — so the
+    scoreboard shows a stale low count (e.g. Norsemen QS 4) while the WP, which
+    credits it via `max(scrape, settled_floor + box)`, already reads the true 5
+    (2026-07-27 m96). Mirror that floor for the display: `settled_floor` counts
+    the QS/SVHD from the write-once `pitcher_final_lines` archive, gated by each
+    day's lineup slots (`sim.load_settled_floor`). Fail-safe — only ever raises to
+    the floor (`max`), never lowers; a no-op once the scrape catches up (scrape ≥
+    floor) or when the archive/lineups aren't available (floor absent)."""
+    settle = _settle_boundary()
+    for tid, state in ((home_team_id, home_state), (away_team_id, away_state)):
+        floor = sim.load_settled_floor(
+            conn, matchup_id, tid, (sim.STAT_QS, sim.STAT_SVHD), since_date=settle)
+        for sid, fv in floor.items():
+            cur = (state.get(sid) or {}).get("score")
+            if fv is not None and (cur is None or fv > cur):
+                state.setdefault(sid, {"score": None, "result": None})["score"] = fv
 
 
 def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
-                   cat_history: bool = False) -> dict:
+                   is_current: bool = False, cat_history: bool = False) -> dict:
     """One matchup with team blocks, current snapshot, and history.
 
     `started` = the week has begun (state != "upcoming"); when False the team
@@ -1822,11 +1876,24 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
     home_state = _latest_score_rows(conn, m["id"], home_team_id) if started else {}
     away_state = _latest_score_rows(conn, m["id"], away_team_id) if started else {}
     if started:
+        folded = False
         if live:   # make the displayed rates match the projection's live view
-            _fold_live_components(conn, home_state, away_state,
-                                  home_team_id, away_team_id, m["matchup_period_id"],
-                                  matchup_id=m["id"])
-        _apply_derived_rates(home_state, away_state)
+            folded = _fold_live_components(conn, home_state, away_state,
+                                           home_team_id, away_team_id,
+                                           m["matchup_period_id"], matchup_id=m["id"])
+        # Rate cats: derive from components only when a live fold made them fresh,
+        # OR for any non-current week (unchanged historical behavior). For the
+        # current week with no fold (idle/finished slate) trust the scraped rate —
+        # the raw components are time-mismatched with the frozen scrape and derive
+        # to a bogus value that can flip a category (2026-07-27 m96 OPS).
+        _apply_derived_rates(home_state, away_state,
+                             derived=(folded or not is_current))
+        # Counting QS/SVHD: raise the current week's display to the durable settled
+        # floor so a scrape that hasn't yet banked a just-Final QS/SVHD doesn't show
+        # a stale low count that contradicts the WP (2026-07-27 m96 QS 4→5).
+        if is_current:
+            _apply_qs_svhd_floor(conn, m["id"], home_team_id, away_team_id,
+                                 home_state, away_state)
         _apply_counting_results(home_state, away_state)
     wp_row = conn.execute(
         """

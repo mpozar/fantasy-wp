@@ -101,7 +101,7 @@ def _pub_setup(tmp_path, monkeypatch):
 
     rendered = []   # matchup_period_ids whose blocks got (re)built this run
     monkeypatch.setattr(cli, "_matchup_block",
-                        lambda conn, teams, m, *, started, live, cat_history=False: rendered.append(m["matchup_period_id"]) or {"matchup_id": m["id"]})
+                        lambda conn, teams, m, *, started, live, is_current=False, cat_history=False: rendered.append(m["matchup_period_id"]) or {"matchup_id": m["id"]})
     monkeypatch.setattr(cli, "_week_state", lambda conn, pid: "final" if pid == 10 else "live")
     monkeypatch.setattr(cli, "_active_intervals", lambda conn, pid, now: [])
     monkeypatch.setattr(cli, "_current_matchup_period", lambda conn: 11)
@@ -153,7 +153,7 @@ def test_publish_splits_history_into_week_files(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "DOCS_DATA_JSON", tmp_path / "data.json")
     monkeypatch.setattr(
         cli, "_matchup_block",
-        lambda conn, teams, m, *, started, live, cat_history=False: {
+        lambda conn, teams, m, *, started, live, is_current=False, cat_history=False: {
             "matchup_id": m["id"],
             "history": [{"computed_at": "2026-06-10T11:00", "home_wp": 0.6,
                          "away_wp": 0.4, "model_version": "mc-v1"}],
