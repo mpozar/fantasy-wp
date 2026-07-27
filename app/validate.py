@@ -529,11 +529,24 @@ def check_pipeline_freshness(conn, now_iso: str | None) -> list[Finding]:
     if not cur:
         return []
     ph = ",".join("?" * len(cur))
+    # A fully-DECIDED current period is the Sun→Mon rollover: the just-finished week
+    # stays `compute`'s current period (team_rosters) until the next medium refresh
+    # advances it, but ESPN's `fetch` has already moved on to the newly-current
+    # period. So `compute` keeps this period's wp_snapshots fresh every tick (a stall
+    # there IS real → keep watching), while its category_state legitimately stops
+    # updating (games over, fetch writing elsewhere) → the fetch-staleness flag would
+    # false-fire, so skip it for a decided period. (2026-07-27: wk16 decided, fetch on
+    # wk17 → spurious ANOM_STALE_FETCH before this guard.)
+    decided = conn.execute(
+        f"SELECT NOT EXISTS(SELECT 1 FROM matchups WHERE id IN ({ph}) "
+        f"AND (winner='UNDECIDED' OR winner IS NULL)) AS d", cur).fetchone()["d"]
     out = []
     for label, code, col, table in (
         ("wp_snapshot", "ANOM_STALE_SNAPSHOTS", "computed_at", "wp_snapshots"),
         ("category_state fetch", "ANOM_STALE_FETCH", "fetched_at", "category_state"),
     ):
+        if code == "ANOM_STALE_FETCH" and decided:
+            continue  # decided week: category_state legitimately frozen (see above)
         row = conn.execute(
             f"SELECT MAX({col}) m FROM {table} WHERE matchup_id IN ({ph})", cur).fetchone()
         age = _minutes_old(row["m"] if row else None, now_iso)

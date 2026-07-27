@@ -736,3 +736,18 @@ def test_pipeline_freshness_flags_stale_current_period():
     conn.commit()
     codes = {x.code for x in v.check_pipeline_freshness(conn, "2026-07-27T07:20:00+00:00")}
     assert "ANOM_STALE_SNAPSHOTS" in codes
+
+def test_pipeline_freshness_decided_period_skips_fetch_staleness():
+    # Rollover: current period (16) decided → compute keeps snapshots fresh but
+    # category_state legitimately froze (fetch moved to wk17). Skip the fetch flag;
+    # a real compute stall (stale snapshot) would still be caught (see prior test).
+    conn = _mem_db()
+    _put_matchup(conn, 96, period=16, winner="HOME")
+    _put_matchup(conn, 97, period=17, winner="UNDECIDED")
+    _put_roster(conn, 16, "2026-07-27T07:30:00+00:00")
+    conn.execute("INSERT INTO wp_snapshots VALUES (96,?,1.0,0.0,'mc-v1','{}')",
+                 ("2026-07-27T07:30:00+00:00",))                 # snapshot fresh
+    _put_state(conn, 96, 20, {1: 30}, "2026-07-27T07:00:00+00:00")  # category_state 31m stale
+    conn.commit()
+    codes = {x.code for x in v.check_pipeline_freshness(conn, "2026-07-27T07:31:00+00:00")}
+    assert codes == set()   # no ANOM_STALE_FETCH (decided) and snapshot is fresh
