@@ -37,10 +37,19 @@ function loadAllHistory(data, firstWeek) {
 // bindChartHovers (pixel-space hover mapping) so they can't drift apart.
 const CHART_VIEWBOX_W = 600;
 
-// "Mon 3:05 PM" — used for the chart x-axis labels and the hover tooltip.
+// "Mon 3:05 PM" — used for the WP chart x-axis labels and hover tooltip,
+// where the span is a single matchup week so the weekday is unambiguous.
 const fmtWeekdayTime = (iso) => {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { weekday: "short" }) + " " +
+         d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+};
+
+// "Jul 20, 3:05 PM" — the playoff odds chart spans weeks, so its axis and
+// tooltip need the date, not a weekday.
+const fmtDateTime = (iso) => {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " +
          d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 };
 
@@ -806,8 +815,8 @@ function renderPoChart(p, colorOf) {
     `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" class="grid ${v === 0.5 ? "mid" : ""}"></line>` +
     `<text x="${padL - 6}" y="${y(v) + 3}" class="axis">${(v * 100) | 0}%</text>`).join("");
   const xLabels = hist.length > 1 ? `
-    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtWeekdayTime(hist[0].t)}</text>
-    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(hist[hist.length - 1].t)}</text>` : "";
+    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtDateTime(hist[0].t)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtDateTime(hist[hist.length - 1].t)}</text>` : "";
 
   // Colored series last (paint on top of the gray tail), pinned last of all,
   // then direct labels.
@@ -887,7 +896,7 @@ function bindPoChartHovers(el, p, onToggle) {
       }
       const v = (best.teams[line.dataset.team] || [])[poMetric];
       if (v == null) return;
-      tooltip.innerHTML = `<div class="tt-time">${fmtWeekdayTime(best.t)}</div>` +
+      tooltip.innerHTML = `<div class="tt-time">${fmtDateTime(best.t)}</div>` +
         `<div class="tt-row">${escHtml(line.dataset.abbrev)} ${poPct(v)}</div>`;
       tooltip.style.left = `${e.clientX - rect.left}px`;
       tooltip.classList.add("visible");
