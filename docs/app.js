@@ -764,11 +764,17 @@ async function renderSpotlight(data) {
 // files; a missing file (first deploy, playoffs over) leaves the section hidden.
 // Categorical palette (validated reference set): the top 6 teams by playoff
 // odds get distinct hues; the rest render muted gray — 12 distinct hues would
-// be unreadable, and the tail's identity stays reachable via the line hover
-// tooltip and the matching chip in the table. Light values; the site is
-// light-only.
+// be unreadable. The tail's identity is reachable via the line hover tooltip,
+// the matching chip in the table, and by PINNING: clicking a line, its end
+// label, or the team's table row toggles the team into `poPinned`, which
+// renders it full-color (gray-tail teams borrow a hue from PO_PIN_COLORS)
+// and dims everything unpinned. Light values; the site is light-only.
 const PO_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100", "#1baf7a", "#eb6834"];
 const PO_GRAY = "#b9bfc9";
+// Reserve hues for pinned gray-tail teams — distinct from PO_COLORS so a
+// pinned tail team never collides with a top-6 line.
+const PO_PIN_COLORS = ["#8a5cd6", "#c2417a", "#0aa2c0", "#946846", "#5b6ee1", "#8e9c1a"];
+let poPinned = new Set(); // String(team_id) — dataset attrs are strings
 const PO_METRICS = [
   { idx: 0, label: "Playoffs" },
   { idx: 1, label: "Bye" },
@@ -787,7 +793,7 @@ const poPct = (x) =>
 function renderPoChart(p, colorOf) {
   const hist = (p.history || []).filter((h) => h.teams);
   if (!hist.length) return "";
-  const W = CHART_VIEWBOX_W, H = 180, padL = 40, padR = 46, padT = 12, padB = 22;
+  const W = CHART_VIEWBOX_W, H = 300, padL = 40, padR = 46, padT = 12, padB = 22;
   const innerH = H - padT - padB;
   const t0 = new Date(hist[0].t).getTime();
   const tN = new Date(hist[hist.length - 1].t).getTime();
@@ -803,36 +809,48 @@ function renderPoChart(p, colorOf) {
     <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtWeekdayTime(hist[0].t)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(hist[hist.length - 1].t)}</text>` : "";
 
-  // Colored series last (paint on top of the gray tail), then direct labels.
-  const teams = [...p.teams].reverse();
+  // Colored series last (paint on top of the gray tail), pinned last of all,
+  // then direct labels.
+  const teams = [...p.teams].reverse()
+    .sort((a, b) => (poPinned.has(String(a.team_id)) ? 1 : 0) - (poPinned.has(String(b.team_id)) ? 1 : 0));
   let lines = "", hovers = "";
   const labels = [];
   for (const t of teams) {
     const color = colorOf(t.team_id);
+    const pinned = poPinned.has(String(t.team_id));
+    const cls = `po-line${pinned ? " pinned" : ""}`;
     const pts = hist
       .map((h) => ({ h, v: (h.teams[t.team_id] || [])[poMetric] }))
       .filter((e) => e.v != null);
     if (!pts.length) continue;
     const coords = pts.map((e) => `${x(new Date(e.h.t).getTime()).toFixed(1)},${y(e.v).toFixed(1)}`);
     lines += pts.length === 1
-      ? `<circle cx="${coords[0].split(",")[0]}" cy="${coords[0].split(",")[1]}" r="3" fill="${color}" class="po-line" data-team="${t.team_id}"></circle>`
-      : `<polyline points="${coords.join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="po-line" data-team="${t.team_id}"></polyline>`;
+      ? `<circle cx="${coords[0].split(",")[0]}" cy="${coords[0].split(",")[1]}" r="3" fill="${color}" class="${cls}" data-team="${t.team_id}"></circle>`
+      : `<polyline points="${coords.join(" ")}" fill="none" stroke="${color}" stroke-width="${pinned ? 2.5 : 2}" stroke-linejoin="round" stroke-linecap="round" class="${cls}" data-team="${t.team_id}"></polyline>`;
     hovers += `<polyline points="${coords.join(" ")}" fill="none" stroke="transparent" stroke-width="14" class="po-hover" data-abbrev="${escHtml(t.abbrev ?? t.name)}" data-team="${t.team_id}"></polyline>`;
     if (color !== PO_GRAY) {
-      labels.push({ y: y(pts[pts.length - 1].v), color, text: t.abbrev ?? "" });
+      labels.push({ y: y(pts[pts.length - 1].v), color, text: t.abbrev ?? "", team: t.team_id, pinned });
     }
   }
-  // End-of-line labels for the colored series, nudged apart (≥11px).
+  // End-of-line labels for the colored series, nudged apart (≥11px): a forward
+  // pass pushes overlaps down, then a backward pass pushes everything that ran
+  // past the bottom edge back up (keeping the spacing) — a plain bottom clamp
+  // would stack rail-hugging labels on top of each other.
   labels.sort((a, b) => a.y - b.y);
   for (let i = 1; i < labels.length; i++) {
     labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 11);
   }
+  let maxLabelY = padT + innerH;
+  for (let i = labels.length - 1; i >= 0; i--) {
+    labels[i].y = Math.min(labels[i].y, maxLabelY);
+    maxLabelY = labels[i].y - 11;
+  }
   const labelSvg = labels.map((l) =>
-    `<text x="${W - padR + 4}" y="${Math.min(l.y, padT + innerH) + 3}" class="po-label" fill="${l.color}">${l.text}</text>`).join("");
+    `<text x="${W - padR + 4}" y="${l.y + 3}" class="po-label${l.pinned ? " pinned" : ""}" data-team="${l.team}" fill="${l.color}">${l.text}</text>`).join("");
 
   return `
     <div class="po-chart-wrap">
-      <svg viewBox="0 0 ${W} ${H}" class="po-chart" preserveAspectRatio="xMidYMid meet">
+      <svg viewBox="0 0 ${W} ${H}" class="po-chart${poPinned.size ? " has-pins" : ""}" preserveAspectRatio="xMidYMid meet">
         ${grid}${xLabels}${lines}${labelSvg}
         <g class="po-hover-layer">${hovers}</g>
       </svg>
@@ -841,7 +859,9 @@ function renderPoChart(p, colorOf) {
 }
 
 // Hover: nearest run by x on the hovered team's line → "ABB 34% · Mon 3:05 PM".
-function bindPoChartHovers(el, p) {
+// Click (works as tap on touch, where hover doesn't exist): onToggle pins/unpins
+// the team via renderPlayoffs' togglePin.
+function bindPoChartHovers(el, p, onToggle) {
   const wrap = el.querySelector(".po-chart-wrap");
   if (!wrap) return;
   const svg = wrap.querySelector("svg");
@@ -849,7 +869,12 @@ function bindPoChartHovers(el, p) {
   const hist = (p.history || []).filter((h) => h.teams);
   const t0 = new Date(hist[0].t).getTime();
   const tN = new Date(hist[hist.length - 1].t).getTime();
+  const rowOf = (tid) => el.querySelector(`.po-table tbody tr[data-team="${tid}"]`);
+  wrap.querySelectorAll(".po-label").forEach((lbl) => {
+    lbl.addEventListener("click", () => onToggle && onToggle(lbl.dataset.team));
+  });
   wrap.querySelectorAll(".po-hover").forEach((line) => {
+    line.addEventListener("click", () => onToggle && onToggle(line.dataset.team));
     line.addEventListener("mousemove", (e) => {
       const rect = svg.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0,
@@ -871,11 +896,14 @@ function bindPoChartHovers(el, p) {
       svg.classList.add("dimming");
       const vis = svg.querySelector(`.po-line[data-team="${line.dataset.team}"]`);
       if (vis) vis.classList.add("hot");
+      const row = rowOf(line.dataset.team);
+      if (row) row.classList.add("hot");
     });
     line.addEventListener("mouseleave", () => {
       tooltip.classList.remove("visible");
       svg.classList.remove("dimming");
       svg.querySelectorAll(".po-line.hot").forEach((l) => l.classList.remove("hot"));
+      el.querySelectorAll(".po-table tr.hot").forEach((r) => r.classList.remove("hot"));
     });
   });
 }
@@ -890,10 +918,17 @@ async function renderPlayoffs() {
     p = await r.json();
   } catch { return; }
 
-  // Stable per-team color: top 6 of the current payload sort get the palette.
-  const chipColor = {};
-  p.teams.forEach((t, i) => { chipColor[t.team_id] = i < PO_COLORS.length ? PO_COLORS[i] : PO_GRAY; });
-  const colorOf = (tid) => chipColor[tid] ?? PO_GRAY;
+  // Stable per-team color: top 6 of the current payload sort get the palette,
+  // the gray tail gets a reserved pin hue that shows only while pinned.
+  const baseColor = {}, pinColor = {};
+  p.teams.forEach((t, i) => {
+    baseColor[t.team_id] = i < PO_COLORS.length ? PO_COLORS[i] : PO_GRAY;
+    if (i >= PO_COLORS.length) {
+      pinColor[t.team_id] = PO_PIN_COLORS[(i - PO_COLORS.length) % PO_PIN_COLORS.length];
+    }
+  });
+  const colorOf = (tid) =>
+    (poPinned.has(String(tid)) && pinColor[tid]) || baseColor[tid] || PO_GRAY;
 
   const cell = (x, cls = "") =>
     `<td class="num po-cell ${cls}" style="--p:${x.toFixed(3)}">${poPct(x)}</td>`;
@@ -901,7 +936,7 @@ async function renderPlayoffs() {
     t.seed_dist.slice(0, p.playoff_team_count)
       .map((s) => cell(s, "po-seed")).join("");
   const rows = p.teams.map((t) => `
-    <tr>
+    <tr data-team="${t.team_id}"${poPinned.has(String(t.team_id)) ? ' class="po-pinned"' : ""}>
       <td class="po-team">
         <div class="team-name"><span class="po-chip" style="background:${colorOf(t.team_id)}"></span>${escHtml(t.name ?? "")}</div>
         <div class="team-owner">${escHtml(t.owner ?? "")}</div>
@@ -932,14 +967,49 @@ async function renderPlayoffs() {
       </tr></thead>
       <tbody>${rows}</tbody></table></div>
     ${(p.history || []).length ? `
-    <div class="po-chart-head"><h3>Odds over time</h3>${metricControl}</div>
+    <div class="po-chart-head"><h3>Odds over time</h3>${metricControl}
+      <span class="po-pin-hint">tap a line or table row to pin a team</span></div>
     <div id="po-chart-box">${renderPoChart(p, colorOf)}</div>` : ""}
     <p class="po-foot">Updated <time datetime="${p.generated_at}">${fmtSnapTime(p.generated_at)}</time>.
       Bracket weeks use today's rosters and rest-of-season projections — September
       call-ups, trades, and injuries aren't knowable, so odds at the extremes read
       a touch overconfident. #1–#${p.playoff_team_count} columns are seed probabilities.</p>`;
   el.hidden = false;
-  bindPoChartHovers(el, p);
+
+  // Re-render the chart (pins/metric changed) and sync the table's pinned
+  // state + chip colors in place — the table itself is never rebuilt, so its
+  // row listeners survive.
+  function refreshPoChart() {
+    const box = document.getElementById("po-chart-box");
+    if (box) { box.innerHTML = renderPoChart(p, colorOf); bindPoChartHovers(el, p, togglePin); }
+    el.querySelectorAll(".po-table tbody tr").forEach((row) => {
+      const tid = row.dataset.team;
+      row.classList.toggle("po-pinned", poPinned.has(tid));
+      const chip = row.querySelector(".po-chip");
+      if (chip) chip.style.background = colorOf(tid);
+    });
+  }
+  function togglePin(tid) {
+    tid = String(tid);
+    if (poPinned.has(tid)) poPinned.delete(tid); else poPinned.add(tid);
+    refreshPoChart();
+  }
+  bindPoChartHovers(el, p, togglePin);
+
+  // Table rows double as the chart legend: hover highlights the team's line,
+  // click/tap pins it (same toggle as clicking the line itself).
+  function setLineHot(tid, on) {
+    const svg = el.querySelector(".po-chart");
+    if (!svg) return;
+    svg.classList.toggle("dimming", on);
+    const line = svg.querySelector(`.po-line[data-team="${tid}"]`);
+    if (line) line.classList.toggle("hot", on);
+  }
+  el.querySelectorAll(".po-table tbody tr").forEach((row) => {
+    row.addEventListener("click", () => togglePin(row.dataset.team));
+    row.addEventListener("mouseenter", () => setLineHot(row.dataset.team, true));
+    row.addEventListener("mouseleave", () => setLineHot(row.dataset.team, false));
+  });
 
   el.querySelectorAll(".po-metric-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -948,8 +1018,7 @@ async function renderPlayoffs() {
       poMetric = next;
       el.querySelectorAll(".po-metric-btn").forEach((b) =>
         b.classList.toggle("active", Number(b.dataset.pom) === next));
-      const box = document.getElementById("po-chart-box");
-      if (box) { box.innerHTML = renderPoChart(p, colorOf); bindPoChartHovers(el, p); }
+      refreshPoChart();
     });
   });
 }

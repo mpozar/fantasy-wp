@@ -479,12 +479,23 @@ ol.contrib .m {
   margin: 0 auto;
 }
 .po-chart { width: 100%; height: auto; display: block; }
-.po-label { font-size: 9px; font-weight: 700; }
+.po-label { font-size: 9px; font-weight: 700; cursor: pointer; }
+.po-line { transition: opacity .08s ease; }
+/* Pinned focus: any pinned team renders full-color, the rest fade back.
+   Keep these BEFORE the .dimming rules so a hover-hot line still pops
+   over the pin fade (equal specificity → source order decides). */
+.po-chart.has-pins .po-line:not(.pinned) { opacity: .15; }
+.po-chart.has-pins .po-label:not(.pinned) { opacity: .3; }
 /* Hovering one line (its wide hit target) dims the rest so it pops;
    bindPoChartHovers pairs hit → visual line via data-team classes. */
-.po-chart.dimming .po-line { opacity: .25; transition: opacity .08s ease; }
+.po-chart.dimming .po-line { opacity: .25; }
 .po-chart.dimming .po-line.hot { opacity: 1; }
-.po-hover { cursor: crosshair; }
+.po-hover { cursor: pointer; }
+.po-pin-hint { font-size: .72rem; color: var(--muted); }
+/* Table rows double as the chart legend (hover ↔ line, click = pin). */
+.po-table tbody tr { cursor: pointer; }
+.po-table tbody tr.hot td { background: #eef2f8; }
+.po-table tbody tr.po-pinned td { background: #f3f6fb; }
 
 /* ── Week picker + future-week styling ── */
 .week-picker {
