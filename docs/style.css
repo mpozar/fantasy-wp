@@ -775,6 +775,11 @@ table.catwp tbody tr:last-child td { border-bottom: 0; }
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   text-anchor: end;
 }
+/* The left x-axis label anchors start (grows rightward); without this the
+   stylesheet's `end` beats the SVG text-anchor attribute and the label
+   renders off the left edge of the viewBox (only its tail visible). */
+.wp-chart .axis.start,
+.po-chart .axis.start { text-anchor: start; }
 .wp-chart polyline.home,
 .wp-chart .dot.home {
   fill: none;

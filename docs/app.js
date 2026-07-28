@@ -203,7 +203,7 @@ function renderChart(history, currentModel, week, scope, ann) {
 
   // X-axis labels: first + last timestamp
   const xLabels = `
-    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtWeekdayTime(pts[0].computed_at)}</text>
+    <text x="${padL}" y="${H - 6}" class="axis start" text-anchor="start">${fmtWeekdayTime(pts[0].computed_at)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(pts[pts.length - 1].computed_at)}</text>`;
 
   // Hover targets — one invisible vertical strip per data point.
@@ -815,7 +815,7 @@ function renderPoChart(p, colorOf) {
     `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" class="grid ${v === 0.5 ? "mid" : ""}"></line>` +
     `<text x="${padL - 6}" y="${y(v) + 3}" class="axis">${(v * 100) | 0}%</text>`).join("");
   const xLabels = hist.length > 1 ? `
-    <text x="${padL}" y="${H - 6}" class="axis" text-anchor="start">${fmtDateTime(hist[0].t)}</text>
+    <text x="${padL}" y="${H - 6}" class="axis start" text-anchor="start">${fmtDateTime(hist[0].t)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtDateTime(hist[hist.length - 1].t)}</text>` : "";
 
   // Colored series last (paint on top of the gray tail), pinned last of all,
