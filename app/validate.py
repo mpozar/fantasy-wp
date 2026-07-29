@@ -39,7 +39,7 @@ when it's needed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from app import db, sim, stats
 
@@ -60,6 +60,18 @@ _LIVE_RECON_CATS = {18, 47, 41, 63, 83}   # OPS, ERA, WHIP, QS, SVHD
 WP_SWING = 0.15           # |home_wp - prev| flagged for review
 RATE_DIVERGENCE = 0.40    # projected rate >40% off current → anomaly
 MIN_OUTS_FOR_RATE = 60    # ~20 IP banked before a rate divergence is meaningful
+# …AND the gap must clear an absolute floor in rate points. The relative test
+# alone is mis-specified for ERA/WHIP: its denominator is the *current* rate, so
+# a hot small sample (a 1.12 ERA over ~22 IP) blows past 40% on nothing but
+# ordinary mean reversion, while the bug this check exists for — the dropped-
+# components "8.37 ERA projecting 3.76" — is only a 0.55 relative gap. Measured
+# over all 25 ANOM_RATE_DIVERGENCE instances ever recorded (2026-06-25 → 07-24,
+# every one triaged benign small-sample regression): max benign gap was 1.59 ERA
+# / 0.39 WHIP points, vs 4.61 ERA points for the 3.76 bug. So an absolute floor
+# separates them cleanly where the ratio cannot. Raising RATE_DIVERGENCE instead
+# would have to exceed 1.42 to quiet the noise and would blind the check to its
+# own target case.
+RATE_DIVERGENCE_ABS = {47: 2.50, 41: 0.80}   # ERA, WHIP — rate points
 PROJ_BELOW_CURRENT_TOL = 0.5  # counting: projected may dip this far below current (MC noise)
 MAX_SP_UNITS_PER_WEEK = 2.3    # ceiling on SP starts per 7 days; scaled by actual
                                # period length (some periods — e.g. the All-Star
@@ -283,7 +295,11 @@ def check_wp_rail_flip(view) -> list[Finding]:
 
 def check_rate_divergence(view) -> list[Finding]:
     """A projected rate far from the current one, once a real sample is banked,
-    is the '8.37 ERA projecting 3.76' smell."""
+    is the '8.37 ERA projecting 3.76' smell.
+
+    Requires the gap to clear BOTH a relative (`RATE_DIVERGENCE`) and an absolute
+    (`RATE_DIVERGENCE_ABS`) threshold — see the constants for why the ratio alone
+    can't tell mean reversion off a hot small sample from a real components drop."""
     out = []
     for sid in (sim.STAT_ERA, sim.STAT_WHIP):
         avg = view["cat_avg"].get(sid)
@@ -292,7 +308,8 @@ def check_rate_divergence(view) -> list[Finding]:
         for idx, who, st in ((0, "home", view["home_state"]), (1, "away", view["away_state"])):
             cur, proj, outs = st.get(sid), avg[idx], (st.get(sim.STAT_OUTS) or 0)
             if cur and proj and outs >= MIN_OUTS_FOR_RATE and cur > 0:
-                if abs(proj - cur) / cur > RATE_DIVERGENCE:
+                gap = abs(proj - cur)
+                if gap / cur > RATE_DIVERGENCE and gap > RATE_DIVERGENCE_ABS.get(sid, 0):
                     out.append(Finding("ANOM_RATE_DIVERGENCE", "warn", view["matchup_id"],
                                        f"{who} {NAME[sid]} projected {proj:.2f} vs current "
                                        f"{cur:.2f} ({outs / 3:.0f} IP banked)"))
@@ -822,23 +839,36 @@ def _load_state_prev(conn, matchup_id: int, team_id: int) -> dict[int, float]:
 _FINAL_GAME_STATES = sim.FINAL_GAME_STATES
 
 
-def _side_remaining(conn, period_id: int, team_id: int, sched: dict) -> tuple[int, int]:
+def _side_remaining(conn, period_id: int, team_id: int, sched: dict,
+                    as_of: date | None = None) -> tuple[int, int]:
     """(roster_n, remaining_active_games) for one fantasy side. `roster_n` is the
     fetched roster size (0 ⇒ a real roster-fetch failure); `remaining_active_games`
     counts non-Final games for players in active (non-bench/IL) slots — 0 with a
     fetched roster means the side is done for the week (nothing left to budget),
-    which is benign rather than a failure. Used by check_empty_budgets."""
+    which is benign rather than a failure. Used by check_empty_budgets.
+
+    **Must exclude every game `build_budgets` excludes, or the gate it feeds
+    mis-fires.** Two filters mirror the sim: `sched` is loaded with `now` by the
+    caller (so the past-date guard drops stale non-Final rows — see
+    `sim.load_schedule_by_team`), and unplayable players (OUT/INJURY_RESERVE, or
+    any status with no return estimate) are skipped via `sim._is_playable` even
+    when parked in an *active* slot. Without them this counted games the sim had
+    already dropped → `remaining > 0` while budgets were legitimately empty →
+    spurious INV_EMPTY_BUDGETS every Sun→Mon (2026-07-26/27: m94/m95/m96, 83
+    occurrences, all benign end-of-week drain)."""
     roster = sim.load_team_roster(conn, period_id, team_id)
     rem = 0
     for p in roster:
         if p.get("lineup_slot_id") in sim.NON_COUNTING_SLOTS:   # bench / IL → don't count
+            continue
+        if not sim._is_playable(p, as_of):                      # OUT/IR → the sim won't budget him
             continue
         rem += sum(1 for g in sched.get(p["pro_team_id"], [])
                    if g.get("game_status") not in _FINAL_GAME_STATES)
     return len(roster), rem
 
 
-def load_view(conn, matchup_id: int) -> dict | None:
+def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
     m = conn.execute(
         "SELECT home_team_id, away_team_id, matchup_period_id, winner FROM matchups WHERE id=?",
         (matchup_id,)).fetchone()
@@ -854,9 +884,17 @@ def load_view(conn, matchup_id: int) -> dict | None:
     # Per-side roster size + remaining *active* games — lets check_empty_budgets
     # tell a real fetch failure (no roster) from the benign end-of-week case
     # (roster present but all active players' games Final → nothing to budget).
-    sched = sim.load_schedule_by_team(conn, m["matchup_period_id"])
-    h_roster_n, h_rem = _side_remaining(conn, m["matchup_period_id"], m["home_team_id"], sched)
-    a_roster_n, a_rem = _side_remaining(conn, m["matchup_period_id"], m["away_team_id"], sched)
+    # `now` matters: it turns on the same past-date guard `cli.compute` passes, so
+    # the "remaining games" count here matches what build_budgets actually saw.
+    sched = sim.load_schedule_by_team(conn, m["matchup_period_id"], now=now)
+    as_of = None
+    if now:
+        try:
+            as_of = datetime.fromisoformat(now).date()
+        except (ValueError, TypeError):
+            as_of = None
+    h_roster_n, h_rem = _side_remaining(conn, m["matchup_period_id"], m["home_team_id"], sched, as_of)
+    a_roster_n, a_rem = _side_remaining(conn, m["matchup_period_id"], m["away_team_id"], sched, as_of)
     d = json.loads(snaps[0]["details_json"] or "{}")
     cat_wp = d.get("category_wp", [])
     have_tally = all(k in d for k in ("home_wins", "away_wins", "ties"))
@@ -899,7 +937,7 @@ def run(conn, period_ids: list[int], *, now: str | None = None,
     placeholders = ",".join("?" * len(period_ids))
     mids = [r["id"] for r in conn.execute(
         f"SELECT id FROM matchups WHERE matchup_period_id IN ({placeholders})", period_ids)]
-    views = [v for v in (load_view(conn, mid) for mid in mids) if v]
+    views = [v for v in (load_view(conn, mid, now=now) for mid in mids) if v]
 
     findings: list[Finding] = []
     for view in views:

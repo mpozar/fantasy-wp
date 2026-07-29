@@ -7,6 +7,7 @@ absurdly low" bug, encoded here as a permanent regression guard.
 
 import json
 import sqlite3
+from datetime import date
 
 from app import sim
 from app import validate as v
@@ -83,6 +84,31 @@ def test_rate_divergence_quiet_on_small_sample():
     view = _view(cat_avg={sim.STAT_ERA: (3.76, 4.0)},
                  home_state={sim.STAT_ERA: 8.37, sim.STAT_OUTS: 18})
     assert v.check_rate_divergence(view) == []
+
+
+def test_rate_divergence_quiet_on_hot_small_sample_regression():
+    """The worst historical false positive: a *hot* current rate makes the
+    relative test trivially easy to trip, because the current rate is the
+    denominator. m83 2026-07-02, ERA 1.12 banked over 24 IP projecting 2.71, is
+    ordinary mean reversion — a 1.42 relative gap (larger than the 8.37→3.76
+    bug's 0.55!) but only 1.59 ERA points. Every one of the 25
+    ANOM_RATE_DIVERGENCE instances ever recorded was this shape and triaged
+    benign, so the absolute floor is what makes the check mean anything."""
+    view = _view(cat_avg={sim.STAT_ERA: (2.71, 4.0)},
+                 home_state={sim.STAT_ERA: 1.12, sim.STAT_OUTS: 72})
+    assert v.check_rate_divergence(view) == []
+    # …and the same for the WHIP variant (m89, 0.78 → 1.09 over 24 IP).
+    view = _view(cat_avg={sim.STAT_WHIP: (1.09, 1.2)},
+                 home_state={sim.STAT_WHIP: 0.78, sim.STAT_OUTS: 72})
+    assert v.check_rate_divergence(view) == []
+
+
+def test_rate_divergence_still_catches_big_absolute_gap_at_low_current():
+    # The floor must not blind the check whenever current is low — a projection
+    # 3+ ERA points off a 1.50 current is not mean reversion, it's a real drop.
+    view = _view(cat_avg={sim.STAT_ERA: (5.20, 4.0)},
+                 home_state={sim.STAT_ERA: 1.50, sim.STAT_OUTS: 72})
+    assert any(x.code == "ANOM_RATE_DIVERGENCE" for x in v.check_rate_divergence(view))
 
 
 def test_rate_range_skips_current_off_tiny_sample():
@@ -751,3 +777,83 @@ def test_pipeline_freshness_decided_period_skips_fetch_staleness():
     conn.commit()
     codes = {x.code for x in v.check_pipeline_freshness(conn, "2026-07-27T07:31:00+00:00")}
     assert codes == set()   # no ANOM_STALE_FETCH (decided) and snapshot is fresh
+
+
+# ── _side_remaining: the gate feeding INV_EMPTY_BUDGETS must mirror the sim ──
+# Regression for 2026-07-26/27 (m94/m95/m96, 83 spurious error-severity
+# occurrences): the count included games build_budgets had already excluded, so
+# `active_remaining > 0` while budgets were legitimately 0 at end-of-week, and the
+# benign-end-of-week skip never engaged.
+
+def _remaining_db():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE team_rosters (matchup_period_id INT, fantasy_team_id INT,
+            player_id INT, lineup_slot_id INT, status TEXT, fetched_at TEXT);
+        CREATE TABLE players (id INT PRIMARY KEY, full_name TEXT, pro_team_id INT,
+            default_position_id INT, eligible_slots_json TEXT, injury_status TEXT);
+        CREATE TABLE player_injuries (norm_name TEXT, return_date TEXT);
+        CREATE TABLE player_projections (player_id INT, split_id INT, stat_id INT, value REAL);
+        CREATE TABLE team_schedule (matchup_period_id INT, game_pk INT, game_date TEXT,
+            pro_team_id INT, opponent_pro_team_id INT, is_home INT,
+            probable_pitcher_mlbam_id INT, probable_pitcher_name TEXT, game_status TEXT,
+            current_inning INT, inning_state TEXT, team_runs INT, opponent_runs INT,
+            PRIMARY KEY (matchup_period_id, game_pk, pro_team_id));
+        """
+    )
+    return conn
+
+
+def _put_player(conn, pid, *, slot, injury="NORMAL", team=2):
+    conn.execute("INSERT INTO team_rosters VALUES (16,20,?,?,'NORMAL','x')", (pid, slot))
+    conn.execute("INSERT INTO players VALUES (?,?,?,1,'[13]',?)",
+                 (pid, f"Player {pid}", team, injury))
+
+
+def _put_game(conn, *, pk, date, status, team=2):
+    conn.execute(
+        "INSERT INTO team_schedule VALUES (16,?,?,?,99,1,NULL,NULL,?,NULL,NULL,NULL,NULL)",
+        (pk, date, team, status))
+
+
+def test_side_remaining_counts_healthy_active_player():
+    # sanity: the filters must not swallow a real remaining game.
+    conn = _remaining_db()
+    _put_player(conn, 1, slot=13)                                  # active pitcher slot
+    _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")   # period 16 = Jul 20-26
+    conn.commit()
+    sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T12:00:00+00:00")
+    roster_n, rem = v._side_remaining(conn, 16, 20, sched)
+    assert (roster_n, rem) == (1, 1)
+
+
+def test_side_remaining_skips_out_player_in_active_slot():
+    """An OUT/INJURY_RESERVE player parked in an *active* slot is excluded by
+    sim._is_playable, so build_budgets never budgets him — the count must agree,
+    or an all-Final side reads as still having games to play."""
+    conn = _remaining_db()
+    _put_player(conn, 1, slot=13, injury="OUT")
+    _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")
+    conn.commit()
+    sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T12:00:00+00:00")
+    roster_n, rem = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
+    assert roster_n == 1          # roster WAS fetched (so not a fetch failure)
+    assert rem == 0               # …but nothing left to budget → benign end-of-week
+
+
+def test_side_remaining_drops_stale_past_dated_game():
+    """The past-date guard is opt-in via `now` (sim.load_schedule_by_team). load_view
+    now passes it, so a stale never-Final row can't inflate the count the way it did
+    for the whole 2026-07-26 Sunday-night drain."""
+    conn = _remaining_db()
+    _put_player(conn, 1, slot=13)
+    _put_game(conn, pk=1, date="2026-07-24", status="Scheduled")   # stale: never went Final
+    conn.commit()
+    now = "2026-07-27T02:00:00+00:00"                              # cutoff = Jul 26
+    assert v._side_remaining(conn, 16, 20,
+                             sim.load_schedule_by_team(conn, 16, now=now))[1] == 0
+    # …and without `now` the guard is off (old callers/tests keep prior behavior)
+    assert v._side_remaining(conn, 16, 20,
+                             sim.load_schedule_by_team(conn, 16))[1] == 1
