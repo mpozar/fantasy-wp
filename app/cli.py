@@ -1442,10 +1442,6 @@ def publish(rebuild: bool) -> None:
     finally:
         conn.close()
 
-# Max WP-over-time points embedded per matchup, per model version, in
-# data.json. The DB keeps every snapshot (so no history is ever lost); we
-# only thin what the static site downloads. ~200 points is far more than the
-# ~640px-wide chart can resolve, so downsampled graphs look identical to full.
 @cli.command("playoffs")
 @click.option("--sims", type=int, default=None,
               help="Season-simulation count (default: playoffs.DEFAULT_SEASON_SIMS).")
@@ -1563,46 +1559,104 @@ def playoffs_cmd(sims: int | None, samples: int | None) -> None:
         conn.close()
 
 
-MAX_HISTORY_POINTS = 200
-RECENT_FULL_HOURS = 18   # keep points from the last ~game-day at full 5-min
-                         # resolution (live week only) so the "Today" chart zoom
-                         # and hover are granular; older history is still thinned.
+# WP-over-time points published per matchup, per model version (the DB keeps
+# every snapshot — this only thins what the static site downloads).
+#
+# Two tiers, both anchored to the series itself so a rebuild is deterministic:
+# the last RECENT_FULL_HOURS of a week's own history stay at raw 5-min
+# resolution, and everything older is snapped to a round OLDER_GRID_MINUTES
+# wall-clock cadence. Do NOT go back to "N evenly-spaced points": the step then
+# depends on how long the series happens to be (a 7-day week landed on a ~55-min
+# grid), and thinning *drops* extremes rather than aggregating them — the
+# 2026-08-02 m98 −78pp settle cliff fell entirely between two kept points, so
+# the chart drew a gentle 55-min slope where the real series had a wall.
+MAX_HISTORY_POINTS = 2400   # backstop only; the grid below is the real bound
+                            # (a 7-day week ≈ 1200 pts). Not expected to bind.
+RECENT_FULL_HOURS = 24      # tail of each week's history kept at raw 5-min
+                            # resolution — the "Today"/"Active" zoom, and where
+                            # end-of-week resolution cliffs live.
+OLDER_GRID_MINUTES = 15     # round cadence for the rest of the week
+MAX_CAT_HISTORY_POINTS = 200  # a point's category_wp is ~10x the size of the
+                              # point itself, so it stays capped at the old
+                              # count: the WP *line* gets finer, the clickable
+                              # category-breakdown history does not.
 
 
 def _downsample_history(history: list[dict],
                         max_points: int = MAX_HISTORY_POINTS,
-                        recent_since: str | None = None) -> list[dict]:
+                        recent_since: str | None = None,
+                        recent_hours: int = RECENT_FULL_HOURS,
+                        grid_minutes: int = OLDER_GRID_MINUTES,
+                        max_cat_points: int = MAX_CAT_HISTORY_POINTS) -> list[dict]:
     """Thin a matchup's snapshot history for the published payload.
 
-    Grouped by model_version (the chart only ever plots one model's series),
-    each group is reduced to evenly-spaced points that always include its first
-    and last. Nothing is deleted from the DB — this only shrinks data.json so past
-    weeks keep their graphs without unbounded growth.
+    Grouped by model_version (the chart only ever plots one model's series).
+    Within a group: points in the last `recent_hours` **of that group's own
+    history** are kept in full; older ones are snapped to a `grid_minutes`
+    wall-clock grid (first snapshot in each bucket), then hard-capped at
+    `max_points` evenly spaced. First and last points always survive.
 
-    `recent_since` (UTC ISO): points on/after it are kept at **full** resolution
-    (only the older remainder is thinned to `max_points`). The live week passes
-    this so the current game-day stays 5-min-granular for the "Today" zoom and
-    fine hover; everything else passes None and thins the whole series as before.
+    Anchoring the recent window to the series' last point rather than "now" is
+    what makes it stable: `publish --rebuild` runs daily over every week, so a
+    wall-clock window would slide off a finished week and silently re-thin the
+    detail it had while live (that is how week 17's settle cliff was lost). This
+    way a week keeps its final game-day at 5-min resolution permanently, and for
+    the live week "series end" is the current tick anyway.
+
+    `recent_since` (UTC ISO) overrides the derived cutoff; `recent_hours=0`
+    disables the full-resolution tail entirely.
+
+    `category_wp` is stripped from all but `max_cat_points` evenly-spaced points
+    that carry it (see MAX_CAT_HISTORY_POINTS).
     """
     by_ver: dict[str, list[dict]] = {}
     for h in history:
         by_ver.setdefault(h["model_version"], []).append(h)
 
+    def even(rows: list[dict], n: int) -> list[dict]:
+        """`n` evenly-spaced rows, endpoints included."""
+        if len(rows) <= n or n < 2:
+            return rows
+        step = (len(rows) - 1) / (n - 1)
+        return [rows[i] for i in sorted({round(i * step) for i in range(n)})]
+
+    def cutoff_for(rows: list[dict]) -> str | None:
+        if recent_since is not None:
+            return recent_since
+        if not recent_hours:
+            return None
+        last = datetime.fromisoformat(rows[-1]["computed_at"])
+        return (last - timedelta(hours=recent_hours)).isoformat(timespec="seconds")
+
     def thin(rows: list[dict]) -> list[dict]:
-        if recent_since is None:
+        cutoff = cutoff_for(rows)
+        if cutoff is None:
             older, recent = rows, []
         else:  # ISO-8601 UTC strings sort lexicographically
-            older = [r for r in rows if r["computed_at"] < recent_since]
-            recent = [r for r in rows if r["computed_at"] >= recent_since]
-        n = len(older)
-        if n > max_points:
-            step = (n - 1) / (max_points - 1)
-            idx = sorted({round(i * step) for i in range(max_points)})
-            older = [older[i] for i in idx]
-        return older + recent   # recent kept at full resolution
+            older = [r for r in rows if r["computed_at"] < cutoff]
+            recent = [r for r in rows if r["computed_at"] >= cutoff]
+        if grid_minutes:
+            bucketed, seen = [], set()
+            for r in older:
+                t = datetime.fromisoformat(r["computed_at"])
+                b = (t.replace(minute=0, second=0, microsecond=0)
+                     + timedelta(minutes=(t.minute // grid_minutes) * grid_minutes))
+                if b not in seen:
+                    seen.add(b)
+                    bucketed.append(r)
+            older = bucketed
+        return even(older, max_points) + recent   # recent kept at full resolution
 
     out = [h for rows in by_ver.values() for h in thin(rows)]
     out.sort(key=lambda h: h["computed_at"])
+    # Keep the heavy per-snapshot category history at its old volume.
+    with_cat = [h for h in out if "category_wp" in h]
+    if len(with_cat) > max_cat_points:
+        keep = {id(h) for h in even(with_cat, max_cat_points)}
+        for h in with_cat:
+            if id(h) not in keep:
+                h.pop("category_wp", None)
+                h.pop("n_sims", None)
     return out
 
 
@@ -1922,13 +1976,10 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
                 pt["category_wp"] = cwp
                 pt["n_sims"] = n
         history.append(pt)
-    # Live week: keep the last ~game-day at full resolution (granular "Today"
-    # zoom + hover); past/upcoming weeks thin the whole series.
-    recent_since = None
-    if live:
-        recent_since = (datetime.now(timezone.utc)
-                        - timedelta(hours=RECENT_FULL_HOURS)).isoformat(timespec="seconds")
-    history = _downsample_history(history, recent_since=recent_since)
+    # Every week keeps the last RECENT_FULL_HOURS of its OWN history at raw
+    # 5-min resolution (the window is derived from the series' last point, not
+    # from `now` — see _downsample_history); older points go on a round grid.
+    history = _downsample_history(history)
     details = None
     if wp_row and wp_row["details_json"]:
         try:

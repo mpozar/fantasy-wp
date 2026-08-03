@@ -1093,8 +1093,9 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
     "Finalization lag") happens in dead time outside any window, so the Active line
     **ends mid-climb** (e.g. "ends at 3:45 AM at 94%, never shows 100%"). This is by
     design, not a bug; **Full/Matchup** plot linear real time and show the final climb.
-    Combined with the 200-point downsample, Active's last visible point is the last
-    *in-window* point that survived thinning.
+    Active's last visible point is the last *in-window* point that survived thinning
+    (since 2026-08-03 the final 24h are un-thinned, so that is the last raw 5-min
+    tick before the window closed).
 - **Chart annotations (the "✦ Annotate" toggle).** Off by default; overlays major
   events + trend spans on the WP chart in *any* scope (placed via the same
   `xt(timestamp)→x` mapping, so they land correctly even in Active's collapsed
@@ -1327,14 +1328,18 @@ time and the signatures that explain ~every swing fast:
     only; for an actual rate quote use the scraped value or `matchup_facts.py`'s
     final-category output. The **win%** (`home_wins/n_sims`) is always reliable.
 12. **Reconcile against the *downsampled* site history before explaining "what the
-    user saw."** `publish` thins each matchup to `MAX_HISTORY_POINTS` (200) for
-    `data.json` (≈ one point every couple of hours over a season), so a brief
-    raw-DB blip (a 15–20 min dip across 3–4 five-minute snapshots) is invisible on
-    the live chart. Don't anchor a narrative on a transient `wp_snapshots` value the
-    user could never have seen — load the matchup's published `history` from
-    `docs/data.json` and check whether the point survived downsampling. (This burned
-    a "Knights were at 48%" explanation: 48% was a real 20-min raw dip that the site
-    never plotted; at the time the user referenced, the chart showed 64%.)
+    user saw."** `publish` keeps each week's final `RECENT_FULL_HOURS` (24) of
+    history at raw 5-min resolution and snaps everything older to an
+    `OLDER_GRID_MINUTES` (15) grid, so a brief mid-week raw-DB blip (a 5–10 min dip
+    across 1–2 snapshots) can still be invisible on the chart. Don't anchor a
+    narrative on a transient `wp_snapshots` value the user could never have seen —
+    load the matchup's published `history` from `docs/history/<period>.json` and
+    check whether the point survived downsampling (`wp_diff.py` prints this as
+    "published site"). (This burned a "Knights were at 48%" explanation: 48% was a
+    real 20-min raw dip that the site never plotted; at the time the user
+    referenced, the chart showed 64%. Under the *old* rule — a flat 200 points per
+    week, ≈55-min steps — even a 78pp end-of-week cliff could vanish: 2026-08-03
+    m98, which is why the 24h tail is now un-thinned.)
 13. **A banked lead's category win% is about *projected end-of-week* totals, so
     "leading ⇒ favored" only holds for high-event cats.** A big counting lead is a
     lock (a 9-run R lead sat ~99% all of the final day — correctly). But a slim lead
@@ -1643,9 +1648,29 @@ exception 2026-06-04: a corrupted window of period-10 snapshots had its `home_wp
 holds the original computed values. See `INCIDENTS.md`. Overwriting computed WP
 is otherwise not something to do lightly.) Payload size
 is handled at *publish* time instead: `_downsample_history` thins each matchup's
-history to `MAX_HISTORY_POINTS` (200) per model version when writing `data.json`,
-so the static site stays small while the graphs look identical (the chart is
-~640px wide — it can't resolve more than ~200 points anyway).
+history per model version when writing the per-week history files.
+
+**Two tiers, both anchored to the series, not to the clock (rewritten 2026-08-03):**
+- the last `RECENT_FULL_HOURS` (24) of **that week's own history** stay at raw
+  5-min resolution — the "Today"/"Active" zoom, and where end-of-week resolution
+  cliffs live;
+- everything older snaps to a round `OLDER_GRID_MINUTES` (15) wall-clock grid
+  (first snapshot per bucket), with `MAX_HISTORY_POINTS` (2400) as a backstop that
+  shouldn't bind (a 7-day week lands ≈1200 points);
+- `category_wp` (≈10× a point's own size) is capped separately at
+  `MAX_CAT_HISTORY_POINTS` (200) evenly-spaced carriers, so the *line* got finer
+  without multiplying the payload. `app.js` therefore matches a clicked point to
+  the **nearest** category_wp carrier, not an exact timestamp.
+
+Why not the old rule (a flat 200 evenly-spaced points): the step then depends on
+how long the series happens to be — a 7-day week landed on a ~55-min grid, a value
+nobody chose — and even thinning *drops* extremes rather than aggregating them, so
+short-lived truth disappears. It cost the week-17 m98 settle cliff: an 80%→2% drop
+in one tick published as a gentle 55-min slope from 71.8% to 1.5%, with the 80.2%
+peak gone entirely. Anchoring the fine window to the series' **last point** (not
+`now`) matters because `daily.sh` runs `publish --rebuild` over every week: a
+wall-clock window would slide off a finished week and silently re-thin the detail
+it had while live. Tests: `tests/test_publish_history.py`.
 
 Mixed-model history is *not* a reason to delete: the front-end chart filters to
 the matchup's current `model_version` (`renderChart`), so old-model points are

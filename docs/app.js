@@ -36,6 +36,9 @@ function loadAllHistory(data, firstWeek) {
 // WP-chart SVG viewBox width — shared by renderChart (drawing) and
 // bindChartHovers (pixel-space hover mapping) so they can't drift apart.
 const CHART_VIEWBOX_W = 600;
+// Max hover strips per chart (see renderChart) — the WP line itself is never
+// subsampled, only the pointer targets.
+const MAX_HOVER_POINTS = 300;
 
 // "Mon 3:05 PM" — used for the WP chart x-axis labels and hover tooltip,
 // where the span is a single matchup week so the weekday is unambiguous.
@@ -206,11 +209,25 @@ function renderChart(history, currentModel, week, scope, ann) {
     <text x="${padL}" y="${H - 6}" class="axis start" text-anchor="start">${fmtWeekdayTime(pts[0].computed_at)}</text>
     <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${fmtWeekdayTime(pts[pts.length - 1].computed_at)}</text>`;
 
-  // Hover targets — one invisible vertical strip per data point.
-  const stripHalfW = pts.length > 1
-    ? Math.max(6, (innerW / Math.max(pts.length - 1, 1)) / 2)
+  // Hover targets — one invisible vertical strip per data point, but capped:
+  // the published series is 5-min-granular for the last 24h (~288 points/day,
+  // ~1200 for a full week), and one <g> + two listeners per point across six
+  // charts is real DOM weight for strips only ~0.5px wide. The polyline still
+  // plots EVERY point (that's what makes cliffs visible) — only the hover layer
+  // is subsampled, evenly, endpoints included. The 3px floor keeps neighbouring
+  // strips adjacent rather than overlapping, so a hover resolves to the nearest
+  // point instead of whichever strip happens to be on top.
+  const hoverPts = pts.length > MAX_HOVER_POINTS
+    ? (() => {
+        const step = (pts.length - 1) / (MAX_HOVER_POINTS - 1);
+        return [...new Set(Array.from({ length: MAX_HOVER_POINTS },
+                                      (_, i) => Math.round(i * step)))].map((i) => pts[i]);
+      })()
+    : pts;
+  const stripHalfW = hoverPts.length > 1
+    ? Math.max(1.5, (innerW / Math.max(hoverPts.length - 1, 1)) / 2)
     : 30;
-  const hoverPoints = pts.map((p) => {
+  const hoverPoints = hoverPts.map((p) => {
     const px = x(p);
     return `
       <g class="hover-point"
@@ -323,17 +340,25 @@ function bindChartHovers(root) {
         tooltip.classList.remove("visible");
       });
       // Click a point → show the category win rates as they were at that time.
-      // Only live-week points carry per-snapshot category_wp (see _matchup_block);
-      // for other weeks this is a no-op.
+      // Only the live + previous week carry per-snapshot category_wp (see
+      // _matchup_block); for other weeks this is a no-op. category_wp rides a
+      // coarser subset of points than the WP line (MAX_CAT_HISTORY_POINTS), so
+      // match the NEAREST carrier rather than the exact timestamp — the panel
+      // labels itself with that snapshot's own time.
       pt.addEventListener("click", () => {
         const detailsEl = pt.closest(".details");
         if (!detailsEl) return;
         const idx = Number(detailsEl.id.replace("details-", ""));
         const m = active.week && active.week.matchups[idx];
         if (!m) return;
-        const point = (m.history || []).find(
-          (h) => h.computed_at === pt.dataset.time && h.category_wp);
-        if (!point) return;  // no category history at this point (e.g. past week)
+        const t = new Date(pt.dataset.time).getTime();
+        let point = null, best = Infinity;
+        for (const h of m.history || []) {
+          if (!h.category_wp) continue;
+          const d = Math.abs(new Date(h.computed_at).getTime() - t);
+          if (d < best) { best = d; point = h; }
+        }
+        if (!point) return;  // no category history at all (e.g. past week)
         const cats = active.data.league.categories_by_group;
         const panel = document.getElementById("catwp-" + idx);
         if (!panel) return;
