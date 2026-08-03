@@ -255,6 +255,20 @@ Seeded from the 2026-06-08 redesign + review (the bugs that motivated this skill
 - **Name the team in the hook, not just a generic phrase.** Prefer "a pitching sweep
   Saturday sealed it for Jo Mamas" over "a pitching sweep sealed Saturday" — the recap
   may be read on its own, so the subject should be explicit. [owner, 2026-06-16]
+- **A run's MANNER comes from the runner's own movement event, never the plate-appearance
+  description.** In the MLB feed, `result.description` names only the batter's outcome;
+  wild pitches, passed balls, balks, steals of home and errors are recorded on
+  `runners[].details.event` (and in `playEvents[].details`), attached to the at-bat they
+  happened during. So a play reading "X flies out to left" with a runner showing
+  `movement.end = "score"` is **not** automatically a sacrifice fly. Two cheap tells:
+  `result.rbi == 0` and the runner's `details.event`. Check both before naming the play
+  in prose. [owner, 2026-08-03]
+  - *Worked example:* m98's decisive tying run — I wrote "scored on Anthony Seigler's
+    sacrifice fly" off the PA description; the feed says `event='Flyout'`, `rbi=0`, and
+    the runner line reads `Caleb Durbin 3B->score event='Wild Pitch'` ("Wild pitch by
+    pitcher Wyatt Mills. Caleb Durbin scores."), with Monasterio scoring behind him on a
+    passed ball. The owner caught it. The WP mechanism was unaffected — but the recap is
+    reader-facing, and a wrong play is a wrong recap.
 - **Pin a marker to the *sustained* swing, not the single steepest tick — and search
   a wide enough window.** Two traps when self-selecting a marker's `at`: (1) the single
   biggest tick-to-tick jump can be a **blip that reverts** (a momentary stale/partial

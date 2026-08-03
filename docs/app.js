@@ -1103,23 +1103,33 @@ function render(data) {
 
   renderSpotlight(data);
   renderWeek(data, defaultWeek);
+  // The ✦ Annotate toggle gates the chart OVERLAY only — the write-up shows
+  // whenever a panel is expanded (see fetchSummary). So the summaries have to be
+  // loaded for the visible week even with the toggle off, or the write-up is
+  // simply never there (it wasn't, until 2026-08-03: `summaryCache[mid]` stayed
+  // undefined because ensureSummaries only ran behind `if (chartAnnotate)`).
+  // After first paint, then re-render in place — tiny files, null-cached.
+  ensureSummaries(defaultWeek).then(() => {
+    if (active.week === defaultWeek) rerenderPreservingPanels();
+  });
 
   document.getElementById("week-select").addEventListener("change", async (e) => {
     const periodId = parseInt(e.target.value, 10);
     const w = data.weeks.find((w) => w.matchup_period_id === periodId);
     if (!w) return;
-    if (chartAnnotate) await ensureSummaries(w);   // load this week's annotations first
+    await ensureSummaries(w);   // write-up + (if toggled) overlay for this week
     renderWeek(data, w);
   });
 
-  // Annotate toggle: lazily load this week's annotation files, then overlay them
-  // on the chart (whatever scope is selected). Off → instant, no extra fetches.
+  // Annotate toggle: overlay this week's annotations on the chart (whatever scope
+  // is selected). The files are already loaded for the write-up, so ensureSummaries
+  // is a cache hit here — kept for the case where the toggle beats the fetch.
   document.getElementById("annot-toggle").addEventListener("click", async (e) => {
     chartAnnotate = !chartAnnotate;
     const btn = e.currentTarget;
     btn.classList.toggle("active", chartAnnotate);
     btn.setAttribute("aria-pressed", String(chartAnnotate));
-    if (chartAnnotate && active.week) await ensureSummaries(active.week);
+    if (active.week) await ensureSummaries(active.week);
     rerenderPreservingPanels();
   });
 
