@@ -395,6 +395,11 @@ def fetch() -> None:
         # can't see whether a scrape was attempted.
         from app import validate as _v
         health = _v.check_scrape_health(in_progress, scraped_count)
+        # ...and its blind spot: a scrape that returns a full set of cells that
+        # never change. Needs the DB (a frozen run is only visible across ticks),
+        # so it takes `conn` rather than the two counters.
+        health += _v.check_scrape_staleness(
+            conn, in_progress, shape.current_matchup_period, now)
         if health:
             _v.persist(conn, health, now)
             for f in health:

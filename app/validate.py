@@ -39,7 +39,7 @@ when it's needed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app import db, sim, stats
 
@@ -587,6 +587,125 @@ def check_scrape_health(in_progress: int, scraped_cells: int) -> list[Finding]:
                         f"0 cells — display cats falling back to laggy REST; check ESPN "
                         f"auth / .playwright_profile (re-run scripts/espn_auth_setup.py)")]
     return []
+
+
+# ── Scrape staleness (fetch-time) ────────────────────────────────────────
+# Ticks are 5 min (fast.sh), so 9 ticks ≈ 45 min of live baseball with the
+# league-wide H+R totals not moving *at all*, across 12 rosters. That isn't a
+# quiet night, it's a dead feed. The 2026-08-05 incident sat frozen ~8h; this
+# fires ~45 min in.
+SCRAPE_STALE_TICKS = 9
+# Those ticks must be genuinely consecutive. A wider span means the pipeline
+# itself gapped (laptop asleep, network outage) and a settle boundary may sit
+# inside the window — a different failure, already covered by
+# check_pipeline_freshness, and not evidence of a stale scrape.
+SCRAPE_STALE_MAX_SPAN_MIN = 75
+# Grace after first pitch: before the slate starts the cats are *legitimately*
+# frozen (no baseball has been played), so the window must open late enough that
+# a frozen run means something. Without this the check fires every night at the
+# moment `in_progress` first goes non-zero.
+SCRAPE_STALE_GRACE_MIN = 20
+# The scrape-owned cats that move constantly during live play. H and R only:
+# HR/SB are low-event enough to stall honestly for 45 min, and QS/SVHD are
+# reconstructed elsewhere (_LIVE_RECON_CATS).
+_SCRAPE_STALE_CATS = (1, 20)   # H, R
+
+
+def check_scrape_staleness(conn, in_progress: int, current_period: int,
+                           now_iso: str | None) -> list[Finding]:
+    """Fetch-time guard: the DOM scrape is returning well-formed but **frozen** cells.
+
+    `ANOM_SCRAPE_EMPTY`'s blind spot. That check fires when the scrape yields
+    *nothing*; this one fires when it yields a full 120 cells that never change.
+    Both leave the display cats stale, but an empty scrape degrades **loudly**
+    (0 cells in the log, one glance at `fetch`'s output) while a frozen one is
+    invisible — the values look perfectly well-formed, they're just yesterday's.
+
+    Why this exists (2026-08-05). ESPN's scoreboard page renders an initial REST
+    snapshot, then applies live updates from a play-by-play feed. That feed's
+    request started returning 403 to our headless browser, so the page never
+    applied any live update and the DOM kept showing the REST snapshot — whose
+    weekly totals only advance at ESPN's ~07:00 UTC daily settle. The scrape
+    faithfully read those frozen numbers all night: H/HR/R/SB/K sat at Monday's
+    values through the whole Tuesday slate and the entire day landed in one tick
+    (m107 +35.9pp, six categories flipping at once).
+
+    The rate cats went stale *with* them, which is why this is error-grade rather
+    than a warn: `sim._judge_group` judges the box-score reconstruction by its
+    distance to the **scraped** rate, so a stale scrape that exactly matches the
+    equally-stale REST baseline makes every reconstruction look "further away"
+    and get rejected (`verdict: baseline`). One frozen source silently takes down
+    both input paths, and nothing downstream can tell.
+
+    Gate follows the 2026-06-04 corollary — it keys off the *presence* of ticks
+    and live games, never off the cat values that are what goes wrong.
+    """
+    if not in_progress or not now_iso:
+        return []
+    row = conn.execute(
+        "SELECT MAX(active_start) AS s FROM game_day_activity "
+        "WHERE matchup_period_id=? AND active_start IS NOT NULL AND active_end IS NULL",
+        (current_period,),
+    ).fetchone()
+    active_start = row["s"] if row else None
+    if not active_start:
+        return []          # live games but no open slate recorded yet — too early
+    try:
+        window_start = (datetime.fromisoformat(active_start)
+                        + timedelta(minutes=SCRAPE_STALE_GRACE_MIN)).isoformat()
+    except (TypeError, ValueError):
+        return []
+    if now_iso < window_start:
+        return []
+    sides = conn.execute(
+        "SELECT id, home_team_id, away_team_id FROM matchups WHERE matchup_period_id=?",
+        (current_period,)).fetchall()
+    if not sides:
+        return []
+    # One indexed seek per (matchup, team, stat) — the full prefix of
+    # idx_category_state_recent. Aggregating across the period instead reads as a
+    # whole-index SCAN (2.5s on a 2.6M-row table), far too slow for a 5-min tick.
+    stamps: set[str] = set()
+    total = 0.0
+    for m in sides:
+        for team_id in (m["home_team_id"], m["away_team_id"]):
+            for stat_id in _SCRAPE_STALE_CATS:
+                rows = conn.execute(
+                    """
+                    SELECT fetched_at, score FROM category_state
+                    WHERE matchup_id=? AND team_id=? AND stat_id=?
+                          AND fetched_at >= ? AND fetched_at <= ?
+                    ORDER BY fetched_at DESC LIMIT ?
+                    """,
+                    (m["id"], team_id, stat_id, window_start, now_iso,
+                     SCRAPE_STALE_TICKS),
+                ).fetchall()
+                # Not written on every tick ⇒ no clean run to judge; stay quiet.
+                if len(rows) < SCRAPE_STALE_TICKS:
+                    return []
+                if any(r["score"] is None for r in rows):
+                    return []
+                if len({r["score"] for r in rows}) > 1:
+                    return []      # this series moved ⇒ the feed is alive
+                stamps.update(r["fetched_at"] for r in rows)
+                total += rows[0]["score"]
+    try:
+        span = max(datetime.fromisoformat(s) for s in stamps) - \
+               min(datetime.fromisoformat(s) for s in stamps)
+    except (TypeError, ValueError):
+        return []
+    if span > timedelta(minutes=SCRAPE_STALE_MAX_SPAN_MIN):
+        return []          # cadence gapped — that's check_pipeline_freshness's job
+    ticks = range(SCRAPE_STALE_TICKS)
+    return [Finding(
+        "INV_SCRAPE_STALE", "error", None,
+        f"{in_progress} game(s) in progress but the scrape's counting cats have not "
+        f"moved for {len(ticks)} consecutive ticks ({round(span.total_seconds() / 60)} "
+        f"min): league-wide H+R stuck at {total:g}. The scrape is returning "
+        f"well-formed but STALE cells (ANOM_SCRAPE_EMPTY can't see this) — display cats "
+        f"are frozen at the last settle AND the rate reconstruction is being rejected "
+        f"against the stale scrape. Check ESPN's live play-by-play feed request in the "
+        f"scoreboard page (2026-08-05: Akamai 403'd it for the headless browser)")]
 
 
 def check_live_lineup_capture(conn, now_iso: str | None) -> list[Finding]:
