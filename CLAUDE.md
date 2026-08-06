@@ -1030,6 +1030,47 @@ snapshot fixes and the guard catches by falling back. Tests: `tests/test_live_co
 Tuning knobs at the top of `sim.py`: `SETTLE_LAG_HOURS` (7), `PITCHER_SLOTS`,
 `NON_COUNTING_SLOTS`, `LIVE_RATE_TOL`, `PITCH_RATE_COMPONENTS`, `OPS_RECON_COMPONENTS`.
 
+### The live-feed proxy (2026-08-04 Akamai 403) — why `page.route` is there
+
+The scoreboard renders an **initial REST snapshot**, then applies live in-play updates
+from `site.api.espn.com/apis/fantasy/v2/games/flb/games?…pbpOnly=true`. From
+**2026-08-04** Akamai began **403ing that request from our headless browser**, so the
+page never applied a live update and the DOM sat frozen at the last ~07:00 UTC settle.
+
+This is the nastiest shape of scrape failure, because it is **invisible**: the scrape
+kept returning a full ~120 *well-formed but stale* cells. `ANOM_SCRAPE_EMPTY` can't see
+it (nothing is empty). H/HR/R/SB/K held the previous day's totals for an entire slate and
+the whole day landed in one tick at the settle — 2026-08-06: **all six matchups moved at
+once, 35pp absolute**. It also dragged the **rate cats** down with it: `sim._judge_group`
+scores the box-score reconstruction by its distance to the *scraped* rate, so a stale
+scrape that exactly matches the equally-stale REST baseline makes every reconstruction
+look "further away" and get rejected (`verdict: baseline` on every group, all night).
+One frozen source silently takes down both input paths.
+
+**Root cause is upstream, not ours** — nothing local changed in the break window
+(`espn_scrape.py` untouched since 2026-06-18, Playwright/Chromium installed May 31,
+macOS since Jun 25); identical code worked at 04:00:10Z on 8/04 and failed by 22:40Z the
+same day. The response is Akamai's edge "Access Denied" (`errors.edgesuite.net`), and the
+rule is **host-wide** on `site.api.espn.com`, not league- or feed-specific.
+
+**The fix** (`_serve_maybe_proxied` + `PROXY_ROUTE` in `espn_scrape.py`): the block is on
+*browser-shaped* traffic only — the identical URL returns **200 with ~1.6 MB to plain
+`httpx`** (as does our `espn_public` client, which is why probables/injuries never broke).
+So a `page.route` handler re-fetches the blocked request server-side and hands the bytes
+to the page. ESPN still computes the scoreboard; we just stop letting one of its requests
+die. Two properties worth preserving if you touch this:
+
+- **Browser first, proxy only on 403/dead** (`should_proxy`) — so an unblocked ESPN never
+  takes the proxy path and the workaround **self-heals** with no code change.
+- **Only `site.api.espn.com` is routed.** It is the *unauthenticated* public host.
+  **Never add `lm-api-reads.fantasy.espn.com`** (the authed `mMatchupScore` endpoint):
+  fulfilling it from a cookie-less client strips the ESPN session and breaks the page.
+  Guarded by `tests/test_scrape_proxy.py::test_never_routes_the_authenticated_host`.
+
+Proxy failure falls through to `route.continue_()` — degrade to today's behavior, never
+to a page that can't load. `INV_SCRAPE_STALE` remains the detector for the whole class:
+if Akamai changes the rule again, that flag is what tells you.
+
 ### Auth (the tricky part)
 
 ESPN's web UI requires more than the `SWID`/`espn_s2` cookies we use for REST — it also needs MyDisney session cookies (`ESPN-ONESITE.WEB-PROD.token`, `dtcAuth`, `espnAuth`) that are httpOnly and only get set through the full MyDisney login flow.
@@ -1627,7 +1668,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `INV_SITE_RECORD_ASYMMETRIC` | error | a matchup's two W-L-T records mirror (home W=away L, etc.) | always a bug — head-to-head category scoring is zero-sum. Was caused by summing per-team stored `result` flags that desync under temporal skew (fixed: `cli._apply_counting_results` derives results from a single home-vs-away score comparison). |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
 | `ANOM_SCRAPE_EMPTY` | warn | games in progress ⇒ the live scrape returns >0 cells | the DOM scrape silently failed (auth wall, expired `.playwright_profile`, selector drift) and `fetch` fell back to laggy REST — display cats rot *while games are live*. Raised at **fetch** time (not `run`), since only `fetch` knows a scrape was attempted. Fix: re-run `scripts/espn_auth_setup.py`. ×N occurrences/day = persistent vs a one-off hiccup. Blind to a scrape that returns a *full* set of frozen cells — that's `INV_SCRAPE_STALE`. |
-| `INV_SCRAPE_STALE` | error | games in progress ⇒ the scrape-owned counting cats (H+R) move at least once per `SCRAPE_STALE_TICKS` (9 ≈ 45 min) | **the scrape is returning well-formed but STALE cells** — `ANOM_SCRAPE_EMPTY`'s blind spot, and error-grade because it degrades *silently* (an empty scrape shows 0 cells in the log; a frozen one looks perfectly healthy). 2026-08-05: ESPN's scoreboard renders an initial REST snapshot then applies live updates from a play-by-play feed (`site.api.espn.com/apis/fantasy/v2/games/flb/games?…pbpOnly=true`); Akamai began **403ing that request from the headless browser**, so the page never applied a live update and the DOM kept showing REST — whose weekly totals only advance at the ~07:00 UTC settle. H/HR/R/SB/K sat at the previous day's values through the whole slate and the day landed in one tick (m107 +35.9pp, six leader flips). **The rate cats go stale with them:** `sim._judge_group` judges the box-score reconstruction by distance to the *scraped* rate, so a stale scrape that exactly matches the equally-stale REST baseline makes every reconstruction look "further away" → `verdict: baseline` on every group. One frozen source takes down both input paths. Gated on an **open slate** (`game_day_activity.active_start`, + `SCRAPE_STALE_GRACE_MIN` 20 min, else it fires at every first pitch) and on a **tight cadence** (`SCRAPE_STALE_MAX_SPAN_MIN` 75 — a frozen run spread over a pipeline outage is `check_pipeline_freshness`'s job). Reads one indexed seek per (matchup, team, stat); do NOT rewrite it as a period-wide aggregate — that plans as a whole-index SCAN (2.5s on 2.6M rows, every 5-min tick). Verify a change by **replaying both real nights**: silent on 08-03 (healthy), fires 08-04 23:45Z (broken, 7h15m before the settle). |
+| `INV_SCRAPE_STALE` | error | games in progress ⇒ the scrape-owned counting cats (H+R) move at least once per `SCRAPE_STALE_TICKS` (9 ≈ 45 min) | **the scrape is returning well-formed but STALE cells** — `ANOM_SCRAPE_EMPTY`'s blind spot, and error-grade because it degrades *silently* (an empty scrape shows 0 cells in the log; a frozen one looks perfectly healthy). 2026-08-05: ESPN's scoreboard renders an initial REST snapshot then applies live updates from a play-by-play feed (`site.api.espn.com/apis/fantasy/v2/games/flb/games?…pbpOnly=true`); Akamai began **403ing that request from the headless browser**, so the page never applied a live update and the DOM kept showing REST — whose weekly totals only advance at the ~07:00 UTC settle. H/HR/R/SB/K sat at the previous day's values through the whole slate and the day landed in one tick (m107 +35.9pp, six leader flips). **The rate cats go stale with them:** `sim._judge_group` judges the box-score reconstruction by distance to the *scraped* rate, so a stale scrape that exactly matches the equally-stale REST baseline makes every reconstruction look "further away" → `verdict: baseline` on every group. One frozen source takes down both input paths. Gated on an **open slate** (`game_day_activity.active_start`, + `SCRAPE_STALE_GRACE_MIN` 20 min, else it fires at every first pitch) and on a **tight cadence** (`SCRAPE_STALE_MAX_SPAN_MIN` 75 — a frozen run spread over a pipeline outage is `check_pipeline_freshness`'s job). Reads one indexed seek per (matchup, team, stat); do NOT rewrite it as a period-wide aggregate — that plans as a whole-index SCAN (2.5s on 2.6M rows, every 5-min tick). Verify a change by **replaying both real nights**: silent on 08-03 (healthy), fires 08-04 23:45Z (broken, 7h15m before the settle). **Cause addressed 2026-08-06** by the live-feed proxy (see "The live-feed proxy" under Live data freshness) — keep this check regardless: it is the regression detector for the whole class, and it is what will tell you if Akamai changes the rule again. |
 | `ANOM_WP_SWING` | warn | |home_wp − prior| < 15pp/tick | usually **legit** — a roster move, probable announcement, ESPN stat backfill, games going live, or a benign ~07:00-UTC daily component settle (see "Live component reconstruction"). Bug only if no such cause (diff the budgets/state across the tick). **But** if *many* matchups swing at once, see `ANOM_CORRELATED_SWING` — that's systemic, not legit. |
 | `ANOM_LINEUP_SNAPSHOT_MISSING` | warn | a day with live box-score lines has a `daily_lineups` snapshot | the ESPN lineup fetch in `refresh-live` failed (auth hiccup / expired cookies) → live component reconstruction can't attribute and silently falls back to stale ESPN components for every team. Check ESPN auth; verify `espn.fetch_daily_lineups` works. Quiet whenever nothing is live. |
 | `ANOM_WP_FLAPPING` | warn | home_wp doesn't oscillate (≥`FLAP_MIN_REVERSALS` direction flips ≥8pp over the last `FLAP_WINDOW` ticks) | a stat keeps being written then dropped then rewritten (flaky scrape/source regressing a counting cat). Distinct from a one-way swing or a swing-then-recover (those don't reverse repeatedly). Active weeks only. |
