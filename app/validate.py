@@ -791,19 +791,31 @@ def _supported_credit(conn, matchup_id, period_id, team_id, sid, *,
     double-count fix) then surfaces as `published > supported`. Returns `scraped`
     when no in-window box credit exists (nothing to add), and `None` if the
     supporting data can't be loaded — the caller then skips, so we never flag on an
-    inability to recompute, only on a genuine over-credit."""
+    inability to recompute, only on a genuine over-credit.
+
+    The floor is consulted **even when there is no in-window box credit** (`box == 0`).
+    Publish applies the settled floor in *two* places, not one: the fold's
+    `max(scrape, floor + box)`, and — independently — `cli._apply_qs_svhd_floor`,
+    which raises the display to `max(scrape, floor)` on every current-week publish so
+    a just-Final QS/SVHD the idle scrape hasn't banked yet doesn't render as a stale
+    low count (added 2026-07-27, m96 QS 4→5). This recompute originally modelled only
+    the fold and short-circuited to `scraped` when `box == 0`, so any credit resting
+    purely on the floor read as unsupportable. That produced 1830 false-positive
+    occurrences over 2026-07-30..08-07 (m105 Swamp Dragons SVHD site=1 vs "supportable
+    0", where the floor genuinely held Bryan Baker's 8/04 save from
+    `pitcher_final_lines` and the scrape had never banked it). Always consulting the
+    floor keeps the guard intact — a real double-count still exceeds
+    `max(scrape, floor + box)` — while matching what publish actually does."""
     try:
         roster = sim.load_team_roster(conn, period_id, team_id)
         slots = sim.load_active_slots(conn, team_id, since_date=since_date,
                                       fallback_roster=roster)
         counter = sim._count_qs if sid == sim.STAT_QS else sim._count_svhd
         box, _ = counter(unsettled["pitchers"], slots)
+        floor = sim.load_settled_floor(conn, matchup_id, team_id, (sid,),
+                                       since_date=since_date, as_of=gen).get(sid, scraped)
     except Exception:
         return None
-    if not box:
-        return scraped
-    floor = sim.load_settled_floor(conn, matchup_id, team_id, (sid,),
-                                   since_date=since_date, as_of=gen).get(sid, scraped)
     return max(scraped, floor + box)
 
 
