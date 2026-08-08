@@ -1447,13 +1447,74 @@ def publish(rebuild: bool) -> None:
     finally:
         conn.close()
 
+# Live-finale playoff-odds refresh (see `_finale_skip_reason`). 30 min is a
+# deliberate compromise: odds move on *decided matchups*, so the interesting
+# fluctuations come as each of the six games resolves categories over the final
+# afternoon — fast enough to catch a seed flipping, slow enough that a ~10s run
+# lands on only ~2 of the 12 fast ticks per hour.
+PLAYOFF_LIVE_INTERVAL_MIN = 30
+
+
+def _finale_skip_reason(conn, period_id: int, now_iso: str) -> str | None:
+    """Why a live-finale playoff-odds refresh should be SKIPPED, or None if due.
+
+    Playoff odds normally ride medium.sh's 4-hourly cadence, which is right for
+    most of the week — they're driven by the *remaining* matchups' WPs, and those
+    barely move on a Tuesday. The last day of a matchup period is different: six
+    matchups resolve within a few hours, each flipping a win from "probable" to
+    banked, so seeds and bye odds can genuinely swing between two 4-hourly runs
+    and the odds-over-time chart would show a single step across the whole finale.
+
+    Two gates, both cheap:
+
+    - **An in-progress game dated the period's LAST day.** Keying off the game's
+      own `game_date` (not the wall clock) is what makes this correct across the
+      UTC rollover: Sunday's West-Coast games are still in progress at 02:00 UTC
+      Monday, and that is exactly the window we care about. A wall-clock "is today
+      the last day" test would switch off at midnight UTC, mid-finale.
+    - **Throttle since the last archived run**, read from `playoff_odds_runs`
+      (the same table the odds-over-time history is built from). Using the archive
+      rather than a marker file means the throttle survives restarts and can't
+      drift from what was actually published.
+    """
+    try:
+        period_end = mlb.matchup_period_window(period_id)[1].isoformat()
+    except Exception:
+        return "period window unavailable"
+    live = conn.execute(
+        "SELECT COUNT(*) FROM team_schedule WHERE matchup_period_id=? "
+        "AND game_date=? AND game_status='In Progress'",
+        (period_id, period_end),
+    ).fetchone()[0]
+    if not live:
+        return f"no in-progress games on the period's last day ({period_end})"
+    row = conn.execute("SELECT MAX(computed_at) c FROM playoff_odds_runs").fetchone()
+    last = row["c"] if row else None
+    if last:
+        try:
+            age_min = (datetime.fromisoformat(now_iso)
+                       - datetime.fromisoformat(last)).total_seconds() / 60
+        except (TypeError, ValueError):
+            return None          # unparseable stamp — don't let it block a refresh
+        if age_min < PLAYOFF_LIVE_INTERVAL_MIN:
+            return (f"last run {age_min:.0f} min ago "
+                    f"(< {PLAYOFF_LIVE_INTERVAL_MIN} min)")
+    return None
+
+
 @cli.command("playoffs")
 @click.option("--sims", type=int, default=None,
               help="Season-simulation count (default: playoffs.DEFAULT_SEASON_SIMS).")
 @click.option("--samples", type=int, default=None,
               help="Sampled team-weeks per team per playoff round "
                    "(default: playoffs.DEFAULT_TEAM_SAMPLES).")
-def playoffs_cmd(sims: int | None, samples: int | None) -> None:
+@click.option("--if-live-finale", is_flag=True,
+              help="No-op unless a game is in progress on the current period's "
+                   f"LAST day and the previous run was >{PLAYOFF_LIVE_INTERVAL_MIN} "
+                   "min ago. Lets the 5-min fast tier self-throttle to a "
+                   "half-hourly refresh through the finale.")
+def playoffs_cmd(sims: int | None, samples: int | None,
+                 if_live_finale: bool) -> None:
     """Simulate the rest of the regular season + the playoff bracket and
     write docs/playoffs.json (per-team odds of playoffs / bye / final /
     championship + full seed distribution)."""
@@ -1471,6 +1532,12 @@ def playoffs_cmd(sims: int | None, samples: int | None) -> None:
         last_reg = _last_regular_season_period(conn)
         if ss is None or current is None or last_reg is None:
             raise click.ClickException("Missing league metadata. Run `app fetch` first.")
+
+        if if_live_finale:
+            skip = _finale_skip_reason(conn, current, _now_iso())
+            if skip:
+                click.echo(f"Playoff odds: skipped — {skip}")
+                return
 
         teams = {r["id"]: dict(r)
                  for r in conn.execute("SELECT * FROM teams").fetchall()}

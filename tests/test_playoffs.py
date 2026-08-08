@@ -149,3 +149,64 @@ def test_load_odds_history_reads_archive():
     assert [h["t"] for h in hist] == ["2026-07-20T06:00:00+00:00", "2026-07-20T10:00:00+00:00"]
     assert hist[0]["teams"]["5"] == [0.9, 0.5, 0.3]      # [playoffs, bye, champion]
     assert hist[1]["teams"]["5"][1] == 0.6               # garbage row skipped, order kept
+
+
+# ── live-finale refresh gate (cli._finale_skip_reason) ──
+# Playoff odds ride medium.sh's 4-hourly cadence all week, but the LAST day of a
+# matchup period resolves six matchups in a few hours, so the fast tier offers a
+# refresh every tick and the command self-throttles to ~30 min.
+
+def _finale_db(period_end="2026-08-09", statuses=(("2026-08-09", "In Progress"),),
+               last_run=None):
+    import sqlite3, json as _json
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE team_schedule (matchup_period_id INT, game_date TEXT, "
+                 "game_status TEXT)")
+    conn.execute("CREATE TABLE playoff_odds_runs (computed_at TEXT PRIMARY KEY, "
+                 "payload_json TEXT)")
+    for gd, st in statuses:
+        conn.execute("INSERT INTO team_schedule VALUES (18, ?, ?)", (gd, st))
+    if last_run:
+        conn.execute("INSERT INTO playoff_odds_runs VALUES (?, ?)",
+                     (last_run, _json.dumps({"teams": []})))
+    conn.commit()
+    return conn
+
+def _reason(conn, now, monkeypatch, period_end="2026-08-09"):
+    import datetime as _dt
+    from app import cli, mlb
+    monkeypatch.setattr(mlb, "matchup_period_window",
+                        lambda p: (_dt.date(2026, 8, 3), _dt.date.fromisoformat(period_end)))
+    return cli._finale_skip_reason(conn, 18, now)
+
+def test_finale_refresh_due_when_last_day_game_is_live(monkeypatch):
+    conn = _finale_db()
+    assert _reason(conn, "2026-08-09T23:30:00+00:00", monkeypatch) is None
+
+def test_finale_refresh_skipped_when_nothing_live_on_the_last_day(monkeypatch):
+    """A live game on an EARLIER day of the period is the ordinary mid-week case."""
+    conn = _finale_db(statuses=(("2026-08-06", "In Progress"), ("2026-08-09", "Scheduled")))
+    r = _reason(conn, "2026-08-06T23:30:00+00:00", monkeypatch)
+    assert r and "last day" in r
+
+def test_finale_refresh_survives_the_utc_rollover(monkeypatch):
+    """THE case a wall-clock 'is today the last day' test would get wrong: Sunday's
+    West-Coast games are still in progress at 02:00 UTC Monday — still the finale."""
+    conn = _finale_db()
+    assert _reason(conn, "2026-08-10T02:00:00+00:00", monkeypatch) is None
+
+def test_finale_refresh_throttled_within_the_interval(monkeypatch):
+    from app.cli import PLAYOFF_LIVE_INTERVAL_MIN
+    conn = _finale_db(last_run="2026-08-09T23:15:00+00:00")
+    r = _reason(conn, "2026-08-09T23:30:00+00:00", monkeypatch)   # 15 min later
+    assert r and str(PLAYOFF_LIVE_INTERVAL_MIN) in r
+
+def test_finale_refresh_due_once_the_interval_elapses(monkeypatch):
+    conn = _finale_db(last_run="2026-08-09T23:00:00+00:00")
+    assert _reason(conn, "2026-08-09T23:31:00+00:00", monkeypatch) is None   # 31 min
+
+def test_finale_refresh_not_blocked_by_an_unparseable_stamp(monkeypatch):
+    """A bad archive stamp must not wedge the refresh off permanently."""
+    conn = _finale_db(last_run="not-a-timestamp")
+    assert _reason(conn, "2026-08-09T23:30:00+00:00", monkeypatch) is None

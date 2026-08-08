@@ -592,6 +592,25 @@ validity condition for H2H always holds.
    `decide_values` (most cats → hits tiebreak → **dead heat advances the higher
    seed**). ROS shares spread over `current..last_reg+3`.
 
+**Live-finale refresh (added 2026-08-08).** The 4-hourly cadence is right for most
+of the week — odds are driven by the *remaining* matchups' WPs, which barely move on a
+Tuesday. The **last day of a matchup period** is different: six matchups resolve within
+a few hours, each flipping a win from probable to banked, so seeds and bye odds can
+swing genuinely between two 4-hourly runs and the odds-over-time chart would render the
+whole finale as one step. So `fast.sh` also offers a refresh **every tick**, and
+`app playoffs --if-live-finale` self-throttles via `cli._finale_skip_reason`:
+- **gate 1** — an *In Progress* game whose `game_date` is the period's last day. Keying
+  off the game's own date (not the wall clock) is what makes this correct across the UTC
+  rollover: Sunday's West-Coast games are still live at 02:00 UTC Monday, and that is
+  precisely the window we want. A "is today the last day" test would switch off at
+  midnight UTC, mid-finale.
+- **gate 2** — `PLAYOFF_LIVE_INTERVAL_MIN` (30) since the last **archived** run, read
+  from `playoff_odds_runs` so the throttle survives restarts and can't drift from what
+  was actually published.
+Costs ~0.4s (CLI startup) on every other tick of the week; runs *before* the git step so
+the refreshed `docs/playoffs.json` ships in the same commit; non-fatal like medium.sh's.
+Tests: `tests/test_playoffs.py` (`test_finale_refresh_*`, incl. the UTC-rollover case).
+
 **Cron/publish wiring:** medium.sh runs `app playoffs` after `compute --future`
 (**non-fatal** — odds are derived; a failure must not kill the roster refresh).
 The run is archived **without** history (insert first), then
@@ -750,7 +769,7 @@ Three tiers, all hold a shared `.app.lock` (in `_common.sh`):
 
 | Tier | Cadence | What | Lock behavior |
 |---|---|---|---|
-| `fast.sh` | every 5 min | `refresh-live` + `fetch` + `compute` (current week) + `publish` + git push | Skip if lock held |
+| `fast.sh` | every 5 min | `refresh-live` + `fetch` + `compute` (current week) + `playoffs --if-live-finale` (self-throttling no-op except on a period's last day) + `publish` + git push | Skip if lock held |
 | `medium.sh` | every 4h | `refresh-rosters` + `compute --future` + `playoffs` (non-fatal) | Wait for lock |
 | `daily.sh` | once/day | `refresh-schedule` (all remaining weeks **+ 3 playoff periods**) + `publish --rebuild` (no push) | Wait for lock |
 

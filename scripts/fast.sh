@@ -20,6 +20,16 @@ source "$(dirname "$0")/_common.sh"
     timed fast refresh-live "$APP" refresh-live
     timed fast fetch        "$APP" fetch
     timed fast compute      "$APP" compute
+    # Playoff odds normally ride medium.sh's 4-hourly cadence. On the LAST day of
+    # a matchup period that's too coarse — six matchups resolve in a few hours and
+    # the seeds/bye odds genuinely swing — so the fast tier offers a refresh every
+    # tick and the command self-throttles to ~30 min via `--if-live-finale`
+    # (`cli._finale_skip_reason`). A no-op (<50ms) on every other tick of the week.
+    # Runs BEFORE the git step so the refreshed docs/playoffs.json ships in the
+    # same commit. Non-fatal, same rationale as medium.sh: odds are derived, and a
+    # hiccup must not cost the tick's data update.
+    timed fast playoffs "$APP" playoffs --if-live-finale \
+        || log fast "playoffs step errored (non-fatal)"
     timed fast publish      "$APP" publish
 
     git_start=$SECONDS
