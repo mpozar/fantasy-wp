@@ -1648,10 +1648,26 @@ RECENT_FULL_HOURS = 24      # tail of each week's history kept at raw 5-min
                             # resolution — the "Today"/"Active" zoom, and where
                             # end-of-week resolution cliffs live.
 OLDER_GRID_MINUTES = 15     # round cadence for the rest of the week
-MAX_CAT_HISTORY_POINTS = 200  # a point's category_wp is ~10x the size of the
-                              # point itself, so it stays capped at the old
-                              # count: the WP *line* gets finer, the clickable
-                              # category-breakdown history does not.
+MAX_CAT_HISTORY_POINTS = 200  # cap on category_wp carriers OUTSIDE the recent
+                              # window below. A point's category_wp is ~920
+                              # bytes — ~10x the point itself — so the older
+                              # span stays sampled.
+CAT_RECENT_HOURS = 6        # tail kept at FULL 5-min category resolution.
+                            # Until 2026-08-08 carriers were a flat 200 evenly
+                            # spaced over the whole week, which put them a
+                            # *median 75 min apart* (≈25 min even in the live
+                            # tail) — and since app.js snaps a click to the
+                            # NEAREST carrier, five consecutive ticks all showed
+                            # one identical category table while the WP line
+                            # moved (reported 2026-08-08: 23:15/23:20/23:25 CEST
+                            # all resolved to the 23:25 carrier). Full resolution
+                            # over the evening slate fixes clicking where people
+                            # actually click. Deliberately shorter than
+                            # RECENT_FULL_HOURS (24): category_wp is expensive,
+                            # and the dead hours between slates would spend it
+                            # storing near-identical tables over and over. 0
+                            # disables the tail (pure even sampling, pre-2026-08-08
+                            # behavior).
 
 
 def _downsample_history(history: list[dict],
@@ -1659,7 +1675,8 @@ def _downsample_history(history: list[dict],
                         recent_since: str | None = None,
                         recent_hours: int = RECENT_FULL_HOURS,
                         grid_minutes: int = OLDER_GRID_MINUTES,
-                        max_cat_points: int = MAX_CAT_HISTORY_POINTS) -> list[dict]:
+                        max_cat_points: int = MAX_CAT_HISTORY_POINTS,
+                        cat_recent_hours: int = CAT_RECENT_HOURS) -> list[dict]:
     """Thin a matchup's snapshot history for the published payload.
 
     Grouped by model_version (the chart only ever plots one model's series).
@@ -1678,8 +1695,10 @@ def _downsample_history(history: list[dict],
     `recent_since` (UTC ISO) overrides the derived cutoff; `recent_hours=0`
     disables the full-resolution tail entirely.
 
-    `category_wp` is stripped from all but `max_cat_points` evenly-spaced points
-    that carry it (see MAX_CAT_HISTORY_POINTS).
+    `category_wp` gets the same two-tier treatment as the line, on its own
+    (shorter) clock: every carrier in the last `cat_recent_hours` survives, and
+    only older ones are thinned to `max_cat_points` evenly spaced. Anchored to
+    the series' last point for the same rebuild-stability reason as above.
     """
     by_ver: dict[str, list[dict]] = {}
     for h in history:
@@ -1721,10 +1740,19 @@ def _downsample_history(history: list[dict],
 
     out = [h for rows in by_ver.values() for h in thin(rows)]
     out.sort(key=lambda h: h["computed_at"])
-    # Keep the heavy per-snapshot category history at its old volume.
+    # Category carriers: full resolution over the recent tail, sampled before it.
     with_cat = [h for h in out if "category_wp" in h]
-    if len(with_cat) > max_cat_points:
-        keep = {id(h) for h in even(with_cat, max_cat_points)}
+    if with_cat:
+        if cat_recent_hours:
+            last = datetime.fromisoformat(with_cat[-1]["computed_at"])
+            cat_cutoff = (last - timedelta(hours=cat_recent_hours)
+                          ).isoformat(timespec="seconds")
+            older_cat = [h for h in with_cat if h["computed_at"] < cat_cutoff]
+            recent_cat = [h for h in with_cat if h["computed_at"] >= cat_cutoff]
+        else:
+            older_cat, recent_cat = with_cat, []
+        keep = {id(h) for h in even(older_cat, max_cat_points)}
+        keep |= {id(h) for h in recent_cat}
         for h in with_cat:
             if id(h) not in keep:
                 h.pop("category_wp", None)

@@ -1,6 +1,7 @@
 """Publish-side helper for attaching per-point category history (live week)."""
 
 import json
+from datetime import datetime, timedelta
 
 from app.cli import _slim_category_wp
 
@@ -107,14 +108,52 @@ def test_downsample_grid_is_stable_across_republishes():
     assert _downsample_history(h) == _downsample_history(list(h))
 
 
-def test_downsample_caps_category_wp_but_not_the_wp_line():
-    h = _hist(2016, start="2026-07-27T00:00:00+00:00")
+def _hist_with_cats(n=2016, start="2026-07-27T00:00:00+00:00"):
+    h = _hist(n, start=start)
     for p in h:
         p["category_wp"] = [{"stat_id": 48, "home_wins": 1, "away_wins": 1, "ties": 0}]
         p["n_sims"] = 10000
-    out = _downsample_history(h, max_cat_points=50)
+    return h
+
+
+def test_downsample_caps_older_category_wp_but_not_the_wp_line():
+    h = _hist_with_cats()
+    out = _downsample_history(h, max_cat_points=50, cat_recent_hours=0)
     with_cat = [p for p in out if "category_wp" in p]
     assert len(out) > 500                      # WP line stays fine-grained
     assert len(with_cat) == 50                 # category history stays bounded
     assert "n_sims" not in out[1] or "category_wp" in out[1]   # stripped together
     assert "category_wp" in out[-1]            # newest state always kept
+
+
+def test_downsample_keeps_every_category_carrier_in_the_recent_tail():
+    """The 2026-08-08 report: clicking 23:15 / 23:20 / 23:25 showed ONE identical
+    category table because carriers sat ~25 min apart even in the live tail and
+    app.js snaps a click to the nearest one. Every 5-min point in the tail must
+    now carry its own categories."""
+    h = _hist_with_cats()
+    out = _downsample_history(h, max_cat_points=50, cat_recent_hours=6)
+    last = datetime.fromisoformat(out[-1]["computed_at"])
+    cutoff = last - timedelta(hours=6)
+    tail = [p for p in out if datetime.fromisoformat(p["computed_at"]) >= cutoff]
+    assert len(tail) == 73                  # 6h at 5-min, both endpoints inclusive
+    assert all("category_wp" in p for p in tail), "a tail point lost its categories"
+    assert _gaps_min(tail) == {5}                            # no carrier gaps
+
+
+def test_downsample_still_thins_category_carriers_before_the_tail():
+    """The tail must not blow up the payload: older carriers stay sampled."""
+    h = _hist_with_cats()
+    out = _downsample_history(h, max_cat_points=50, cat_recent_hours=6)
+    last = datetime.fromisoformat(out[-1]["computed_at"])
+    cutoff = last - timedelta(hours=6)
+    older = [p for p in out
+             if datetime.fromisoformat(p["computed_at"]) < cutoff and "category_wp" in p]
+    assert len(older) == 50
+
+
+def test_downsample_category_tail_is_stable_across_republishes():
+    """Anchored to the series' last point, not the wall clock — `publish --rebuild`
+    runs daily over every week and must not re-thin a finished week's detail."""
+    h = _hist_with_cats()
+    assert _downsample_history(h) == _downsample_history(_hist_with_cats())

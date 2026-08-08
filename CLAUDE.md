@@ -1724,10 +1724,22 @@ history per model version when writing the per-week history files.
 - everything older snaps to a round `OLDER_GRID_MINUTES` (15) wall-clock grid
   (first snapshot per bucket), with `MAX_HISTORY_POINTS` (2400) as a backstop that
   shouldn't bind (a 7-day week lands ≈1200 points);
-- `category_wp` (≈10× a point's own size) is capped separately at
-  `MAX_CAT_HISTORY_POINTS` (200) evenly-spaced carriers, so the *line* got finer
-  without multiplying the payload. `app.js` therefore matches a clicked point to
-  the **nearest** category_wp carrier, not an exact timestamp.
+- `category_wp` (≈920 bytes, ~10× a point's own size) gets the **same two-tier
+  treatment on its own shorter clock** (added 2026-08-08): every carrier in the
+  last `CAT_RECENT_HOURS` (6) survives, and only older ones thin to
+  `MAX_CAT_HISTORY_POINTS` (200) evenly spaced. `app.js` still matches a clicked
+  point to the **nearest** carrier (not an exact timestamp) and labels the panel
+  "Category win rates as of HH:MM" — but inside the tail every 5-min tick is now
+  its own carrier, so that label matches what you clicked.
+  *Why the tail exists:* carriers used to be a flat 200 over the whole week, i.e.
+  a **median 75 min apart** and ~25 min even in the live tail — so five
+  consecutive ticks all snapped to one carrier and showed an identical category
+  table while the WP line moved (reported 2026-08-08: 23:15/23:20/23:25 CEST all
+  resolved to the 23:25 carrier). *Why 6h and not `RECENT_FULL_HOURS` (24):*
+  measured cost is ~920 B/carrier — 6h = +404 KB on a week's history file
+  (1760→2164 KB), 24h would have been +1552 KB, and the extra 18h is mostly dead
+  time between slates where consecutive tables are near-identical anyway. Keep
+  this window short; it is the expensive tier.
 
 Why not the old rule (a flat 200 evenly-spaced points): the step then depends on
 how long the series happens to be — a 7-day week landed on a ~55-min grid, a value
