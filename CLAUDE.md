@@ -618,7 +618,15 @@ The run is archived **without** history (insert first), then
 it in playoffs.json — archive blobs stay per-run sized, no compounding.
 fast.sh commits `docs/playoffs.json` alongside data.json/history. Front-end:
 `renderPlayoffs`/`renderPoChart` in app.js — table with seed-probability columns,
-odds-over-time chart with a Playoffs/Bye/Champion toggle; top 6 teams by payload
+odds-over-time chart with a Playoffs/Bye/Champion **metric** toggle and a
+**Range** toggle (Full / Past 7 days / Past 24 hours, `PO_RANGES` +
+`poHistoryInRange`, added 2026-08-09). Both are the same `scope-btn` segmented
+control the WP chart uses. The range window is measured back from the series'
+**last point, not `now`** — the archive only gains a point per `app playoffs` run
+(4-hourly, or every 30 min during a period's live finale), so a wall-clock window
+would render empty whenever the pipeline has been quiet; it also falls back to the
+full series if the window would leave <2 points (a 1-point line draws nothing and
+reads as a bug). Range, metric and pinning compose independently. Top 6 teams by payload
 order get the 6-hue palette (`PO_COLORS`), rest muted gray with hover + table-chip
 identity. Tests: `tests/test_playoffs.py` (tiebreak chain incl. the 3-way reset,
 dead-heat rule, probability-conservation invariants, history loader).

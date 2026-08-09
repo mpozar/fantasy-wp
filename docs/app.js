@@ -816,6 +816,30 @@ const PO_METRICS = [
 ];
 let poMetric = 0;
 
+// Odds-chart x-axis range. `hours` is measured back from the series' LAST
+// point, not from now — same reasoning as the publish-side history tiers: the
+// odds archive only gains a point per `app playoffs` run (4-hourly, or every
+// 30 min during a period's live finale), so anchoring to the wall clock would
+// render an empty chart whenever the pipeline has been quiet for a while.
+const PO_RANGES = [
+  { key: "full", label: "Full", hours: null },
+  { key: "7d", label: "Past 7 days", hours: 24 * 7 },
+  { key: "24h", label: "Past 24 hours", hours: 24 },
+];
+let poRange = "full";
+
+// Clip the odds history to the selected range. Falls back to the full series
+// when the window would leave fewer than 2 points — a 1-point line renders as
+// nothing, and silently showing an empty chart reads as a bug.
+function poHistoryInRange(hist) {
+  const r = PO_RANGES.find((x) => x.key === poRange);
+  if (!r || r.hours == null || hist.length < 2) return hist;
+  const last = new Date(hist[hist.length - 1].t).getTime();
+  const cutoff = last - r.hours * 3600 * 1000;
+  const clipped = hist.filter((h) => new Date(h.t).getTime() >= cutoff);
+  return clipped.length >= 2 ? clipped : hist;
+}
+
 const poPct = (x) =>
   x >= 0.9995 ? "100%" :
   x < 0.0005 ? "—" :
@@ -825,7 +849,7 @@ const poPct = (x) =>
 // (one point per `app playoffs` run), y = the toggled metric. Same SVG
 // idiom as renderChart; gray tail drawn first so colored lines paint on top.
 function renderPoChart(p, colorOf) {
-  const hist = (p.history || []).filter((h) => h.teams);
+  const hist = poHistoryInRange((p.history || []).filter((h) => h.teams));
   if (!hist.length) return "";
   const W = CHART_VIEWBOX_W, H = 300, padL = 40, padR = 46, padT = 12, padB = 22;
   const innerH = H - padT - padB;
@@ -987,6 +1011,13 @@ async function renderPlayoffs() {
       `<button class="scope-btn po-metric-btn${m.idx === poMetric ? " active" : ""}" data-pom="${m.idx}">${m.label}</button>`
     ).join("") + `</span>`;
 
+  const rangeControl =
+    `<span class="chart-scope" role="group" aria-label="Odds time range">` +
+    `<span class="chart-scope-label">Range</span>` +
+    PO_RANGES.map((r) =>
+      `<button class="scope-btn po-range-btn${r.key === poRange ? " active" : ""}" data-por="${r.key}">${r.label}</button>`
+    ).join("") + `</span>`;
+
   el.innerHTML = `
     <h2>Playoff odds</h2>
     <p class="po-hint">${p.n_sims.toLocaleString()} simulated seasons — every remaining
@@ -1001,7 +1032,7 @@ async function renderPlayoffs() {
       </tr></thead>
       <tbody>${rows}</tbody></table></div>
     ${(p.history || []).length ? `
-    <div class="po-chart-head"><h3>Odds over time</h3>${metricControl}
+    <div class="po-chart-head"><h3>Odds over time</h3>${metricControl}${rangeControl}
       <span class="po-pin-hint">tap a line or table row to pin a team</span></div>
     <div id="po-chart-box">${renderPoChart(p, colorOf)}</div>` : ""}
     <p class="po-foot">Updated <time datetime="${p.generated_at}">${fmtSnapTime(p.generated_at)}</time>.
@@ -1052,6 +1083,17 @@ async function renderPlayoffs() {
       poMetric = next;
       el.querySelectorAll(".po-metric-btn").forEach((b) =>
         b.classList.toggle("active", Number(b.dataset.pom) === next));
+      refreshPoChart();
+    });
+  });
+
+  el.querySelectorAll(".po-range-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.por;
+      if (next === poRange) return;
+      poRange = next;
+      el.querySelectorAll(".po-range-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.por === next));
       refreshPoChart();
     });
   });
