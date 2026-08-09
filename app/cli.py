@@ -75,22 +75,81 @@ def _write_noncurrent_score(conn, prev: dict, mid: int, tid: int, sid: int,
     return True
 
 
-def _scrape_owns_display_cat(stat_id: int, in_progress: bool) -> bool:
+# How long after a game goes Final the "closing scrape" keeps running. The scrape
+# banks QS/SVHD the instant a game reads Final, but the last games of a night tend
+# to finish together — once none are In Progress the scrape stops and that final
+# credit waits ~3h for the ~07:00 REST settle. ~4 fast ticks of overlap closes it
+# with ESPN's own number. See the `scrape_due` block in `fetch`.
+CLOSING_SCRAPE_WINDOW_MIN = 20
+
+
+def _scrape_due(conn, period_id: int, now_iso: str) -> tuple[bool, int]:
+    """Whether a live DOM scrape should run this tick, plus the in-progress count.
+
+    Two cases:
+      - any MLB game **In Progress** — the ordinary live-slate case; or
+      - a game went **Final** within `CLOSING_SCRAPE_WINDOW_MIN` — the *closing
+        scrape* (added 2026-08-09).
+
+    Why the second exists: the scrape banks QS/SVHD the instant a game reads Final,
+    so during a slate ESPN's number is current within one tick. But the last games
+    of a night tend to finish together — all six of 2026-08-08's went Final at
+    04:05:02 — and the moment none are In Progress the scrape stops, so a credit
+    posted by that final game sat un-banked until the ~07:00 REST settle ~3h later.
+    That window is the *only* thing the QS/SVHD floor/archive reconstruction ever
+    existed to bridge, and that reconstruction measured ~8% over-counting against
+    settled week 17 (always high, and `max()` made it permanent). One extra scrape
+    closes the window with ESPN's own authoritative number instead.
+
+    Deliberately **stateless** — no "last scrape ran at" marker. If the pipeline is
+    down longer than the window we fall back to the 07:00 settle, exactly as before;
+    strictly no worse than the old behavior, with nothing new to keep in sync.
+
+    Callers use the flag for BOTH the scrape gate and `_scrape_owns_display_cat`, so
+    REST never claims a cat the scrape is about to write. `team_schedule` is fresh
+    (refresh-live runs first), so `became_final_at` already reflects this tick.
+    """
+    in_progress = conn.execute(
+        "SELECT COUNT(*) FROM team_schedule "
+        "WHERE matchup_period_id=? AND game_status='In Progress'",
+        (period_id,),
+    ).fetchone()[0]
+    try:
+        cutoff = (datetime.fromisoformat(now_iso)
+                  - timedelta(minutes=CLOSING_SCRAPE_WINDOW_MIN)).isoformat()
+    except (TypeError, ValueError):
+        return bool(in_progress), in_progress
+    just_final = conn.execute(
+        "SELECT COUNT(*) FROM team_schedule "
+        "WHERE matchup_period_id=? AND became_final_at IS NOT NULL "
+        "AND became_final_at >= ?",
+        (period_id, cutoff),
+    ).fetchone()[0]
+    return bool(in_progress or just_final), in_progress
+
+
+def _scrape_owns_display_cat(stat_id: int, scrape_due: bool) -> bool:
     """Whether the live DOM scrape (not REST) owns this current-period display cat
     this tick — i.e. REST must skip writing it.
 
     - **Rate cats** (OPS/ERA/WHIP) are derived from components at publish time, so
       the scraped rate value is never used — REST always skips them.
-    - **Counting display cats** (K/QS/SVHD) are scrape-owned only *while a live
-      scrape is running*. Once the slate is idle the scrape is skipped and REST is
-      the authoritative *final* source, so REST reconciles them (through the
+    - **Counting display cats** (K/QS/SVHD) are scrape-owned only *while a scrape
+      is due this tick* (`scrape_due`: a game In Progress, or one that went Final
+      inside `CLOSING_SCRAPE_WINDOW_MIN`). Otherwise the scrape is skipped and REST
+      is the authoritative *final* source, so REST reconciles them (through the
       monotonicity guard — it can only ratchet up). This captures a stat applied
       after the last live scrape, e.g. a two-way player's pitching line credited at
       game-final (Ohtani K 23→29, 2026-06-05). League-wide gate: an early-finishing
-      matchup waits until the whole slate is idle, then reconciles next tick."""
+      matchup waits until the whole slate is idle, then reconciles next tick.
+
+    Takes `scrape_due` rather than raw "games in progress" so ownership tracks the
+    scrape exactly. On the closing-scrape ticks the scrape runs with nothing In
+    Progress; keying off in-progress there would hand REST ownership of the very
+    cats the scrape is about to write, and the two would disagree."""
     if stat_id in _RATE_STAT_IDS:
         return True
-    return bool(in_progress)
+    return bool(scrape_due)
 
 
 def _overlay_espn_probables(games: list[dict], start, end) -> int:
@@ -300,15 +359,7 @@ def fetch() -> None:
         ).fetchall():
             last_good[(r["matchup_id"], r["team_id"], r["stat_id"])] = r["score"]
 
-        # Whether a live DOM scrape will run this tick (any MLB game in progress).
-        # When idle, the scrape is skipped and REST is the authoritative *final*
-        # source, so REST may reconcile the display *counting* cats below (see
-        # `_scrape_owns_display_cat`). team_schedule is fresh — refresh-live ran first.
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM team_schedule "
-            "WHERE matchup_period_id=? AND game_status='In Progress'",
-            (current_period,),
-        ).fetchone()[0]
+        scrape_due, in_progress = _scrape_due(conn, current_period, now)
 
         for m in matchups:
             if m["matchup_period_id"] > last_reg:
@@ -333,7 +384,7 @@ def fetch() -> None:
             for s in m["scores"]:
                 sid = s["stat_id"]
                 if (cur_p and seeded and sid in display_cats
-                        and _scrape_owns_display_cat(sid, in_progress)):
+                        and _scrape_owns_display_cat(sid, scrape_due)):
                     continue  # scrape owns these now; REST only fills the rest
                 if cur_p:
                     _write_category_score(conn, last_good, m["matchup_id"],
@@ -356,8 +407,8 @@ def fetch() -> None:
         # runtime spike can come from).
         scraped_count = 0
         scraped = {}
-        scrape_skipped_idle = not in_progress
-        if in_progress:
+        scrape_skipped_idle = not scrape_due
+        if scrape_due:
             try:
                 from app import espn_scrape
                 abbrev_to_id = {t["abbrev"]: t["id"] for t in teams}
@@ -415,7 +466,8 @@ def fetch() -> None:
     if scraped_count:
         msg += f", live-scraped {scraped_count} category cells"
     elif scrape_skipped_idle:
-        msg += ", scrape skipped (no games in progress)"
+        msg += (", scrape skipped (no games live, none final in the last "
+                f"{CLOSING_SCRAPE_WINDOW_MIN} min)")
     click.echo(msg)
 
 
