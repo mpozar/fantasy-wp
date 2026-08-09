@@ -924,7 +924,12 @@ function bindPoChartHovers(el, p, onToggle) {
   if (!wrap) return;
   const svg = wrap.querySelector("svg");
   const tooltip = wrap.querySelector(".chart-tooltip");
-  const hist = (p.history || []).filter((h) => h.teams);
+  // MUST clip the same way renderPoChart does. The pixel→time mapping below and
+  // the nearest-point search both key off this set, so binding against the full
+  // history while the chart draws a clipped one makes every tooltip resolve
+  // against the wrong span — hovering anywhere on a "Past 24 hours" chart
+  // reported the full series' start date instead.
+  const hist = poHistoryInRange((p.history || []).filter((h) => h.teams));
   const t0 = new Date(hist[0].t).getTime();
   const tN = new Date(hist[hist.length - 1].t).getTime();
   const rowOf = (tid) => el.querySelector(`.po-table tbody tr[data-team="${tid}"]`);
