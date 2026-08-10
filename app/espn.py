@@ -15,10 +15,26 @@ BASE_URL = (
     f"/segments/0/leagues/{LEAGUE_ID}"
 )
 
-# Minimum games a reliever needs in the current season for their actual
-# SV+HLD rate to be trusted. Below this we fall back to ESPN's full-season
-# projection rate so a tiny sample doesn't blow up the projection.
-MIN_ACT_GP_FOR_SVHD_RATE = 15
+# Prior weight, in pseudo-appearances, for the SVHD-rate blend below.
+# Empirical Bayes over the league's rostered relievers, calibrated against how
+# wrong the PRIOR is per player rather than against between-reliever spread:
+# K = p(1−p) / E[(prior − true)²] ⇒ 7.6, and 6 minimises measured squared error
+# directly. 8.0 rounds just above both, deliberately: a reliever's realized rate
+# is itself selection-inflated (he is rostered BECAUSE he started earning
+# saves), so both estimates overstate how wrong the prior really is, and the
+# safe side of that is MORE shrinkage. The error curve is flat K=4..10, so the
+# exact value is not load-bearing. Re-measure with
+# `scripts/analyze_svhd_rate.py`, which explains why the spread-based estimator
+# `analyze_qs_rate.py` uses reads ~14 here and should not be used for this one.
+#
+# Replaced a hard 15-appearance cliff (`MIN_ACT_GP_FOR_SVHD_RATE`) on
+# 2026-08-10: below 15 GP the rate was 100% ESPN's projection, at 15 GP it
+# flipped discontinuously to 100% actuals — a reliever's rate could move 0.3 on
+# his 15th outing. Measured against this season's rostered relievers the
+# shrinkage cuts squared error 38% over n=1..60 and 46% over n=1..25, the gain
+# concentrated below the cliff where it starts using the pitcher's own
+# appearances immediately instead of ignoring them.
+SVHD_RATE_PRIOR_APPEARANCES = 8.0
 
 # Prior weight, in pseudo-starts, for the QS-rate blend below. Empirical-Bayes
 # (Beta-Binomial method of moments) over the league's rostered starters:
@@ -45,9 +61,9 @@ def blend_qs_rate(ros_gs: float | None, ros_qs: float | None,
 
     `K = QS_RATE_PRIOR_STARTS` is the empirical-Bayes shrinkage weight, so the
     blend is sample-size aware by construction: a 21-start pitcher lands ~70%
-    on his actuals, a 2-start callup stays essentially at ESPN's number. That
-    graceful degradation is deliberately unlike the SVHD path's hard 15-GP
-    cliff (`MIN_ACT_GP_FOR_SVHD_RATE`), which flips discontinuously.
+    on his actuals, a 2-start callup stays essentially at ESPN's number. The
+    SVHD path (`blend_svhd_rate`) now uses the same shape; it previously had a
+    hard 15-GP cliff, which flipped discontinuously.
 
     Returns None to mean "leave ESPN's projection alone": no projected starts
     (a pure reliever — his spot-start QS is handled by the sim's promoted-starter
@@ -80,6 +96,83 @@ def apply_qs_rate_blend(ros_stats: dict, act_stats: dict | None) -> None:
         return
     ros_gs = _as_float(ros_stats.get("33")) or 0.0
     ros_stats["63"] = rate * ros_gs
+
+
+def blend_svhd_rate(proj_gp: float | None, proj_svhd: float | None,
+                    act_gp: float | None, act_svhd: float | None) -> float | None:
+    """Per-appearance SV+HLD rate, shrinking ESPN's FULL-SEASON projected rate
+    toward the reliever's season-to-date actual rate.
+
+        rate = (act_svhd + K·prior) / (act_gp + K),   prior = proj_svhd / proj_gp
+
+    Same empirical-Bayes shape as `blend_qs_rate`, with one structural
+    difference: QS shrinks toward ESPN's *ROS* rate, but ESPN's ROS encoding of
+    stat 83 is genuinely broken (it returns total GP for some players — see
+    `fetch_rosters_and_projections`), so it cannot be the prior. The
+    **full-season projection** (split=0, src=1) is well-formed and is what the
+    old cliff already fell back to, so it is the natural prior. It is also a
+    weaker prior than QS's: being preseason, it misses mid-season role changes
+    entirely (2026-08-10: 5 of 47 rostered relievers had a .000 projected rate
+    against realized rates up to .571), which is why K is measured against the
+    prior's per-player error and lands lower than the QS constant.
+
+    `K = SVHD_RATE_PRIOR_APPEARANCES`: a 45-appearance closer lands ~85% on his
+    own rate, a 3-appearance callup stays essentially at ESPN's number, and
+    nothing happens discontinuously in between.
+
+    **A missing `act_svhd` alongside real appearances means ZERO, not unknown**
+    — ESPN omits stat 83 from the actuals block entirely when a pitcher has no
+    saves or holds (83 of 133 rostered pitchers with appearances, 2026-08-10;
+    an explicit 0 never appears). Reading it as "no data" would park every
+    save-less arm on ESPN's prior and manufacture saves for pitchers who have
+    demonstrably earned none — measured at +3.9 phantom ROS SVHD for one
+    22-appearance middle reliever before this was caught. Note stat 63 (QS) is
+    NOT encoded this way: it is always present for a pitcher with starts, which
+    is why `blend_qs_rate` can treat a missing value as unknown.
+
+    Degrades one source at a time: with no appearances at all it returns the
+    prior alone (the old sub-cliff behavior), with no usable prior it returns
+    the pitcher's own rate, and with neither it returns None to mean "leave
+    ESPN's ROS value alone". Clamped to [0, 1] since a save and a hold cannot
+    both be earned in one appearance; `sim.MAX_SVHD_RATE` (0.80) still caps the
+    rate the sim recovers, but it is a backstop against the broken ROS encoding
+    and no blended rate this season comes near it (league max ≈ .69)."""
+    prior: float | None = None
+    if proj_gp and proj_gp > 0:
+        prior = min(max((proj_svhd or 0) / proj_gp, 0.0), 1.0)
+    if act_gp is None or act_gp <= 0:
+        return prior
+    act_svhd = act_svhd or 0.0
+    if prior is None:
+        return min(max(act_svhd / act_gp, 0.0), 1.0)
+    rate = ((act_svhd + SVHD_RATE_PRIOR_APPEARANCES * prior)
+            / (act_gp + SVHD_RATE_PRIOR_APPEARANCES))
+    return min(max(rate, 0.0), 1.0)
+
+
+def apply_svhd_rate_blend(ros_stats: dict, act_stats: dict | None,
+                          proj_stats: dict | None) -> None:
+    """Rewrite `ros_stats["83"]` (ROS SVHD) in place to the blended
+    per-appearance rate × projected ROS appearances. No-op when
+    `blend_svhd_rate` declines or there are no projected ROS appearances — in
+    both cases ESPN's (unreliable) ROS value is left as-is, as before.
+
+    Writing back as a *total* (rate × ROS GP) keeps the stored shape identical
+    to every other ROS counter, so `sim` needs no change: it recovers the rate
+    as `ros_svhd / gp_ros` (`sim._make_budget`, `_override_rp_svhd`), which is
+    exactly the blended value."""
+    a = act_stats or {}
+    f = proj_stats or {}
+    rate = blend_svhd_rate(
+        _as_float(f.get("32")), _as_float(f.get("83")),
+        _as_float(a.get("32")), _as_float(a.get("83")),
+    )
+    if rate is None:
+        return
+    ros_gp = _as_float(ros_stats.get("32")) or 0.0
+    if ros_gp <= 0:
+        return
+    ros_stats["83"] = rate * ros_gp
 
 
 def _as_float(v) -> float | None:
@@ -260,18 +353,6 @@ def fetch_rosters_and_projections() -> dict:
                 proj_season = ros.get("seasonId", season_id)
                 ros_stats = dict((ros.get("stats") or {}))
 
-                # ESPN's ROS projection encoding for stat_id 83 (SV+HLD) is
-                # unreliable — for some players it returns total GP. Their
-                # full-season projection (split=0) is also unreliable as a
-                # forecasting source: it's a preseason number that doesn't
-                # update with current performance, so subtracting actuals
-                # from it goes negative when a player outperforms it.
-                #
-                # Instead, derive a per-appearance SVHD rate from the player's
-                # *actual* season-to-date numbers (where stat_id 56 reliably
-                # equals SV + HLD) and apply that rate to projected ROS GP.
-                # For low-sample players (early in the season or recent
-                # call-ups), fall back to the full-season projection's rate.
                 act_ytd = next(
                     (s for s in p.get("stats", [])
                      if s.get("statSourceId") == 0
@@ -286,36 +367,28 @@ def fetch_rosters_and_projections() -> dict:
                      and s.get("seasonId") == season_id),
                     None,
                 )
-                svhd_rate: float | None = None
-                if act_ytd:
-                    act_stats = act_ytd.get("stats") or {}
-                    act_gp = act_stats.get("32")
-                    # stat_id 83 IS the league's SVHD scoring counter in both
-                    # actuals and projections — verified against ESPN's web UI.
-                    # In this league SVHD = SV + HLD, with no blown-save penalty
-                    # (an earlier note claiming 83 "subtracts blown saves" was a
-                    # mis-read of the broken split=6 ROS projection, not the
-                    # actuals). Prefer 83 over the raw stat_id 56 sum.
-                    act_svhd = act_stats.get("83")
-                    if act_gp and float(act_gp) >= MIN_ACT_GP_FOR_SVHD_RATE:
-                        svhd_rate = float(act_svhd or 0) / float(act_gp)
-                if svhd_rate is None and full_proj:
-                    fp = full_proj.get("stats") or {}
-                    proj_gp = fp.get("32")
-                    proj_svhd = fp.get("83")
-                    if proj_gp and float(proj_gp) > 0:
-                        svhd_rate = float(proj_svhd or 0) / float(proj_gp)
-                if svhd_rate is not None:
-                    ros_gp = ros_stats.get("32") or 0
-                    if float(ros_gp) > 0:
-                        ros_stats["83"] = svhd_rate * float(ros_gp)
+                act_ytd_stats = (act_ytd.get("stats") or {}) if act_ytd else None
 
-                # QS (stat 63): same problem as SVHD — ESPN's ROS rate doesn't
-                # track current performance — but a *level* bias rather than an
-                # encoding bug, so we shrink toward season-to-date actuals
-                # instead of replacing outright. See blend_qs_rate.
-                apply_qs_rate_blend(
-                    ros_stats, (act_ytd or {}).get("stats") if act_ytd else None)
+                # SVHD (stat 83): ESPN's ROS encoding is unreliable — for some
+                # players it returns total GP — so we rebuild the ROS value from
+                # a per-appearance rate instead of trusting it. The rate shrinks
+                # ESPN's FULL-SEASON projected rate (well-formed, but a preseason
+                # number that never tracks current performance) toward the
+                # pitcher's season-to-date actuals. stat_id 83 IS the league's
+                # SVHD scoring counter in both actuals and projections — verified
+                # against ESPN's web UI; in this league SVHD = SV + HLD with no
+                # blown-save penalty (an earlier note claiming 83 "subtracts
+                # blown saves" was a mis-read of the broken split=6 ROS value,
+                # not the actuals). Prefer 83 over the raw stat_id 56 sum.
+                apply_svhd_rate_blend(
+                    ros_stats, act_ytd_stats,
+                    (full_proj.get("stats") or {}) if full_proj else None)
+
+                # QS (stat 63): ESPN's ROS rate is well-formed here — no encoding
+                # bug — but carries the same failure to track current
+                # performance, as a pure *level* bias. Same shrinkage, shrinking
+                # toward actuals from ESPN's ROS rate. See blend_qs_rate.
+                apply_qs_rate_blend(ros_stats, act_ytd_stats)
 
                 for stat_id_str, value in ros_stats.items():
                     if value is None:

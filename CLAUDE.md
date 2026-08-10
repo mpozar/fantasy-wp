@@ -736,6 +736,11 @@ But its meaning differs across sources:
 - **Full-season projection** (split=0, src=1): stat 83 = the league's SVHD scoring value. **Trustworthy** — matches ESPN's web UI.
 - **ROS projection** (split=6, src=1): stat 83 is **broken** for some players (sometimes equals GP). DO NOT use directly.
 - **Actuals** (split=0, src=0): stat 83 = the league's SVHD scoring value. **Trustworthy.**
+  But **absent means zero** — ESPN omits the key entirely rather than sending 0
+  (83 of 133 rostered pitchers with appearances, 2026-08-10; an explicit `0`
+  never appears). Read a missing 83 as "no saves/holds", never "unknown", or a
+  save-less arm inherits whatever the fallback is. Stat **63 (QS) is NOT encoded
+  this way** — it is always present for a pitcher with starts.
 - `stat_id 56` in actuals = raw `SV + HLD` sum. Prefer **stat 83** in actuals (it's
   the league's scored SVHD counter and what `espn.fetch_rosters_and_projections`
   uses). *(An earlier version of this note claimed 83 "subtracts blown saves" — that
@@ -743,7 +748,42 @@ But its meaning differs across sources:
   scores SVHD = SV + HLD, no blown-save penalty. The live SVHD reconstruction uses
   SV + HLD accordingly.)*
 
-Our SVHD derivation (in `espn.fetch_rosters_and_projections`): at fetch time, override the broken split=6 stat 83 with `rate × ros_gp`, where `rate` is the player's actual season-to-date rate (`act_s83 / act_gp`), falling back to the full-season projection rate (`proj_s83 / proj_gp`) when sample size is small (< 15 GP).
+Our SVHD derivation (in `espn.fetch_rosters_and_projections`): at fetch time the
+broken split=6 stat 83 is overwritten with `rate × ros_gp`, where `rate` is an
+**empirical-Bayes shrinkage** (`espn.blend_svhd_rate` / `apply_svhd_rate_blend`)
+of ESPN's full-season projected rate toward the pitcher's season-to-date actual:
+
+    rate = (act_svhd + K·prior) / (act_gp + K),   prior = proj_s83 / proj_gp
+    SVHD_RATE_PRIOR_APPEARANCES = 8.0
+
+Same shape as the QS blend below, with two structural differences worth keeping
+straight:
+- **The prior is the FULL-SEASON projection, not the ROS one.** ESPN's ROS
+  encoding of 83 is broken (above), so it cannot be the prior the way
+  `ros_qs / ros_gs` is for QS. The full-season projection is well-formed, and it
+  is what the old cliff already fell back to.
+- **`K` is calibrated against the prior's per-player error**, not against
+  between-player spread: `K = p(1−p) / E[(prior − true)²]` ⇒ 7.6, vs ~14 from
+  the spread-based estimator `analyze_qs_rate.py` uses. The two agree only when
+  the prior is the population mean; ESPN's is a *preseason* forecast that misses
+  mid-season role changes outright (2026-08-10: 5 of 47 rostered relievers had a
+  **.000** projected rate against realized rates up to .571). Re-measure with
+  `scripts/analyze_svhd_rate.py`; the error curve is flat from K=4 to K=10.
+
+**This replaced a hard 15-appearance cliff** (`MIN_ACT_GP_FOR_SVHD_RATE`, removed
+2026-08-10): below 15 GP the rate was 100% ESPN's projection, at 15 GP it flipped
+to 100% actuals, so one outing could move a reliever's rate 0.3. The shrinkage
+beats it by **38% squared error over n=1..60 and 46% over n=1..25**, the gain
+concentrated below the old threshold. Effect on the live model was small — league
+projected SVHD **−2.2%** for the current week, max WP move ~3pp — because by
+mid-August almost every rostered reliever was already past the cliff; the win is
+early-season and at the boundary. It is a genuine blend, not a haircut: Bryan
+Abreu went *up* (.311 realized, .620 prior ⇒ .358) while Bryan Baker came down
+(.750 realized, .294 prior ⇒ .685). Tests: `tests/test_svhd_rate_blend.py`.
+
+`sim.MAX_SVHD_RATE` (0.80) still caps the rate the sim recovers, but it is a
+backstop against the *broken* ROS encoding — no blended rate this season comes
+near it (league max ≈ .69).
 
 ### `stat_id 63` = QS — ROS rate blended toward actuals (added 2026-08-10)
 
@@ -763,15 +803,27 @@ toward each pitcher's season-to-date actual rate**:
 
 `K` is the prior weight in *pseudo-starts*, so the blend is sample-size aware by
 construction: ~21 actual starts ⇒ ~70% weight on actuals, a 2-start callup stays
-essentially at ESPN's number. **Deliberately unlike the SVHD path's hard 15-GP
-cliff** (`MIN_ACT_GP_FOR_SVHD_RATE`), which flips discontinuously — the same
-shrinkage would suit SVHD too, but that's a separate change.
+essentially at ESPN's number. The SVHD path above now uses the same shape (it
+previously had a hard 15-GP cliff that flipped discontinuously).
 
 `K` is *measured*, not chosen: Beta-Binomial method of moments on the spread of
 observed QS rates minus binomial noise (`scripts/analyze_qs_rate.py`, same
 paste-the-constant convention as `analyze_variance.py`). Re-measure yearly. The
 league aggregate is flat across K=8-12 (+10.8% to +14.4% residual), so the exact
 value is not load-bearing.
+
+> **`QS_RATE_PRIOR_STARTS` is due a re-measure — two defects found in
+> `analyze_qs_rate.py` on 2026-08-10 while building its SVHD sibling, neither
+> fixed (changing the constant moves live projections and needs its own
+> verification).** (1) It fetches with `{"scoringPeriodId": 0}`, and that
+> parameter makes ESPN **omit the split=6 ROS block for ~60 rostered players**
+> — since the collector requires that block, K was measured on a biased subset
+> of the population it is applied to. Use a plain `_get(["mRoster"])`, as
+> `fetch_rosters_and_projections` and `analyze_svhd_rate.py` do. (2) The
+> spread-based estimator assumes the prior is the population mean; ESPN's is a
+> per-player forecast that can be individually wrong, which calls for
+> `K = p(1−p) / E[(prior − true)²]` instead (see the SVHD section). Both push
+> the QS K *down*, i.e. toward trusting actuals sooner.
 
 **Written back as a TOTAL** (`rate × ros_gs`), not a rate, so the stored shape
 matches every other ROS counter and `sim` needs no change — it recovers the rate
@@ -1636,6 +1688,32 @@ so it largely cancels in a head-to-head category comparison — which is why
 fixing the ×1.76 RP-appearance inflation moved week-19 WPs ≤2pp. It bites via
 roster asymmetry and via the rate cats (innings move ERA/WHIP denominators
 non-linearly). Details + caveats in `INVESTIGATIONS.md` (2026-08-10).
+
+**Do NOT read those numbers as today's bias.** They score the model *as it ran*,
+so the two biggest 2026-08-10 fixes are still baked in — and re-running the tool
+cannot remove them, because `player_projections` has no period key and the
+weeks cannot be re-simmed. For **SVHD in particular the headline +55.1% is
+mostly the since-fixed RP denominator**: dividing each week's projection by that
+week's measured inflation factor `G(w..season end)/G(w..last_reg)` (1.218 in
+week 10 rising to 1.585 in week 18) leaves an estimated **+15.2% residual, and
+the growing trend disappears** (per-week residuals 32/18/6/4/7/36*/11/11/8%,
+* = the 2-week All-Star period). That estimate is a *lower* bound on what
+remains — it divides the whole projection by the factor, so where the
+`rp-apps-capped` backstop bound, the true post-fix number is higher. The
+QS trend was already flat (−0.025/wk), consistent with the current week using
+the cadence model rather than the flat ROS share, so its +40.5% was genuinely
+rate-driven.
+
+### Re-measuring the SVHD-rate shrinkage constant
+
+```sh
+.venv/bin/python scripts/analyze_svhd_rate.py
+```
+Prints `SVHD_RATE_PRIOR_APPEARANCES` to paste into `app/espn.py`, both estimators
+(prior-error and spread-based) with the reason they disagree, ESPN's current
+level bias, and a squared-error back-test of the blend against the 15-appearance
+cliff it replaced. Read-only; hits the ESPN API. See the `stat_id 83` section
+under ESPN API quirks.
 
 ### Re-measuring the QS-rate shrinkage constant
 
