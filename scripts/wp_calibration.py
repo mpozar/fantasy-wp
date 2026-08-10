@@ -191,6 +191,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="data.db")
     ap.add_argument("--reps", type=int, default=4000)
+    ap.add_argument("--split-at", type=int, default=14, metavar="PERIOD",
+                    help="Also report an early-vs-late era split at this period. "
+                         "Default 14 (Jun 29): the QS/SVHD correctness fixes "
+                         "cluster before it — Binomial-not-Poisson 06-07, QS "
+                         "max-not-add 06-08, SVHD entry/exit margins + "
+                         "spot-starter skip 06-10, relief-SVHD smear 07-03.")
     args = ap.parse_args()
 
     conn = _connect(args.db)
@@ -275,9 +281,49 @@ def main() -> None:
               f"sharpness {sharpness(rows):.3f}, skill {skill(rows):+.3f}, "
               f"slope {(si[0] if si else 0):+.2f} CI {_fmt_ci(ci)}")
 
-    print("\n  Caveat: scores the model AS IT RAN (weeks 10-18 predate the "
-          "2026-08-10 fixes)")
-    print("  and cannot be re-simmed — player_projections has no period key.")
+    # ── era split: is a bad category actually a bad ERA? ────────────────
+    # Several correctness fixes landed INSIDE this window, and the ones that
+    # produced confidently-wrong output cluster early (see --split-at help). A
+    # category whose skill is dominated by the buggy era is not evidence about
+    # the model as it stands today. LONG_MATCHUPS excluded: not comparable.
+    from app.mlb import LONG_MATCHUPS
+    early = [r for r in crows
+             if r["period"] < args.split_at and r["period"] not in LONG_MATCHUPS]
+    late = [r for r in crows
+            if r["period"] >= args.split_at and r["period"] not in LONG_MATCHUPS]
+    if early and late:
+        print(f"\n  ERA SPLIT at period {args.split_at} "
+              f"(pre-fix n={len(early)} / post n={len(late)}) — a slope near 0 "
+              f"means\n  the forecast carried no information at all:")
+        print(f"    {'cat':>5} {'sharp≺':>7} {'sharp≻':>7} {'skill≺':>8} "
+              f"{'skill≻':>8} {'slope≺':>7} {'slope≻':>7}")
+        for stat in calib.COUNTING_CATS + calib.RATE_CATS:
+            e = [r for r in early if r["stat"] == stat]
+            l = [r for r in late if r["stat"] == stat]
+            if len(e) < 8 or len(l) < 8:
+                continue
+            se = slope_intercept(e)
+            sl = slope_intercept(l)
+            print(f"    {appstats.name(stat):>5} {sharpness(e):>7.3f} "
+                  f"{sharpness(l):>7.3f} {skill(e):>+8.3f} {skill(l):>+8.3f} "
+                  f"{(se[0] if se else 0):>+7.2f} {(sl[0] if sl else 0):>+7.2f}")
+        for label, rows in (("pre ", early), ("post", late)):
+            si = slope_intercept(rows)
+            ci = cluster_boot(rows,
+                              lambda rr: (slope_intercept(rr) or (None,))[0],
+                              args.reps)
+            print(f"    pooled {label}: skill {skill(rows):+.3f}, "
+                  f"slope {(si[0] if si else 0):+.2f} CI {_fmt_ci(ci)}")
+        print("    ≺ = before the split period, ≻ = from it onward. n per cell is")
+        print("    ~24, so read these as directional, not conclusive.")
+
+    print("\n  Caveat: scores the model AS IT RAN. Weeks 10-18 predate the "
+          "2026-08-10 fixes")
+    print("  (RP denominator, QS rate, SVHD rate) entirely — even the 'post' era "
+          "above is")
+    print("  pre-those — and it cannot be re-simmed: player_projections had no "
+          "period key.")
+    print("  `ros_projection_archive` fixes that from period 19 forward.")
 
 
 if __name__ == "__main__":

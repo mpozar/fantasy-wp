@@ -1873,11 +1873,39 @@ a reliability table, and the calibration slope — **slope < 1 = overconfident
   **+0.67 [CI +0.517, +0.818] — the CI excludes 1.0.** The reliability table shows
   it plainly: the 80-100% bin predicted **.910 and observed .739**; the 0-20% bin
   predicted .092 and observed .210. Per-category win probabilities are too extreme.
-- **SVHD is worse than useless: skill −0.301, and it's the MOST confident
-  category (sharpness 0.332, slope +0.27).** QS (−0.035, slope +0.42) and HR
-  (−0.013, slope +0.45) are also net-negative. The model is most certain exactly
-  where it is least reliable. H (+0.303), K (+0.286) and SB (+0.258) carry all
-  the real skill.
+- **SVHD scores worst (skill −0.301) while being the MOST confident category
+  (sharpness 0.332, slope +0.27)** — of 16 forecasts at a mean stated 96%, it went
+  7 W / 3 T / 6 L. QS (−0.035) and HR (−0.013) are also net-negative, and H
+  (+0.303), K (+0.286) and SB (+0.258) carry all the real skill. **But do NOT read
+  the SVHD/QS numbers as properties of today's model — see the era split below;
+  most of that deficit is bugs that were fixed during the window.**
+- **ERA SPLIT (`--split-at`, default period 14) — the interpretive control that
+  matters.** Several correctness fixes landed *inside* the measurement window, and
+  the ones that produced confidently-wrong output cluster early: Binomial-not-
+  Poisson (06-07, the "2 QS from one start spuriously wins a locked category"
+  bug), QS `max`-not-add (06-08), SVHD entry/exit margins + spot-starter skip
+  (06-10), relief-SVHD smear (07-03). Splitting at period 14:
+
+  | cat | skill pre | skill post | slope pre | slope post |
+  |---|---|---|---|---|
+  | SVHD | −0.527 | **−0.125** | +0.03 | **+0.41** |
+  | QS | −0.162 | **−0.015** | +0.00 | **+0.37** |
+  | HR | −0.109 | −0.052 | +0.04 | +0.32 |
+
+  A slope near **zero** means the forecast carried *no information whatsoever* —
+  that's what the early SVHD/QS eras look like, and it's the signature of a
+  correctness bug rather than a modelling weakness. Both roughly halve their
+  deficit afterwards. So **the headline −0.301 substantially measures dead bugs.**
+- **The general overconfidence, however, is NOT an era artifact:** pooled slope
+  **+0.63 [0.41, 0.84] pre vs +0.65 [0.37, 0.91] post** — unchanged, and still
+  excluding 1.0. That finding survives, so the under-dispersed-Binomial hypothesis
+  stays live for the residual. (n≈24 per cell in the split: directional only.)
+- **Even the "post" era predates today's fixes.** The RP-appearance denominator
+  was live for *all* of weeks 10-18 and grew, and because it inflated relievers in
+  proportion to how many a team rostered it was **asymmetric across rosters** —
+  a textbook mechanism for confidently favouring the wrong side in SVHD. Together
+  with the QS/SVHD rate blends, expect the true current-model numbers to be better
+  than even the post-era figures.
 - **Rate cats are honestly weak, not fixably timid.** Sharpness 0.041-0.067 (they
   sit at ~50% always) and skill ~+0.013 — near-zero information — but slopes
   ~1.0, so they're not mis-scaled. Pooled slope +0.90 with CI [−0.32, +2.01] is
