@@ -1023,8 +1023,13 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
 
         # Used by both future-week SP estimation and per-player RP rates.
         # Cheap (one query) so always load when we're running mc-v1.
+        # No upper period bound: ESPN's ROS projections span the remaining
+        # MLB season, so the share denominator must too. Bounding at last_reg
+        # truncated it and inflated RP appearances (and K/SVHD with them)
+        # hyperbolically as the fantasy regular season wound down — ×1.76 by
+        # week 19 of 2026 (see sim.load_total_remaining_games).
         team_total_ros_games = (
-            sim.load_total_remaining_games(conn, current, last_reg)
+            sim.load_total_remaining_games(conn, current)
             if model_name == "mc-v1" else {}
         )
 
@@ -1614,8 +1619,10 @@ def playoffs_cmd(sims: int | None, samples: int | None,
                 lineup_slot_counts = {}
         last_playoff = last_reg + playoffs.NUM_PLAYOFF_PERIODS
         ctx = sim.SimContext(
-            team_total_ros_games=sim.load_total_remaining_games(
-                conn, current, last_playoff),
+            # Unbounded = through the stored schedule's end. Equivalent to the
+            # old `current..last_playoff` bound in 2026 (playoffs end with the
+            # MLB season) but matches ESPN's ROS span by construction.
+            team_total_ros_games=sim.load_total_remaining_games(conn, current),
             lineup_slot_counts=lineup_slot_counts,
             use_cadence=False,
         )

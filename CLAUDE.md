@@ -561,6 +561,22 @@ If the user complains that a category WP "feels too lopsided," it's almost alway
 - `MAX_SP_RATE = 0.21` — caps per-team-game SP start rate (5-man rotation ceiling). ESPN's ROS GS projection for aces sometimes implies > 25%/game, which no real rotation produces.
 - `MAX_SVHD_RATE = 0.80` — caps per-appearance SV+HLD rate. Realistic elite RPs top out near 0.75-0.80.
 - `RP_APPEARANCE_RATE = 0.40` — fallback only, used when ROS GP or team-total games unavailable. Normal path is per-player derived.
+- **RP appearances ≤ team games** (`rp-apps-capped` flag) — physical backstop on
+  the RP branch; only reachable when `gp_ros` exceeds the denominator, i.e. a
+  denominator regression, never healthy inputs.
+
+**ROS-share denominator spans the MLB season, not the fantasy season (fixed
+2026-08-10).** Every "share of team games" rate built from ESPN's ROS split —
+the RP appearance share `(gp_ros/total_ros) × rp_remaining`, the future-week SP
+flat share, `_sp_relief_svhd` — divides an MLB-season-remaining numerator by
+`team_total_ros_games`. `compute` used to bound that at `last_reg` (week 22)
+while ESPN's ROS GP ran through week 25, inflating every RP's appearances (and
+K/SVHD/innings with them) by games(→25)/games(→22): ~×1.25 early season, ×1.76
+by week 19, ×4+ by week 22 — Gregory Soto projected 6.5 appearances in a 6-game
+week. `sim.load_total_remaining_games` now defaults to unbounded (through the
+stored schedule's end, skipping Postponed/Suspended/Cancelled rows since makeups
+get their own row) and both `cli` call sites pass no bound. Tests:
+`tests/test_total_ros_games.py`.
 
 ## Playoff odds (playoffs-v1, added 2026-07-20)
 
@@ -1270,7 +1286,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - **`pitcher_final_lines`** table — write-once archive of every Final starter/reliever line (`outs/er/k/p_h/p_bb/sv/hld`, `games_started`, `final_at`), durable past the `live_pitchers` prune. The line that earned/missed a QS/SVHD credit, answerable offline (this is how the Melton spot-start surfaced).
    - **`team_schedule.became_final_at`** — the first tick a game read Final (the credit boundary), instead of inferring it from `category_state` steps.
    - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
-   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
+   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `rp-apps-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
 

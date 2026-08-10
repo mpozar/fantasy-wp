@@ -1692,6 +1692,13 @@ def build_budgets(roster: list[dict],
                     units_p = (gp_ros / total_ros) * rp_remaining
                 else:
                     units_p = rp_remaining * RP_APPEARANCE_RATE
+                if units_p > rp_remaining:
+                    # Physical backstop: at most one appearance per team game.
+                    # Only reachable when gp_ros exceeds the team's remaining
+                    # games — i.e. a truncated/regressed denominator (see
+                    # load_total_remaining_games), never healthy inputs.
+                    units_p = rp_remaining
+                    pflags.append("rp-apps-capped")
                 denom_p = gp_ros
                 role_p = "RP"
 
@@ -2111,18 +2118,41 @@ def load_team_roster(conn: sqlite3.Connection, matchup_period_id: int,
 
 def load_total_remaining_games(conn: sqlite3.Connection,
                                from_period_id: int,
-                               to_period_id: int) -> dict[int, int]:
-    """Total scheduled games per pro team across an inclusive range of
-    matchup periods. Used by future-week sims to estimate per-SP weekly
-    starts as a share of season-remaining games."""
+                               to_period_id: int | None = None) -> dict[int, int]:
+    """Total scheduled games per pro team from `from_period_id` through
+    `to_period_id` — or, when `to_period_id` is None (the normal case),
+    through the END of the stored schedule (the MLB regular season).
+
+    This is the denominator for every "share of team games" rate derived
+    from ESPN's ROS projections (the RP appearance share, the future-week
+    SP flat share, the swingman relief-SVHD share). ESPN's ROS split spans
+    the remaining *MLB* season, so the game count it's divided by must span
+    the same window. Bounding it at the last fantasy regular-season week
+    truncated the denominator and inflated every RP's weekly appearances —
+    and with them K/SVHD/innings — by games(→season end)/games(→last_reg):
+    ~×1.25 early season, ×1.76 by week 19, ×4+ by week 22 (2026-08-10
+    Gregory Soto: ROS GP 26 / 24 truncated games → 6.5 projected
+    appearances in a 6-game week).
+
+    Postponed/suspended/cancelled rows are excluded: a makeup gets its own
+    Scheduled row (possibly in a later period), so counting the dead row
+    too would double-count that game."""
+    where = "matchup_period_id >= ?"
+    params: list = [from_period_id]
+    if to_period_id is not None:
+        where = "matchup_period_id BETWEEN ? AND ?"
+        params.append(to_period_id)
+    skip = ",".join("?" * len(_SKIP_SCHEDULE_STATES))
+    params.extend(_SKIP_SCHEDULE_STATES)
     rows = conn.execute(
-        """
+        f"""
         SELECT pro_team_id, COUNT(*) AS n
         FROM team_schedule
-        WHERE matchup_period_id BETWEEN ? AND ?
+        WHERE {where}
+          AND (game_status IS NULL OR game_status NOT IN ({skip}))
         GROUP BY pro_team_id
         """,
-        (from_period_id, to_period_id),
+        params,
     ).fetchall()
     return {r["pro_team_id"]: r["n"] for r in rows}
 
