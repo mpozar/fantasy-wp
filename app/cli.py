@@ -790,6 +790,33 @@ def _archive_final_lines(conn, lines, status_by_pk, date_by_pk, now) -> int:
     return n
 
 
+def _archive_final_batter_lines(conn, lines, status_by_pk, date_by_pk, now) -> int:
+    """Hitter analogue of `_archive_final_lines` — write-once copy of each Final
+    game's batter line into `batter_final_lines`, so it survives the live_batters
+    prune. Without it a hitter's actual games-played and per-game rates were
+    unrecoverable after the fact, which is why hitter accuracy could only be
+    inferred via the unit-free ratio trick. Same INSERT OR IGNORE keyed by
+    (game_pk, mlbam_id): first Final-tick capture wins."""
+    n = 0
+    for lb in lines:
+        pk = lb["game_pk"]
+        if not (status_by_pk.get(pk, set()) & _FINAL_GAME_STATES):
+            continue   # only archive Final games — in-progress lines still move
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO batter_final_lines
+                (game_pk, mlbam_id, name, pro_team_id, game_date,
+                 ab, h, b2, b3, hr, bb, hbp, sf, r, sb, final_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (pk, lb["mlbam_id"], lb["name"], lb["espn_team_id"], date_by_pk.get(pk),
+             lb["ab"], lb["h"], lb["b2"], lb["b3"], lb["hr"], lb["bb"],
+             lb["hbp"], lb["sf"], lb.get("r") or 0, lb.get("sb") or 0, now),
+        )
+        n += cur.rowcount
+    return n
+
+
 def _track_reliever_appearances(conn, lines, margin_by_game_team, now) -> None:
     """Persist each reliever's entry/exit run-margin across ticks, so the in-game
     SVHD model can judge a save/hold from the conditions WHEN HE PITCHED rather than
@@ -1051,8 +1078,12 @@ def refresh_live() -> None:
                      lb["bb"], lb["hbp"], lb["sf"],
                      1 if lb.get("still_in", True) else 0, now),
                 )
-            # Durable archive of Final pitcher lines (survives the prune above).
+            # Durable archive of Final pitcher + batter lines (survives the
+            # prune above). The batter half closes the hitter-actuals gap: a
+            # hitter's games-played and per-game rates were unrecoverable once
+            # live_batters was pruned.
             _archive_final_lines(conn, live_p, status_by_pk, date_by_pk, now)
+            _archive_final_batter_lines(conn, live_b, status_by_pk, date_by_pk, now)
 
             # Track reliever entry/exit margins for the in-game SVHD model, then
             # prune appearances for games that have aged out of the window.

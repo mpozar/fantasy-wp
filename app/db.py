@@ -201,6 +201,38 @@ CREATE TABLE IF NOT EXISTS pitcher_final_lines (
 CREATE INDEX IF NOT EXISTS idx_pitcher_final_lines_date
     ON pitcher_final_lines (game_date);
 
+-- The hitter analogue of pitcher_final_lines (added 2026-08-10). Same write-once
+-- rule, same reason: `live_batters` is pruned once a game ages out of the
+-- unsettled window, so after the fact there was NO record of what a hitter
+-- actually did. That gap is why hitter accuracy could only be measured with the
+-- unit-free ratio trick (HR/H etc., which cancels games-played) — a hitter's
+-- games-played had no actual to compare against at all, so the ~+8%
+-- lineup-days over-projection measured 2026-08-10 is an inference rather than a
+-- direct reading. Carries the full OPS component set (ab/h/b2/b3/bb/hbp/sf) plus
+-- the scored counting cats (hr/r/sb), so both per-game rates and games-played
+-- become directly checkable going forward.
+CREATE TABLE IF NOT EXISTS batter_final_lines (
+    game_pk     INTEGER NOT NULL,
+    mlbam_id    INTEGER NOT NULL,
+    name        TEXT,
+    pro_team_id INTEGER,
+    game_date   TEXT,
+    ab          INTEGER,
+    h           INTEGER,
+    b2          INTEGER,
+    b3          INTEGER,
+    hr          INTEGER,
+    bb          INTEGER,
+    hbp         INTEGER,
+    sf          INTEGER,
+    r           INTEGER,
+    sb          INTEGER,
+    final_at    TEXT,               -- first tick this line was seen Final
+    PRIMARY KEY (game_pk, mlbam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_batter_final_lines_date
+    ON batter_final_lines (game_date);
+
 -- ── Per-week published-block cache (publish performance) ──
 -- publish rebuilds data.json every fast tick, but only the *current* week's
 -- content changes per tick (settled weeks are frozen; future weeks change only on
