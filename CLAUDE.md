@@ -1637,6 +1637,46 @@ fixing the ×1.76 RP-appearance inflation moved week-19 WPs ≤2pp. It bites via
 roster asymmetry and via the rate cats (innings move ERA/WHIP denominators
 non-linearly). Details + caveats in `INVESTIGATIONS.md` (2026-08-10).
 
+### Decomposing the SP start over-projection
+
+```sh
+.venv/bin/python scripts/analyze_starts.py
+```
+Splits projected SP starts against (a) starts those pitchers actually **made**
+and (b) starts actually **credited** (active pitching slot that day — the
+accounting ESPN's banked totals use, so the one `calibration.py` biases should be
+read against).
+
+**Findings 2026-08-10 (periods 11-18, 96 team-weeks): projected starts run
++23.7% above credited, and the gap is an almost exact 50/50 split of two things,
+NEITHER of which is a general bug:**
+
+1. **Slot attribution, ~10.6% of real starts (74 of 696) — DELIBERATE**, owner
+   call 2026-08-10. A bench/IL-slotted pitcher is projected at **full weight**:
+   the model assumes every manager activates a benched starter when he should, so
+   a team's WP is never penalised for a neglectful owner. Measured activation
+   rates, if this is ever revisited: prior slot active → 97.8% (453/463), bench →
+   74.9% (125/167), IL → 8.3% (1/12). An activation-probability discount was
+   built and **deliberately reverted** — don't re-add it without a new decision.
+2. **The All-Star fortnight.** Rotation error is **+3.9% (90% CI [+1.7, +6.3])
+   in normal weeks** — about as good as rotations are forecastable (rainouts,
+   mid-week IL moves, skipped turns) — but **+43.9% in period 15**. Root cause is
+   visible in the schedule: a `LONG_MATCHUPS` period has 14 calendar days but only
+   **11 game dates, 0.68 games/team/day vs ~0.90** normally. The break is ~3
+   gameless days that both rotation models (`_cadence_extra_start_dist`'s
+   rest-day walk and the flat `MAX_SP_RATE × open_weight` share) walk straight
+   through, so a fortnight projects ~2.3 turns per starter against 1.57 actual
+   (deGrom 2.98→1, Misiorowski 3.00→1). **Known limitation, not yet fixed** —
+   it costs nothing for the rest of 2026 (only period 15 is long) and can't be
+   validated again until July 2027.
+
+**Why this closes the pitching-bias accounting.** Read against *credited* starts
+(+23.7%), the category biases decompose cleanly into units × rate:
+K's +18.4% total ⇒ per-start K rate ≈ **−4%** (ESPN's K rate is fine), and QS's
++40.5% ⇒ per-start QS rate ≈ **+13.6%**, which is exactly what the QS blend
+removed (−14%). So after that fix the residual pitching over-projection is
+essentially all item 1 — i.e. as calibrated as the modelling choices allow.
+
 ### Re-measuring the QS-rate shrinkage constant
 
 ```sh
@@ -1911,6 +1951,15 @@ macOS gotcha: `/usr/sbin/cron` needs **Full Disk Access** (System Settings → P
 - Lineup changes — same
 - SP start *count* now carries variance (cadence `extra_dist` sampled per sim), but per-start blowups still lean on Poisson for OUTS/K (only ER gets NB); within-start tail risk is undersold
 - Cadence over-count: two rostered SPs from the *same* MLB team can each project the same open game as their turn (per-player independence, same as the old flat model). Rare on a real roster; not corrected
+- **Multi-week (All-Star) periods over-project starts ~+44%** — both rotation
+  models walk straight through the break's ~3 gameless days (`LONG_MATCHUPS`
+  period 15: 14 days but 11 game dates, 0.68 games/team/day vs ~0.90). Normal
+  weeks are +3.9%. Measured 2026-08-10 via `scripts/analyze_starts.py`; not
+  fixed (affects one period a season, next occurrence July 2027)
+- **Bench/IL-slotted pitchers are projected at full weight by design** (owner
+  call 2026-08-10) — costs ~10.6% of projected starts in credit that ESPN will
+  never score, deliberately, so WP never penalises a team for a neglectful
+  manager. See "Decomposing the SP start over-projection"
 - Cadence anchor uses name matching (no ESPN↔MLBAM player-id crosswalk) — same rare-miss risk as probable matching
 - Teammate correlation: each player's stats are independent in the sim, but real-world teammates share weather/pitcher/etc. Slightly over-spreads the outcome distribution.
 - Reliever leverage: an RP appearance in a save spot counts the same as one in a blowout
