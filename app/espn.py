@@ -20,6 +20,76 @@ BASE_URL = (
 # projection rate so a tiny sample doesn't blow up the projection.
 MIN_ACT_GP_FOR_SVHD_RATE = 15
 
+# Prior weight, in pseudo-starts, for the QS-rate blend below. Empirical-Bayes
+# (Beta-Binomial method of moments) over the league's rostered starters:
+# between-pitcher variance in true QS rate vs binomial noise ⇒ 9 pseudo-starts.
+# Re-measure with `scripts/analyze_qs_rate.py`, same convention as
+# analyze_variance.py / analyze_cadence.py.
+QS_RATE_PRIOR_STARTS = 9.0
+
+
+def blend_qs_rate(ros_gs: float | None, ros_qs: float | None,
+                  act_gs: float | None, act_qs: float | None) -> float | None:
+    """Per-start QS rate, shrinking ESPN's ROS projection toward the pitcher's
+    SEASON-TO-DATE ACTUAL rate.
+
+        rate = (act_qs + K·prior) / (act_gs + K),   prior = ros_qs / ros_gs
+
+    Why: ESPN's ROS projections are anchored to preseason "true talent" and do
+    not track current performance, and for QS specifically they run **~+37%
+    above realized rates** (measured 2026-08-10 over the league's rostered
+    starters: ESPN-implied .598 vs actual .438) — the level bias behind the
+    +40.5% start-of-week QS over-projection in `scripts/calibration.py`. ESPN's
+    per-player *ranking* still carries signal, so we keep its rate as the prior
+    and let each pitcher's own starts pull it toward the truth.
+
+    `K = QS_RATE_PRIOR_STARTS` is the empirical-Bayes shrinkage weight, so the
+    blend is sample-size aware by construction: a 21-start pitcher lands ~70%
+    on his actuals, a 2-start callup stays essentially at ESPN's number. That
+    graceful degradation is deliberately unlike the SVHD path's hard 15-GP
+    cliff (`MIN_ACT_GP_FOR_SVHD_RATE`), which flips discontinuously.
+
+    Returns None to mean "leave ESPN's projection alone": no projected starts
+    (a pure reliever — his spot-start QS is handled by the sim's promoted-starter
+    path), or no usable actuals to blend with. Clamped to [0, 1] since QS is
+    capped at one per start."""
+    if not ros_gs or ros_gs <= 0:
+        return None
+    if act_gs is None or act_gs <= 0 or act_qs is None:
+        return None
+    prior = min(max((ros_qs or 0) / ros_gs, 0.0), 1.0)
+    rate = ((act_qs + QS_RATE_PRIOR_STARTS * prior)
+            / (act_gs + QS_RATE_PRIOR_STARTS))
+    return min(max(rate, 0.0), 1.0)
+
+
+def apply_qs_rate_blend(ros_stats: dict, act_stats: dict | None) -> None:
+    """Rewrite `ros_stats["63"]` (ROS QS) in place to the blended per-start rate
+    × projected ROS starts. No-op when `blend_qs_rate` declines.
+
+    Writing back as a *total* (rate × ROS GS) keeps the stored shape identical
+    to every other ROS counter, so `sim` needs no change: it recovers the rate
+    as `ros_qs / gs_ros` (`_make_budget`'s per-start denominator, and
+    `_override_sp_qs`'s `qs_rate`), which is exactly the blended value."""
+    a = act_stats or {}
+    rate = blend_qs_rate(
+        _as_float(ros_stats.get("33")), _as_float(ros_stats.get("63")),
+        _as_float(a.get("33")), _as_float(a.get("63")),
+    )
+    if rate is None:
+        return
+    ros_gs = _as_float(ros_stats.get("33")) or 0.0
+    ros_stats["63"] = rate * ros_gs
+
+
+def _as_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
 
 class ESPNAuthError(RuntimeError):
     """Raised when ESPN responds with a redirect (cookies invalid/expired)."""
@@ -239,6 +309,13 @@ def fetch_rosters_and_projections() -> dict:
                     ros_gp = ros_stats.get("32") or 0
                     if float(ros_gp) > 0:
                         ros_stats["83"] = svhd_rate * float(ros_gp)
+
+                # QS (stat 63): same problem as SVHD — ESPN's ROS rate doesn't
+                # track current performance — but a *level* bias rather than an
+                # encoding bug, so we shrink toward season-to-date actuals
+                # instead of replacing outright. See blend_qs_rate.
+                apply_qs_rate_blend(
+                    ros_stats, (act_ytd or {}).get("stats") if act_ytd else None)
 
                 for stat_id_str, value in ros_stats.items():
                     if value is None:

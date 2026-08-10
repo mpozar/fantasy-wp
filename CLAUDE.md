@@ -745,6 +745,50 @@ But its meaning differs across sources:
 
 Our SVHD derivation (in `espn.fetch_rosters_and_projections`): at fetch time, override the broken split=6 stat 83 with `rate × ros_gp`, where `rate` is the player's actual season-to-date rate (`act_s83 / act_gp`), falling back to the full-season projection rate (`proj_s83 / proj_gp`) when sample size is small (< 15 GP).
 
+### `stat_id 63` = QS — ROS rate blended toward actuals (added 2026-08-10)
+
+Unlike SVHD, QS has no *encoding* bug — ESPN's ROS QS is a well-formed number
+that is simply **biased high in level**, because ROS projections are anchored to
+preseason talent and don't track current performance. Measured over the league's
+65 rostered starters (1161 actual starts): ESPN-implied **.598 vs actual .438,
+i.e. +36.7%** — the level bias behind the +40.5% start-of-week QS
+over-projection.
+
+So `espn.fetch_rosters_and_projections` rewrites ROS QS at fetch time via
+`espn.blend_qs_rate` / `apply_qs_rate_blend`, an **empirical-Bayes shrinkage
+toward each pitcher's season-to-date actual rate**:
+
+    rate = (act_qs + K·prior) / (act_gs + K),   prior = ros_qs / ros_gs
+    QS_RATE_PRIOR_STARTS = 9.0
+
+`K` is the prior weight in *pseudo-starts*, so the blend is sample-size aware by
+construction: ~21 actual starts ⇒ ~70% weight on actuals, a 2-start callup stays
+essentially at ESPN's number. **Deliberately unlike the SVHD path's hard 15-GP
+cliff** (`MIN_ACT_GP_FOR_SVHD_RATE`), which flips discontinuously — the same
+shrinkage would suit SVHD too, but that's a separate change.
+
+`K` is *measured*, not chosen: Beta-Binomial method of moments on the spread of
+observed QS rates minus binomial noise (`scripts/analyze_qs_rate.py`, same
+paste-the-constant convention as `analyze_variance.py`). Re-measure yearly. The
+league aggregate is flat across K=8-12 (+10.8% to +14.4% residual), so the exact
+value is not load-bearing.
+
+**Written back as a TOTAL** (`rate × ros_gs`), not a rate, so the stored shape
+matches every other ROS counter and `sim` needs no change — it recovers the rate
+as `ros_qs / gs_ros` (`_make_budget`'s per-start denominator and
+`_override_sp_qs`'s `qs_rate`). No-op for pure relievers (no ROS GS — their
+spot-start QS goes through the promoted-starter path) and when actuals are
+missing. Tests: `tests/test_qs_rate_blend.py`.
+
+**Effect (2026-08-10):** league projected QS fell **−14%** in every remaining
+week (wk19 54.4→46.9, wk22 63.4→54.2), and it is a genuine blend, not a haircut
+— Logan Webb went *up* (.636→.658, actual .667) while Peralta fell .600→.294
+(actual .174). WP moved ≤2.7pp, for the usual reason (a symmetric bias mostly
+cancels head-to-head). **Expected residual QS bias ≈ +20%, not ~+12%** — the
++40.5% total was rate bias × *start-count* bias, and only the rate half is
+fixed. The remainder is projected starts, the same suspected root as K's flat
++18%.
+
 ### `split_id` semantics
 
 ESPN's `statSplitTypeId`:
@@ -766,7 +810,8 @@ ESPN's ROS projections often disagree with current season-to-date rates — e.g.
 **Measured 2026-08-10 (`scripts/calibration.py`) — the QS half of that claim
 holds, the HR half does NOT.** Over periods 10-18, start-of-week **QS is
 over-projected +40.5%** (90% CI [+32.7, +48.2]), consistent with the inflated
-ROS QS rate above. But the old note here also claimed "most hitters' HR rates
+ROS QS rate above. **Fixed 2026-08-10 for QS** — see the QS-rate blend below;
+we no longer "trust the projection" for this one stat. But the old note here also claimed "most hitters' HR rates
 (projection ~2× actual)" — as it flows through to *scored totals* that is
 wrong and has been removed: the unit-free ratio test puts the HR **rate**
 slightly *under*-projected (HR/H −5.1% vs actual), and HR's small +2.5% total
@@ -1591,6 +1636,15 @@ so it largely cancels in a head-to-head category comparison — which is why
 fixing the ×1.76 RP-appearance inflation moved week-19 WPs ≤2pp. It bites via
 roster asymmetry and via the rate cats (innings move ERA/WHIP denominators
 non-linearly). Details + caveats in `INVESTIGATIONS.md` (2026-08-10).
+
+### Re-measuring the QS-rate shrinkage constant
+
+```sh
+.venv/bin/python scripts/analyze_qs_rate.py
+```
+Prints `QS_RATE_PRIOR_STARTS` to paste into `app/espn.py`, plus ESPN's current
+aggregate QS level bias and what the blend does to it at several K. Read-only;
+hits the ESPN API. See the `stat_id 63` section under ESPN API quirks.
 
 ### Re-measuring variance
 
