@@ -25,8 +25,11 @@ Two structural caveats, printed with the output so they can't be lost:
     denominator 08-10). It is a pessimistic read on today's model, and it
     cannot be re-simmed: `player_projections` has no period key, so the ROS
     inputs from those weeks are gone.
-  * Rate categories (OPS/ERA/WHIP) are EXCLUDED. `category_wp[].{home,away}_avg`
-    is an internal derived scale for them, not the displayed rate.
+  * Rate categories (OPS/ERA/WHIP) ARE included, in their own section with
+    their own aggregation (a ratio can't be summed). They were long excluded on
+    playbook #11's claim that their stored `avg` is "an internal derived scale";
+    that does not hold for the current model — verified 2026-08-10 against the
+    settled value at each decided week's final snapshot (ratio 1.0000, sd .001).
 
 Usage:
     .venv/bin/python scripts/calibration.py [--db data.db] [--reps 4000]
@@ -187,9 +190,35 @@ def main() -> None:
             print(f"    {appstats.name(stat)}/H projected vs actual: "
                   f"{(pr/ar - 1):+.1%}")
 
+    # ── Rate categories (OPS/ERA/WHIP) ──────────────────────────────────
+    # Measurable after all — playbook #11's "internal scale" claim doesn't hold
+    # for the current model (see app/calibration.RATE_CATS). Different
+    # aggregation: a ratio can't be summed, and discrimination matters more than
+    # level here.
+    rate_obs = calib.collect(conn, stats=calib.RATE_CATS)
+    if rate_obs:
+        rby = calib.by_stat(rate_obs)
+        print("\n  rate categories (own units — a ratio can't be summed):")
+        print(f"    {'cat':>5} {'n':>4} {'proj':>7} {'actual':>7} {'level':>8} "
+              f"{'MAE':>6} {'sd_proj':>8} {'sd_act':>7} {'spread':>7} {'corr':>6}")
+        for stat in calib.RATE_CATS:
+            s = calib.rate_summary(rby.get(stat) or [])
+            if not s:
+                continue
+            print(f"    {appstats.name(stat):>5} {s['n']:>4} {s['mean_proj']:>7.3f} "
+                  f"{s['mean_actual']:>7.3f} {s['level']:>+8.3f} {s['mae']:>6.3f} "
+                  f"{s['sd_proj']:>8.3f} {s['sd_actual']:>7.3f} "
+                  f"{(s['spread_ratio'] or 0):>7.2f} "
+                  f"{('%.2f' % s['corr']) if s['corr'] is not None else '  n/a':>6}")
+        print("    spread = sd(projected)/sd(actual). Well below 1.0 means the")
+        print("    forecast barely varies — regressed to the mean, so it can be")
+        print("    unbiased yet unable to rank a good week against a bad one.")
+        print("    ERA/WHIP are reversed cats (lower is better); a positive level")
+        print("    therefore means projecting WORSE pitching than happened.")
+
     print("\n  Caveats: scores the model AS IT RAN (weeks 10-18 include several")
     print("  since-fixed bugs incl. the 08-10 RP denominator); cannot be re-simmed")
-    print("  (player_projections has no period key). Rate cats excluded.")
+    print("  (player_projections has no period key).")
 
 
 if __name__ == "__main__":

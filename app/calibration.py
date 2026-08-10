@@ -22,6 +22,21 @@ from app.mlb import LONG_MATCHUPS, matchup_period_window
 # H, R, HR, SB, K, QS, SVHD — see app/stats.py for the canonical map.
 COUNTING_CATS = [1, 20, 5, 23, 48, 63, 83]
 
+# OPS, ERA, WHIP. Measurable after all (verified 2026-08-10): playbook #11 said
+# `category_wp[].{home,away}_avg` is "an internal/derived scale (OPS showed
+# ~1.0-1.6, not ~.800)" for these, which is why they were excluded from every
+# measurement. It is NOT true of the current model — checked against the settled
+# value at each decided week's FINAL snapshot, where the projection must equal the
+# actual, the ratio is 1.0000 (sd 0.001, n=24 per cat), and pre-play values sit in
+# plausible display ranges (OPS .750-.805, ERA 3.36-3.88, WHIP 1.14-1.29). Treat
+# the old note as another unverified premise that carried a decision.
+#
+# They need DIFFERENT aggregation from counting cats: Σproj/Σactual is meaningless
+# for a ratio, so `rate_summary` reports level bias, MAE and — the finding that
+# matters here — DISCRIMINATION.
+RATE_CATS = [18, 47, 41]
+REVERSED_RATE_CATS = {47, 41}       # ERA/WHIP: lower is better
+
 # Weeks 1-9 have no usable pre-play snapshot (wp_snapshots start 2026-05-28,
 # mid-period-9), so every consumer's sample opens at period 10.
 FIRST_PERIOD = 10
@@ -52,7 +67,8 @@ def preplay_snapshot(conn: sqlite3.Connection, matchup_id: int,
 
 def collect(conn: sqlite3.Connection, *, first_period: int = FIRST_PERIOD,
             periods: list[int] | None = None,
-            skip_long: bool = False) -> list[dict]:
+            skip_long: bool = False,
+            stats: list[int] | None = None) -> list[dict]:
     """One row per (period, matchup, side, stat): projected vs settled actual.
 
     Restricted to periods with a decided winner — an unsettled week's "actual"
@@ -68,6 +84,7 @@ def collect(conn: sqlite3.Connection, *, first_period: int = FIRST_PERIOD,
     """
     from app import db as appdb
 
+    wanted = COUNTING_CATS if stats is None else stats
     if periods is None:
         periods = [r["p"] for r in conn.execute(
             """SELECT DISTINCT matchup_period_id p FROM matchups
@@ -89,7 +106,7 @@ def collect(conn: sqlite3.Connection, *, first_period: int = FIRST_PERIOD,
             for side in ("home", "away"):
                 team_id = m[f"{side}_team_id"]
                 actual = appdb.latest_category_state(conn, m["id"], team_id)
-                for stat in COUNTING_CATS:
+                for stat in wanted:
                     c = cw.get(stat)
                     if c is None or stat not in actual:
                         continue
@@ -123,6 +140,44 @@ def by_stat(rows: list[dict]) -> dict[int, list[dict]]:
     for r in rows:
         out[r["stat"]].append(r)
     return out
+
+
+def rate_summary(rows: list[dict]) -> dict | None:
+    """Accuracy of one RATE category. A ratio can't be summed, so instead of
+    Σproj/Σactual this reports:
+
+      * `level` — mean projected minus mean actual, in the category's own units
+        (ERA points, OPS points). The level bias.
+      * `mae` — mean absolute error, i.e. how far a single team-week's forecast
+        typically lands.
+      * `sd_proj` / `sd_actual` — DISCRIMINATION, and the interesting number here.
+        A projection whose spread is far below the outcome's spread is heavily
+        regressed to the mean: unbiased on average yet unable to tell a good
+        pitching week from a bad one, which is invisible to any bias metric.
+      * `corr` — Pearson correlation of projected vs actual across team-weeks.
+        The direct measure of whether the forecast ranks teams correctly at all.
+
+    Team-weeks with a zero/absent actual are dropped: an ERA of 0.00 over 0 outs
+    is not a good week, it is a team that hasn't pitched.
+    """
+    pairs = [(r["proj"], r["actual"]) for r in rows
+             if r["actual"] and r["actual"] > 0 and r["proj"] and r["proj"] > 0]
+    if len(pairs) < 3:
+        return None
+    import statistics
+    p = [x[0] for x in pairs]
+    a = [x[1] for x in pairs]
+    mp, ma = statistics.fmean(p), statistics.fmean(a)
+    sp, sa = statistics.pstdev(p), statistics.pstdev(a)
+    cov = statistics.fmean((pi - mp) * (ai - ma) for pi, ai in pairs)
+    corr = (cov / (sp * sa)) if sp > 0 and sa > 0 else None
+    return {
+        "n": len(pairs), "mean_proj": mp, "mean_actual": ma,
+        "level": mp - ma, "rel": (mp / ma - 1.0) if ma else None,
+        "mae": statistics.fmean(abs(pi - ai) for pi, ai in pairs),
+        "sd_proj": sp, "sd_actual": sa,
+        "spread_ratio": (sp / sa) if sa > 0 else None, "corr": corr,
+    }
 
 
 def weekly_bias(rows: list[dict]) -> dict[int, dict[int, float]]:

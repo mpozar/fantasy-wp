@@ -1570,12 +1570,17 @@ time and the signatures that explain ~every swing fast:
     schedule as "incoherent." Resolve team via `players.pro_team_id` →
     `teams.ESPN_TO_MLBAM`, never memory. There's no ESPN↔MLBAM player-id crosswalk,
     so player→team matching is name-only anyway.)
-11. **`category_wp[].home_avg`/`away_avg` are trustworthy for counting cats but NOT
-    the displayed value for rate cats.** For OPS/ERA/WHIP the stored `avg` is an
-    internal/derived scale (OPS showed ~1.0–1.6, not ~.800) and won't match the
-    site or the `FINAL CATEGORIES` block. Use it for *direction/relative* movement
-    only; for an actual rate quote use the scraped value or `matchup_facts.py`'s
-    final-category output. The **win%** (`home_wins/n_sims`) is always reliable.
+11. **`category_wp[].home_avg`/`away_avg` are trustworthy for counting cats — and
+    for rate cats too (CORRECTED 2026-08-10).** This entry used to claim the rate
+    cats' stored `avg` is "an internal/derived scale (OPS showed ~1.0–1.6, not
+    ~.800)" that "won't match the site", and that claim is what kept OPS/ERA/WHIP
+    out of every accuracy measurement. **It does not hold for the current model.**
+    Verified two ways: at each decided week's **final** snapshot — where the
+    projection must equal the settled result — `avg / category_state.score` is
+    **1.0000 (sd 0.001, n=24 per cat)**; and pre-play values sit in plausible
+    display ranges (OPS .750–.805, ERA 3.36–3.88, WHIP 1.14–1.29). If you ever see
+    OPS ~1.0–1.6 again, that's a real regression worth chasing, not the expected
+    encoding. The **win%** (`home_wins/n_sims`) is always reliable.
 12. **Reconcile against the *downsampled* site history before explaining "what the
     user saw."** `publish` keeps each week's final `RECENT_FULL_HOURS` (24) of
     history at raw 5-min resolution and snaps everything older to an
@@ -1728,8 +1733,30 @@ last snapshot before the period's first pitch) against the settled actual, for
 the seven counting cats, with 90% CIs bootstrapped **clustered by week**.
 Reports per-category bias, a per-week table (so a regime shift stays visible),
 a trend slope (a span/denominator bug *grows* over the season; a rate bias is
-flat), and a **unit-free ratio test** that cancels lineup-days to separate a
-units bias from a per-category rate bias.
+flat), a **unit-free ratio test** that cancels lineup-days to separate a
+units bias from a per-category rate bias, and a **rate-category section** with its
+own aggregation (a ratio can't be summed).
+
+**Rate cats — measured for the first time 2026-08-10; they had been excluded on a
+false premise (see playbook #11). Level bias is small; DISCRIMINATION is the
+problem:**
+
+| cat | proj | actual | level | sd(proj)/sd(actual) | corr |
+|---|---|---|---|---|---|
+| OPS | .782 | .767 | +0.015 | 0.13 | 0.14 |
+| ERA | 3.607 | 3.850 | −0.243 | 0.11 | 0.04 |
+| WHIP | 1.199 | 1.215 | −0.016 | 0.18 | 0.06 |
+
+No bias fix is warranted here (unlike QS/SVHD) — but the projections barely vary
+(11-18% of the outcome's spread) and are **near-uncorrelated with the result**.
+Interpret carefully: a conditional mean *should* be less variable than the
+outcome, and weekly team ERA over ~50 IP is genuinely noisy, so even a perfect
+forecast with this spread would only reach corr ≈ sd(proj)/sd(actual) ≈ 0.11 —
+the observed 0.04-0.14 is within sampling noise of that (SE ≈ 0.10 at n=108).
+**Hypothesis, unconfirmed:** the spread itself is too small — real rosters differ
+in pitching quality by more than 0.12 ERA points — which would mean the model
+homogenises teams. Telling "honestly weak forecast" from "under-dispersed
+forecast" needs the per-category win% calibration, not this table.
 
 **Findings as of 2026-08-10 (periods 10-18, 108 team-weeks per cat) — every
 counting category is over-projected:** H +8.3%, R +7.1%, HR +2.5%, SB +19.6%,
