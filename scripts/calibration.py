@@ -40,18 +40,14 @@ import sqlite3
 import statistics
 from collections import defaultdict
 
-from app import db as appdb
+from app import calibration as calib
 from app import stats as appstats
-from app.mlb import matchup_period_window
 
-# Counting cats only — rate cats' stored avg is an internal scale (playbook #11).
-COUNTING_CATS = [1, 20, 5, 23, 48, 63, 83]      # H, R, HR, SB, K, QS, SVHD
+# Measurement lives in app/calibration.py — shared with validate.check_calibration
+# so the recurring alarm and this report can never diverge.
+COUNTING_CATS = calib.COUNTING_CATS
 HITTER_CATS = {1, 20, 5, 23}
 LONG_PERIODS = {15}                              # All-Star: 2 weeks, not 1
-
-# Weeks 1-9 have no usable pre-play snapshot (snapshots start 2026-05-28,
-# mid-period-9), so the sample opens at period 10.
-FIRST_PERIOD = 10
 
 
 def _connect(path: str) -> sqlite3.Connection:
@@ -60,75 +56,11 @@ def _connect(path: str) -> sqlite3.Connection:
     return conn
 
 
-def _first_pitch(conn: sqlite3.Connection, period: int) -> str | None:
-    """Earliest observed first pitch of the period, from game_day_activity.
-    Falls back to Monday 16:00 UTC (before any MLB game) if untracked."""
-    row = conn.execute(
-        "SELECT MIN(active_start) a FROM game_day_activity WHERE matchup_period_id=?",
-        (period,),
-    ).fetchone()
-    if row and row["a"]:
-        return row["a"]
-    return f"{matchup_period_window(period)[0].isoformat()}T16:00:00+00:00"
-
-
-def _preplay_snapshot(conn: sqlite3.Connection, matchup_id: int,
-                      first_pitch: str) -> sqlite3.Row | None:
-    """Last snapshot strictly before the week's first pitch — the most-informed
-    forecast that still saw zero play. Hand-edited rows are skipped."""
-    return conn.execute(
-        """SELECT computed_at, details_json FROM wp_snapshots
-           WHERE matchup_id=? AND computed_at < ? AND details_json IS NOT NULL
-             AND edited=0
-           ORDER BY computed_at DESC LIMIT 1""",
-        (matchup_id, first_pitch),
-    ).fetchone()
-
-
 def collect(conn: sqlite3.Connection) -> list[dict]:
-    """One row per (period, matchup, side, stat): projected vs actual total."""
-    obs: list[dict] = []
-    periods = [r["p"] for r in conn.execute(
-        """SELECT DISTINCT matchup_period_id p FROM matchups
-           WHERE winner IN ('HOME','AWAY') AND matchup_period_id >= ?
-           ORDER BY p""", (FIRST_PERIOD,))]
-
-    for period in periods:
-        fp = _first_pitch(conn, period)
-        for m in conn.execute(
-            """SELECT id, home_team_id, away_team_id FROM matchups
-               WHERE matchup_period_id=? ORDER BY id""", (period,)):
-            snap = _preplay_snapshot(conn, m["id"], fp)
-            if snap is None:
-                continue
-            cw = {c["stat_id"]: c for c in
-                  json.loads(snap["details_json"]).get("category_wp") or []}
-            for side in ("home", "away"):
-                team_id = m[f"{side}_team_id"]
-                actual = appdb.latest_category_state(conn, m["id"], team_id)
-                for stat in COUNTING_CATS:
-                    c = cw.get(stat)
-                    if c is None or stat not in actual:
-                        continue
-                    proj = c.get(f"{side}_avg")
-                    act = actual[stat].get("score")
-                    if proj is None or act is None:
-                        continue
-                    obs.append({
-                        "period": period, "matchup_id": m["id"], "side": side,
-                        "team_id": team_id, "stat": stat,
-                        "proj": float(proj), "actual": float(act),
-                        "snap": snap["computed_at"],
-                    })
-    return obs
+    return calib.collect(conn)
 
 
-def _ratio(rows: list[dict]) -> float | None:
-    """Aggregate Σproj / Σactual — robust to zero actuals."""
-    sa = sum(r["actual"] for r in rows)
-    if sa <= 0:
-        return None
-    return sum(r["proj"] for r in rows) / sa
+_ratio = calib.ratio
 
 
 def _boot_ci(rows: list[dict], reps: int, seed: int = 12345,

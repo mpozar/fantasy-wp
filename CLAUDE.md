@@ -76,6 +76,11 @@ app/
   model.py      # Legacy ratio-v0 model — kept as fallback via `app compute --model ratio-v0`
   db.py         # SQLite schema + migrations
   stats.py      # Stat-id → human-name + display group/order
+  calibration.py# Start-of-week projected-vs-settled-actual measurement (counting
+                # cats only). ONE implementation, two consumers: the human report
+                # (scripts/calibration.py) and the recurring alarm
+                # (validate.check_calibration) — deliberately shared so they can't
+                # diverge the way INV_SITE_QS_OVERCREDIT did from publish's rule
   teams.py      # ESPN proTeamId ↔ MLBAM team_id map (hardcoded; both APIs are stable)
 docs/
   index.html, app.js, style.css   # Static site
@@ -930,7 +935,7 @@ Three tiers, all hold a shared `.app.lock` (in `_common.sh`):
 |---|---|---|---|
 | `fast.sh` | every 5 min | `refresh-live` + `fetch` + `compute` (current week) + `playoffs --if-live-finale` (self-throttling no-op except on a period's last day) + `publish` + git push | Skip if lock held |
 | `medium.sh` | every 4h | `refresh-rosters` + `compute --future` + `playoffs` (non-fatal) | Wait for lock |
-| `daily.sh` | once/day | `refresh-schedule` (all remaining weeks **+ 3 playoff periods**) + `publish --rebuild` (no push) | Wait for lock |
+| `daily.sh` | once/day | `refresh-schedule` (all remaining weeks **+ 3 playoff periods**) + `publish --rebuild` (no push) + `validate --calibration` (non-fatal) | Wait for lock |
 
 The fast tier is the only one that **pushes**. `daily.sh` also runs `publish --rebuild` (forces a full per-week block-cache rebuild + picks up rare late corrections to already-settled weeks), but doesn't push — the next fast tick does. `medium.sh` just updates the DB.
 
@@ -1906,6 +1911,15 @@ output-level properties at exactly that layer, and `fast.sh` runs `app validate`
 every 5-min tick (cheap, non-fatal), upserting findings into `validation_flags`
 (deduped per `code + matchup_id + flag_date`, with an `occurrences` count).
 
+**The battery's one structural blind spot (closed 2026-08-10).** Every check below
+is a *change* detector, a *freshness* detector, or an internal *consistency
+invariant*. None of them asked "was the projection **right**", so a large-but-stable
+bias in the model's inputs fired nothing at all — the RP-appearance inflation ran a
+whole season (growing to ×1.76) and the QS rate ran +28% with **zero flags**.
+`ANOM_CALIBRATION_JUMP` (daily tier) is the accuracy dimension: projected vs settled
+actual, per category. When adding a check, ask which of these four kinds it is — if
+it only reads the model's own output, it cannot see this class.
+
 **Four scopes of check** (the 2026-06-04 incidents — see `INCIDENTS.md` — drove the
 last three):
 - **per-matchup** — properties of one matchup's latest snapshot + current_state.
@@ -1995,6 +2009,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `ANOM_LINEUP_SNAPSHOT_MISSING` | warn | a day with live box-score lines has a `daily_lineups` snapshot | the ESPN lineup fetch in `refresh-live` failed (auth hiccup / expired cookies) → live component reconstruction can't attribute and silently falls back to stale ESPN components for every team. Check ESPN auth; verify `espn.fetch_daily_lineups` works. Quiet whenever nothing is live. |
 | `ANOM_WP_FLAPPING` | warn | home_wp doesn't oscillate (≥`FLAP_MIN_REVERSALS` direction flips ≥8pp over the last `FLAP_WINDOW` ticks) | a stat keeps being written then dropped then rewritten (flaky scrape/source regressing a counting cat). Distinct from a one-way swing or a swing-then-recover (those don't reverse repeatedly). Active weeks only. |
 | `ANOM_WP_RAIL_FLIP` | warn | home_wp doesn't touch BOTH rails (≤`RAIL_FLIP` and ≥1−`RAIL_FLIP`, i.e. near-0 AND near-100) within the window | a near-certain-win flipping to near-certain-loss is the worst UX and a fingerprint of a flaky/over-credited stat (the deGrom phantom-QS shape). Fires on *magnitude* (vs `ANOM_WP_FLAPPING`'s reversal count). A genuine decisive resolution can trip it too — hence warn. Active weeks only. |
+| `ANOM_CALIBRATION_JUMP` | warn | the most recently settled week's **projected-vs-actual** bias hasn't jumped away from the recent norm, per counting category | **This is the only check that compares a projection to a realized outcome.** Every other row here is a *change* detector, a *freshness* detector, or an internal *invariant* — so a large-but-STABLE input bias is invisible to the whole battery by construction, and two real bugs proved it: the RP-appearance inflation ran all season growing to ×1.76, and the QS rate ran +28%, with **zero flags ever firing**. Daily tier only (`app validate --calibration` from `daily.sh`): retrospective, aggregate, reads `details_json` across every settled week, and its answer only moves when a week settles — running it per-tick would inflate `occurrences` into meaninglessness. Fires on a **jump, never on the level**: the level legitimately bakes in deliberate modelling choices (bench/IL pitchers projected at full weight ⇒ ~10.6% of starts, owner call 2026-08-10), so a level threshold would either fire forever (the `INV_SITE_QS_OVERCREDIT` failure mode) or be too loose to catch anything. The jump is scaled by each category's **own** week-to-week volatility (robust MAD), because the noise floor differs wildly — H moved in a ~5pp band while HR ranged −17%..+41%. `CALIBRATION_MIN_ABS` (0.15) is load-bearing, not belt-and-braces: MAD collapses at n≤7 when a category clusters (K's prior weeks 11,12,11 ⇒ MAD 1pp ⇒ 3σ≈4pp). **Both constants were set by REPLAYING periods 10-18** — zero false positives — so re-verify against history before retuning. `LONG_MATCHUPS` periods are excluded (a fortnight isn't comparable to a week, and it carries the known +44% rotation artifact; it fired twice on exactly that before the exclusion). The detail carries the window **trend** as a mechanism hint: growing ⇒ suspect a span/denominator, flat ⇒ suspect a rate. **Known limitation:** catches *step* changes, not slow drift — the RP bug crept ~+5pp/week, which no jump test separates from noise at this n. Slow drift is the human read of `scripts/calibration.py`. Measurement shared via `app/calibration.py` so this and the report can't diverge. Tests: `tests/test_calibration_check.py`. |
 | `ANOM_RATE_DIVERGENCE` | warn | projected ERA/WHIP within **both** 40% (`RATE_DIVERGENCE`) **and** an absolute floor (`RATE_DIVERGENCE_ABS`: 2.50 ERA / 0.80 WHIP points) of current, once ≥20 IP banked | bug if components dropped (pairs with `INV_RATE_COMPONENTS_MISSING`). **The absolute floor was added 2026-07-29 after all 25 instances ever recorded (2026-06-25 → 07-24) were triaged benign** — the relative test alone divides by the *current* rate, so a hot small sample (1.12 ERA over 24 IP → 2.71) trips 40% on plain mean reversion. Max benign gap was 1.59 ERA / 0.39 WHIP points vs 4.61 for the 8.37→3.76 bug, so the floor separates them where the ratio can't (raising `RATE_DIVERGENCE` would need >1.42 and would blind the check to its own target case). |
 
 Thresholds live as constants at the top of `app/validate.py`

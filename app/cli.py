@@ -1297,9 +1297,14 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
               help="Who resolved it (default: $USER). Recorded with --resolve.")
 @click.option("--resolved", "list_resolved", is_flag=True,
               help="List recently *resolved* flags with their provenance, and exit.")
+@click.option("--calibration", "calibration", is_flag=True,
+              help="Also run the retrospective projected-vs-actual calibration "
+                   "check (daily tier — reads every settled week, so it's off the "
+                   "5-min path).")
 def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
                  resolve_code: str | None, resolve_note: str | None,
-                 resolve_by: str | None, list_resolved: bool) -> None:
+                 resolve_by: str | None, list_resolved: bool,
+                 calibration: bool) -> None:
     """Run invariant + anomaly checks over the latest WP snapshots and record
     findings in `validation_flags`. Cheap (no sims) — safe to run every fast tick.
     Review open flags with `--list`, dismiss triaged-legit ones with
@@ -1364,7 +1369,8 @@ def validate_cmd(all_periods: bool, future_periods: bool, list_only: bool,
 
         now = _now_iso()
         data_json_path = str(DOCS_DATA_JSON)
-        findings = _v.run(conn, periods, now=now, data_json_path=data_json_path)
+        findings = _v.run(conn, periods, now=now, data_json_path=data_json_path,
+                          calibration=calibration)
         _v.persist(conn, findings, now)
         errs = sum(1 for f in findings if f.severity == "error")
         click.echo(f"Validation periods {periods[0]}..{periods[-1]}: "

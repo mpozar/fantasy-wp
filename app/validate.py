@@ -38,6 +38,7 @@ when it's needed.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -444,6 +445,106 @@ def check_empty_budgets(view) -> list[Finding]:
                            f"{who} has no player budgets while the week has data "
                            f"— roster/projection fetch failed?"))
     return out
+
+
+# ── recurring calibration check (daily tier, retrospective) ──────────────
+#
+# Every other check in this file is a CHANGE detector, a FRESHNESS detector, or
+# an internal-consistency INVARIANT. None of them compares a projection against
+# a realized outcome, so a large-but-stable bias in the model's inputs is
+# invisible to the whole battery by construction: the 2026-08-10 RP-appearance
+# inflation ran all season and grew to ×1.76, and the QS rate ran +37%, with
+# ZERO flags ever firing. This closes that blind spot.
+#
+# It fires on a JUMP, never on the absolute level. The level legitimately bakes
+# in deliberate modelling choices — bench/IL pitchers are projected at full
+# weight by owner decision (2026-08-10), which alone costs ~10.6% of projected
+# starts — so a level threshold would either fire forever (the
+# INV_SITE_QS_OVERCREDIT failure mode: 1830 false positives burying real flags)
+# or be too loose to catch anything.
+#
+# The jump is scaled by each category's OWN week-to-week volatility (robust MAD),
+# because the noise floor differs wildly by category: over periods 10-18, H's
+# per-week bias moved in a ~5pp band while HR's ranged -17%..+41%. A flat
+# tolerance tuned for H false-fires on HR every few weeks; verified by replaying
+# the real series (test_calibration_check.py).
+#
+# KNOWN LIMITATION: this catches STEP changes, not slow structural drift. The RP
+# denominator bug crept ~+5pp/week, which no jump test can separate from noise at
+# this sample size. Slow drift is caught by the human read of
+# `scripts/calibration.py`, whose trend column is exactly that signal — a
+# span/denominator bug grows, a rate bias is flat.
+CALIBRATION_WINDOW = 8          # settled weeks considered
+CALIBRATION_MIN_WEEKS = 5       # need this many for a usable baseline
+CALIBRATION_SIGMA = 3.0         # robust sigmas before firing
+# ...and never fire below this absolute departure. The floor is load-bearing, not
+# belt-and-braces: MAD is fragile at n≤7, and a category whose weekly bias happens
+# to cluster tightly gets an absurdly small scale — K's prior weeks sat at
+# 11,12,11 giving MAD=1pp, so 3σ≈4pp and any ordinary wobble fired. Set by
+# REPLAYING the real series (periods 10-18, long periods excluded): 0.10 still
+# false-fired on week 16's K (+12.5pp, well inside its own historical 11-21%
+# range), 0.15 is silent across every week. Same discipline as INV_SCRAPE_STALE —
+# re-verify against history before retuning.
+CALIBRATION_MIN_ABS = 0.15
+
+
+def _median(xs: list[float]) -> float:
+    ys = sorted(xs)
+    n = len(ys)
+    return ys[n // 2] if n % 2 else (ys[n // 2 - 1] + ys[n // 2]) / 2.0
+
+
+def check_calibration(conn, now_iso: str | None = None) -> list[Finding]:
+    """Did the most recently settled week's projection bias JUMP away from the
+    recent norm, in any counting category?
+
+    Retrospective and aggregate, so it belongs on the daily tier — `run()` only
+    calls it when `calibration=True` (wired from `daily.sh`). Deliberately kept
+    off the 5-min path: the answer only changes when a week settles, and
+    re-upserting it 288×/day would inflate `occurrences` into meaninglessness.
+
+    One Finding listing every offending category (not one per category): flags
+    dedupe on `code + matchup_id + flag_date`, so per-category findings would
+    collide on the same row anyway.
+    """
+    from app import calibration as calib
+    from app import stats as appstats
+
+    try:
+        series = calib.weekly_bias(calib.collect(conn, skip_long=True))
+    except sqlite3.OperationalError:
+        return []
+    if not series:
+        return []
+
+    offenders: list[str] = []
+    for stat in calib.COUNTING_CATS:
+        per_week = series.get(stat) or {}
+        weeks = sorted(per_week)[-CALIBRATION_WINDOW:]
+        if len(weeks) < CALIBRATION_MIN_WEEKS:
+            continue
+        latest, prior = weeks[-1], weeks[:-1]
+        vals = [per_week[w] for w in prior]
+        base = _median(vals)
+        mad = _median([abs(v - base) for v in vals])
+        scale = 1.4826 * mad                       # MAD → robust σ
+        tol = max(CALIBRATION_SIGMA * scale, CALIBRATION_MIN_ABS)
+        dep = per_week[latest] - base
+        if abs(dep) > tol:
+            # Trend over the window is the mechanism hint a triager needs:
+            # growing ⇒ suspect a span/denominator; flat ⇒ suspect a rate.
+            span = weeks[-1] - weeks[0]
+            trend = ((per_week[weeks[-1]] - per_week[weeks[0]]) / span
+                     if span else 0.0)
+            offenders.append(
+                f"{appstats.name(stat)} wk{latest} {per_week[latest]:+.0%} vs "
+                f"baseline {base:+.0%} (departure {dep:+.0%}, tol {tol:.0%}, "
+                f"window trend {trend:+.1%}/wk)")
+
+    if not offenders:
+        return []
+    return [Finding("ANOM_CALIBRATION_JUMP", "warn", None,
+                    "start-of-week projection bias jumped: " + "; ".join(offenders))]
 
 
 _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
@@ -1107,12 +1208,18 @@ def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
 
 
 def run(conn, period_ids: list[int], *, now: str | None = None,
-        data_json_path: str | None = None) -> list[Finding]:
+        data_json_path: str | None = None,
+        calibration: bool = False) -> list[Finding]:
     """Run all checks over the latest snapshot of every matchup in the given
     periods, plus league-level (cross-matchup), pipeline-freshness, and
     published-site checks. Returns findings (does not persist — caller decides).
     `now` (ISO) enables the freshness checks; `data_json_path` enables the
-    site check."""
+    site check.
+
+    `calibration` opts into the retrospective projected-vs-actual check. Off by
+    default so the 5-min `fast.sh` path is untouched: it reads `details_json`
+    across every settled week, and its answer only moves when a week settles.
+    `daily.sh` passes it."""
     placeholders = ",".join("?" * len(period_ids))
     mids = [r["id"] for r in conn.execute(
         f"SELECT id FROM matchups WHERE matchup_period_id IN ({placeholders})", period_ids)]
@@ -1126,4 +1233,6 @@ def run(conn, period_ids: list[int], *, now: str | None = None,
     findings.extend(check_pipeline_freshness(conn, now))
     findings.extend(check_live_lineup_capture(conn, now))
     findings.extend(check_published_site(data_json_path, now, conn=conn))
+    if calibration:
+        findings.extend(check_calibration(conn, now))
     return findings
