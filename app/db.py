@@ -249,8 +249,11 @@ CREATE INDEX IF NOT EXISTS idx_live_batters_team
 -- count for the team on day D" — a player contributes a day's box-score line
 -- only if their slot that day is an active (scored) slot, not bench (16) / IL
 -- (17). Needed for live component reconstruction (pitching + OPS) and usable to
--- replace projected lineups with actuals for elapsed days. Snapshotted forward
--- each live tick (lineups lock daily, so the in-day snapshot is authoritative).
+-- replace projected lineups with actuals for elapsed days. Refreshed each live
+-- tick from ESPN's own per-`scoringPeriodId` roster state and REPLACED wholesale
+-- per day (`cli._authoritative_lineups`) — an in-day observation can predate the
+-- lineup lock, and a stale *active* slot manufactures QS/SVHD credit ESPN never
+-- gave (2026-08-10). Repair older days with `app backfill-lineups`.
 CREATE TABLE IF NOT EXISTS daily_lineups (
     game_date       TEXT NOT NULL,   -- MLB official date, YYYY-MM-DD
     fantasy_team_id INTEGER NOT NULL,

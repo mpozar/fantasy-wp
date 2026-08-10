@@ -57,7 +57,8 @@ ESPN/MLB APIs  ──(refresh-rosters, refresh-schedule, refresh-live, fetch)─
 ```
 app/
   cli.py        # Click commands: init-db, fetch, refresh-rosters, refresh-schedule,
-                # backfill-starts, refresh-live, compute [--future], publish
+                # backfill-starts, backfill-lineups, refresh-live,
+                # compute [--future], publish
   espn.py       # ESPN fantasy API client (authed v3). fetch_league_shape, fetch_teams,
                 # fetch_all_matchups, fetch_rosters_and_projections
   espn_public.py# ESPN public site.api client (no auth). fetch_probables (overlay
@@ -877,7 +878,8 @@ guards it.)
 - `refresh-schedule` (all weeks) hits MLB statsapi 14 times. ~5-10s.
 - `refresh-live` hits MLB statsapi once for the schedule (2-day window) plus one
   boxscore per *unsettled* game (in-progress + recently-Final today, ~10-30 during
-  a slate) and one ESPN `mRoster` call for the daily lineup snapshot. ~1s idle,
+  a slate) and one ESPN `mRoster` call **per game-day in the window** (1-2, each
+  addressed by its own `scoringPeriodId`) for the daily lineups. ~1s idle,
   ~2-4s during a live slate — still well under the 5-min budget. All best-effort
   (failures fall back silently; live component reconstruction degrades to ESPN's
   stale-but-safe components).
@@ -980,7 +982,7 @@ ESPN's REST `mMatchupScore` endpoint lags ~5-30 minutes behind their web UI. The
 
 We work around this by **scraping the rendered DOM** with headless Chromium via Playwright. `app/espn_scrape.py` opens `fantasy.espn.com/baseball/league/scoreboard`, waits for tables + WebSocket settle, then reads cat-by-cat values straight from the matchup tables. `cli.fetch` overrides the REST `cumulativeScore.scoreByStat` values with the scraped ones for the current period. Falls back to REST data silently if the scrape errors.
 
-**The scrape gate: live games OR a just-Final game (`cli._scrape_due`).** `fetch` scrapes when any game is In Progress **or** one went Final within `CLOSING_SCRAPE_WINDOW_MIN` (20) — the **closing scrape**, added 2026-08-09. The second case matters because the scrape banks QS/SVHD *the instant a game reads Final*, so during a slate ESPN's number is current within one tick — but the last games of a night finish together (all six of 2026-08-08's went Final at 04:05:02), and the moment none are In Progress the scrape stops, leaving that final credit un-banked until the ~07:00 REST settle ~3h later. **That window was the only thing the QS/SVHD floor/archive reconstruction ever existed to bridge**, and measured against fully-settled week 17 that reconstruction over-counted in 2 of 24 cases (~8%, always high, and `max()` made it permanent — it cost 1830 false `INV_SITE_QS_OVERCREDIT` flags and the m105 +16.4pp/−8.6pp swing pair). One extra scrape closes it with ESPN's own number. Deliberately stateless (no "last scrape ran at" marker): if the pipeline is down longer than the window we fall back to the 07:00 settle exactly as before. **`_scrape_owns_display_cat` takes the same `scrape_due` flag, not raw in-progress** — on a closing-scrape tick, keying off in-progress would hand REST ownership of the very cats the scrape is about to write.
+**The scrape gate: live games OR a just-Final game (`cli._scrape_due`).** `fetch` scrapes when any game is In Progress **or** one went Final within `CLOSING_SCRAPE_WINDOW_MIN` (20) — the **closing scrape**, added 2026-08-09. The second case matters because the scrape banks QS/SVHD *the instant a game reads Final*, so during a slate ESPN's number is current within one tick — but the last games of a night finish together (all six of 2026-08-08's went Final at 04:05:02), and the moment none are In Progress the scrape stops, leaving that final credit un-banked until the ~07:00 REST settle ~3h later. **That window was the only thing the QS/SVHD floor/archive reconstruction ever existed to bridge**, and measured against fully-settled week 17 that reconstruction over-counted in 2 of 24 cases (~8%, always high, and `max()` made it permanent — it cost the m105 +16.4pp/−8.6pp swing pair). One extra scrape closes it with ESPN's own number. **Root cause of those over-counts found 2026-08-10, and it was not the floor's arithmetic** — it was a stale pre-lock `daily_lineups` slot feeding it (see the Attribution bullet under "Live component reconstruction"). With lineups pulled per scoring period, the floor agrees with ESPN's settled scrape on **all 432** settled (matchup, team, stat) pairs of weeks 1-18, where it previously disagreed on exactly 3 — so the floor is a sound backstop again, not a ~8% liability. Deliberately stateless (no "last scrape ran at" marker): if the pipeline is down longer than the window we fall back to the 07:00 settle exactly as before. **`_scrape_owns_display_cat` takes the same `scrape_due` flag, not raw in-progress** — on a closing-scrape tick, keying off in-progress would hand REST ownership of the very cats the scrape is about to write.
 
 **Current-period `category_state` is split by stat_id between two sources, with a monotonicity guard.** The headless browser is pure overhead when no scrape is due, and REST does **not** reliably catch up when idle — observed hours-stale after a slate finalized (a team's H stuck at 11 while the UI/scrape showed 19). So:
 - **The scrape owns the league's display categories** (`display_cats` = the scored cats, incl. ERA/WHIP/OPS as rates). For a *seeded* current-period matchup, REST never writes these — that's what stops the stale-REST clobber that once flipped a WP ~20pp.
@@ -1037,9 +1039,30 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   (= `now − 7h`'s date; games on/after it aren't in ESPN's banked totals yet) —
   re-fetching each tick so a just-Final game's true final line stays current.
   Older games are pruned (ESPN has them; the sim reads them from category_state).
-- **Attribution (`daily_lineups`).** Each tick we snapshot the locked fantasy
-  lineup (`espn.fetch_daily_lineups`) keyed by game_date (first snapshot per day
-  wins — taken at/after first pitch when lineups lock). A box-score line counts
+- **Attribution (`daily_lineups`).** Each tick we pull **each game-day's own**
+  locked lineup from ESPN, addressed by that day's `scoringPeriodId`
+  (`cli._authoritative_lineups` → `espn.fetch_daily_lineups(spid)`,
+  `mlb.scoring_period_for_date`), and **replace** the stored rows for that date
+  (`cli._replace_daily_lineups`). ESPN's per-scoring-period state is the source
+  of truth; our own in-day observation is not.
+  - *This was "fetch the current lineup once, stamp it on every date in the
+    window, first snapshot per day wins" until 2026-08-10.* That assumed the
+    first tick of a day lands at/after lineup lock. When it doesn't, the
+    snapshot captures the manager's **pre-game intent** and `INSERT OR IGNORE`
+    freezes it forever — and a wrong *active* slot is the expensive direction,
+    because `load_settled_floor` credits that day's QS/SVHD from the archive
+    only when the slot is active, and publish's `max(scrape, floor)` can never
+    pull the phantom back down. Bryan Baker was stored slot 15 for 08-04 while
+    ESPN had him **benched**, so the site published Swamp Dragons SVHD **4
+    against ESPN's 3** — a lost category displayed as a tie, for six days.
+    Re-pulling 14 days corrected **43 slots across 8 of 12 teams**, almost all
+    in pairs (one bat out, one in) — late swaps are routine, so this was never
+    a one-off. Repair past days with `app backfill-lineups [--days N]
+    [--dry-run]`. Tests: `tests/test_daily_lineups.py`.
+  - *Cross-day smearing* went with it: writing the current lineup under every
+    date in the window meant a day missing its own snapshot silently inherited
+    another day's slots.
+  A box-score line counts
   for a team only if the matched player (by `_norm_name`; no ESPN↔MLBAM id
   crosswalk) was in an active slot that day: pitching lines need a **pitcher slot
   {13,14,15}**, batting lines a **hitter slot ({0–12,19})**; bench (16) / IL (17)
@@ -1677,6 +1700,18 @@ K's +18.4% total ⇒ per-start K rate ≈ **−4%** (ESPN's K rate is fine), and
 removed (−14%). So after that fix the residual pitching over-projection is
 essentially all item 1 — i.e. as calibrated as the modelling choices allow.
 
+### Repairing past daily lineups
+
+```sh
+.venv/bin/app backfill-lineups --days 14 --dry-run   # report, then drop --dry-run
+```
+Re-pulls each past day's locked lineup from ESPN (per `scoringPeriodId`) and
+corrects `daily_lineups`. `refresh-live` keeps current days right on its own;
+this is for days recorded *before* that fix, or after any ESPN-auth outage
+(`ANOM_LINEUP_SNAPSHOT_MISSING`). Only rewrites a day ESPN answers for, prints
+every slot it changes, idempotent. A stale **active** slot is the one that costs
+real money — it manufactures a QS/SVHD credit ESPN never gave.
+
 ### Re-measuring the QS-rate shrinkage constant
 
 ```sh
@@ -1840,7 +1875,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |
 | `INV_SITE_MISSING` / `INV_SITE_UNREADABLE` | error | `data.json` exists and parses | publish never ran / wrote garbage. |
 | `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. Skips the live-recon cats (ERA/WHIP/OPS, QS/SVHD) — those are guarded by `INV_SITE_QS_OVERCREDIT` / `INV_RATE_RANGE` instead. |
-| `INV_SITE_QS_OVERCREDIT` | error | published QS/SVHD ≤ independently-recomputed `max(scrape, settled_floor + box)` | the site shows a **phantom counting credit** — the QS/SVHD double-count vs the live scrape (the 2026-06-07 deGrom case: site QS 4 where only 3 is supportable). Recomputed from raw `category_state` + box scores (a second implementation, so it catches a regression of the `max`-rule fix, not just publish drift). Live week only; best-effort (skips if the recompute can't load). **The recompute must consult the settled floor even when `box == 0`** — publish applies the floor in *two* places (the fold's `max(scrape, floor+box)`, and independently `cli._apply_qs_svhd_floor`'s `max(scrape, floor)` on every current-week publish). `_supported_credit` originally modelled only the fold and short-circuited to `scraped` when there was no in-window box credit, so a credit resting purely on the floor read as unsupportable: **1830 false positives over 2026-07-30..08-07** (m105 Swamp Dragons SVHD site=1 vs "supportable 0" — the floor genuinely held Bryan Baker's 8/04 save from `pitcher_final_lines`, which the idle scrape never banked). Fixed 2026-08-07; regression tests `test_site_qs_overcredit_quiet_when_credit_rests_on_the_settled_floor` (+ the still-fires-above-the-floor counterpart, so the guard isn't weakened). Lesson: this check is a *second implementation* of publish's rule — when publish gains a new path to a displayed value, this recompute has to gain it too, or it turns into a false-positive generator that buries real flags. |
+| `INV_SITE_QS_OVERCREDIT` | error | published QS/SVHD ≤ independently-recomputed `max(scrape, settled_floor + box)` | the site shows a **phantom counting credit** — the QS/SVHD double-count vs the live scrape (the 2026-06-07 deGrom case: site QS 4 where only 3 is supportable). Recomputed from raw `category_state` + box scores (a second implementation, so it catches a regression of the `max`-rule fix, not just publish drift). Live week only; best-effort (skips if the recompute can't load). **The recompute must consult the settled floor even when `box == 0`** — publish applies the floor in *two* places (the fold's `max(scrape, floor+box)`, and independently `cli._apply_qs_svhd_floor`'s `max(scrape, floor)` on every current-week publish). `_supported_credit` originally modelled only the fold and short-circuited to `scraped` when there was no in-window box credit, so a credit resting purely on the floor read as unsupportable: **1830 flag-occurrences over 2026-07-30..08-07**, judged false positives at the time and silenced on 2026-08-07 by teaching `_supported_credit` to consult the floor (regression tests `test_site_qs_overcredit_quiet_when_credit_rests_on_the_settled_floor` + the still-fires-above-the-floor counterpart). **⚠ That triage was wrong, established 2026-08-10.** The reasoning was "the floor genuinely held Bryan Baker's 8/04 save"; ESPN's own `mRoster` for that scoring period has Baker **benched**, ESPN never credited the save, and the site was showing a real phantom (m105 SVHD 4 vs ESPN's 3). The check was firing correctly and we taught it to stop. Two lessons, both expensive: (a) **1830 was never 1830 distinct problems** — flags carry an `occurrences` count and m105 alone was 185+233+117 ticks of the *same* credit, so a big number meant "long-lived", not "widespread"; count **distinct (code, matchup, stat)** before concluding a check is noisy. (b) **Never resolve a QS/SVHD flag by reasoning about our own archive** — ask ESPN (`espn.fetch_all_matchups()` carries the settled per-period `scoreByStat`); it is the authority the site is judged against. The underlying phantom is fixed at source (per-scoring-period lineups), so the floor path is sound and the 2026-08-07 accommodation now costs nothing — but it is an accommodation, not a validation. Lesson that still holds: this check is a *second implementation* of publish's rule — when publish gains a new path to a displayed value, this recompute has to gain it too. |
 | `INV_SITE_RECORD_ASYMMETRIC` | error | a matchup's two W-L-T records mirror (home W=away L, etc.) | always a bug — head-to-head category scoring is zero-sum. Was caused by summing per-team stored `result` flags that desync under temporal skew (fixed: `cli._apply_counting_results` derives results from a single home-vs-away score comparison). |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |
 | `ANOM_SCRAPE_EMPTY` | warn | games in progress ⇒ the live scrape returns >0 cells | the DOM scrape silently failed (auth wall, expired `.playwright_profile`, selector drift) and `fetch` fell back to laggy REST — display cats rot *while games are live*. Raised at **fetch** time (not `run`), since only `fetch` knows a scrape was attempted. Fix: re-run `scripts/espn_auth_setup.py`. ×N occurrences/day = persistent vs a one-off hiccup. Blind to a scrape that returns a *full* set of frozen cells — that's `INV_SCRAPE_STALE`. |
