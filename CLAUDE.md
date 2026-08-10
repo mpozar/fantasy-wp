@@ -761,7 +761,17 @@ ESPN's `statSplitTypeId`:
 
 ### Other projection encoding caveats (uninvestigated)
 
-ESPN's ROS projections often disagree with current season-to-date rates — e.g. Skenes' QS rate (actual 45% vs projection 86%), most hitters' HR rates (projection ~2× actual). These aren't encoding bugs — they're ESPN's model being anchored to preseason "true talent" rather than current performance. We trust the projection for these. Only SVHD had a real encoding error.
+ESPN's ROS projections often disagree with current season-to-date rates — e.g. Skenes' QS rate (actual 45% vs projection 86%). These aren't encoding bugs — they're ESPN's model being anchored to preseason "true talent" rather than current performance. We trust the projection for these. Only SVHD had a real encoding error.
+
+**Measured 2026-08-10 (`scripts/calibration.py`) — the QS half of that claim
+holds, the HR half does NOT.** Over periods 10-18, start-of-week **QS is
+over-projected +40.5%** (90% CI [+32.7, +48.2]), consistent with the inflated
+ROS QS rate above. But the old note here also claimed "most hitters' HR rates
+(projection ~2× actual)" — as it flows through to *scored totals* that is
+wrong and has been removed: the unit-free ratio test puts the HR **rate**
+slightly *under*-projected (HR/H −5.1% vs actual), and HR's small +2.5% total
+bias is the shared hitter-units over-projection partly cancelling it. Don't
+re-add an HR-rate correction on the strength of the old sentence.
 
 ### Probable pitchers — name-matching
 
@@ -1554,6 +1564,33 @@ echo $$ > .app.lock
 trap 'rm -f .app.lock' EXIT
 .venv/bin/app fetch && .venv/bin/app compute && .venv/bin/app publish
 ```
+
+### Measuring projection accuracy (start-of-week calibration)
+
+```sh
+.venv/bin/python scripts/calibration.py
+```
+Read-only. Compares each settled week's **pre-play** category projection (the
+last snapshot before the period's first pitch) against the settled actual, for
+the seven counting cats, with 90% CIs bootstrapped **clustered by week**.
+Reports per-category bias, a per-week table (so a regime shift stays visible),
+a trend slope (a span/denominator bug *grows* over the season; a rate bias is
+flat), and a **unit-free ratio test** that cancels lineup-days to separate a
+units bias from a per-category rate bias.
+
+**Findings as of 2026-08-10 (periods 10-18, 108 team-weeks per cat) — every
+counting category is over-projected:** H +8.3%, R +7.1%, HR +2.5%, SB +19.6%,
+K +18.4%, QS +40.5%, SVHD +55.1%. The hitter side decomposes *exactly* into a
+shared **~+8% lineup-days (units) over-projection** × a per-cat rate error
+(R/H −1.0%, HR/H −5.1%, SB/H +10.5%). Open hypotheses for the units bias:
+`_hitter_days_slotted` uses an *optimal* matching and ignores the manager's
+bench, so it assumes daily lineup optimization real managers don't do; plus the
+deliberate over-credits (BE-slot pitchers, IL-slotted players with return
+dates). **Why WP barely notices:** the bias is one-directional on *both* sides,
+so it largely cancels in a head-to-head category comparison — which is why
+fixing the ×1.76 RP-appearance inflation moved week-19 WPs ≤2pp. It bites via
+roster asymmetry and via the rate cats (innings move ERA/WHIP denominators
+non-linearly). Details + caveats in `INVESTIGATIONS.md` (2026-08-10).
 
 ### Re-measuring variance
 
