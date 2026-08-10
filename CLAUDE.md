@@ -1761,6 +1761,63 @@ rate-driven. For the *pitching* cats the companion decomposition is
 `scripts/analyze_starts.py` below — read those biases against **credited**
 starts, not projected ones.
 
+### Measuring tail calibration (are extreme category probabilities honest?)
+
+```sh
+.venv/bin/python scripts/tail_calibration.py
+```
+Read-only, ~35s. The companion to `calibration.py`: that one asks whether a
+projected *total* is the right size, this one asks whether the *probabilities*
+built from those totals survive contact with the tail. Measurement lives in
+`app/tail_calibration.py` (shared, per the `INV_SITE_QS_OVERCREDIT` lesson);
+`scripts/` is the report. Tests: `tests/test_tail_calibration.py`.
+
+Why it exists: a level bias cancels head-to-head **only when both teams carry
+similar volume**, so the same bias reads as a benign +40% on the level metric
+while flipping the *sign* of a projected margin. Nothing else in the battery
+sees that.
+
+Four outputs, each isolating a different defect:
+- **Reliability curve** — is a stated 1% actually 1%?
+- **Margin slope** — settled margin regressed on projected margin through the
+  origin. Below 1 = the model claims a bigger gap than materialises
+  (over-differentiates teams; the *between-matchup* defect).
+- **Dispersion** — errors expressed in units of the sim's own sigma. `typical`
+  (robust) is the width of the middle; `|z|>2` is the tail, and a correct model
+  shows 4.6%. `typical ≈ 1` with `|z|>2` far above 4.6% means a heavy tail, not
+  a wide middle — read the two together, never `typical` alone.
+- **Comeback units** — every category won from under 5%, flagged for churn.
+
+**Roster churn is separated, not assumed away.** Projections condition on the
+current roster, so a mid-week streaming add is a documented limitation, not a
+model error. A forecast is churn-exposed when that side later gained a budget
+entrant of the relevant type **never seen in this matchup's budgets before** —
+so an IL activation or a player dropping out and returning does NOT count
+(guarded by tests). The filter still excuses a forecast whether or not the
+newcomer produced, so churn-free columns are a **lower bound** on model error.
+
+**Findings as of 2026-08-10 (periods 10-18, 1.87M in-week forecasts, 1080
+units).** Calibration is fine everywhere above 5% (5-10% → 1.01×, 10-20% →
+1.06×) and **2.8× overconfident below it**: p<5% forecasts win 3.49% of the
+time against a stated 1.26%, ratio **2.77, 90% CI [1.55, 4.17]** clustered by
+matchup. Churn explains only part of it — 11 of the 38 comebacks, and the band
+only moves to **2.57 [1.18, 4.19]**. Churn-free residual by cat: **SVHD 8.3×,
+QS 5.1×, ERA 4.9× (2 episodes), SB 2.5× (1 episode)**; **K collapses 1.08 →
+0.38 — K's entire tail problem was churn.** Margin slopes: **K 0.63 [0.55,0.71],
+QS 0.57 [0.36,0.76], SVHD 0.58 [0.47,0.71]** (all exclude 1.0) vs 0.81-0.99 for
+every hitting cat and WHIP. The `gap / team total` column is the mechanism:
+H 10%, R 9%, K 19%, QS 20%, SB 35%, **SVHD 42%** — hitting volume is near-uniform
+so the bias cancels, pitching volume is not so it scales the gap.
+
+**Read the numbers with two caveats.** They score the model *as it ran*: QS and
+SVHD predate the 2026-08-10 rate blends and cannot be re-simmed, so those two
+are pessimistic while **K is current** (nothing was applied to it, and its bias
+is start-count driven, not rate driven — see the start decomposition below).
+And the reliability curve is snapshot-weighted, so one long-lived tail state
+contributes hundreds of rows; the unit table is the de-duplicated restatement
+and the CIs are matchup-clustered. Full write-up in `INVESTIGATIONS.md`
+(2026-08-10, two rows).
+
 ### Decomposing the SP start over-projection
 
 ```sh
