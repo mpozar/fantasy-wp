@@ -19,18 +19,19 @@ Minimising the blended rate's squared error over the weight gives
     E[(prior − p_true)²] ≈ mean((prior − p_obs)²) − E[p(1-p)/n]
 
 i.e. K is calibrated against HOW WRONG THE PRIOR IS, per player. Note this is
-NOT the estimator in `analyze_qs_rate.py`, which uses the between-player spread
+NOT the between-player-spread estimator
 
     K = mean_p·(1-mean_p) / var_between − 1,  var_between = var(p_obs) − noise
 
-Those agree only when the prior IS the population mean. ESPN's is not: it is a
-per-player forecast that can be individually wrong, and for SVHD it is
-STRUCTURALLY wrong for the mid-season role-changers it projected zero
-saves/holds for (2026-08-10: 5 of 47 rostered relievers, priors of .000 against
-realized rates up to .571). Spread-based MoM cannot see that and returns ~14;
-the prior-error version returns ~8, which is what the back-test below confirms.
-Both are printed, since a future season with a better prior should see them
-converge — and the same caveat applies to the QS constant.
+which `analyze_qs_rate.py` used as its headline until 2026-08-10 (it now prints
+this pair the same way). Those agree only when the prior IS the population mean.
+ESPN's is not: it is a per-player forecast that can be individually wrong, and
+for SVHD it is STRUCTURALLY wrong for the mid-season role-changers it projected
+zero saves/holds for (2026-08-10: 5 of 47 rostered relievers, priors of .000
+against realized rates up to .571). Spread-based MoM cannot see that and returns
+~14; the prior-error version returns ~8, which is what the back-test below
+confirms. Both are printed, since a future season with a better prior should see
+them converge.
 
 The prior here is ESPN's FULL-SEASON projection rate (split=0, src=1), not its
 ROS rate: ESPN's ROS encoding of stat 83 is broken (it returns total GP for
@@ -87,13 +88,14 @@ def collect() -> list[dict]:
     """Rostered relievers with actual appearances and a full-season projection.
 
     Fetched exactly as `fetch_rosters_and_projections` does — plain
-    `_get(["mRoster"])`, NOT with `scoringPeriodId=0`. That parameter (which
-    `analyze_qs_rate.py` still passes) makes ESPN omit the ROS split=6 block
-    for ~60 rostered players, among them a third of the league's relievers
-    (Bryan Baker, Gregory Soto, Alex Vesia, Kevin Kelly, …). Requiring the ROS
-    block would then silently measure a biased subset of the population the
-    constant is applied to. The ROS block is optional here for the same
-    reason: it is only needed to weight the aggregate, not to estimate K.
+    `_get(["mRoster"])`, NOT with `scoringPeriodId=0`, which `analyze_qs_rate.py`
+    passed until 2026-08-10 and which returns a **stale roster snapshot**: 108 of
+    its 279 players are not on any current roster, so only 110 of them carry ROS
+    GP against 133 under a plain fetch (the difference is roster composition —
+    for a player in both responses the split=6 block is identical). Requiring the
+    ROS block on that snapshot silently measures a biased subset of the
+    population the constant is applied to. The ROS block is optional here
+    anyway: it is only needed to weight the aggregate, not to estimate K.
     """
     d = espn._get(["mRoster"])
     out: list[dict] = []
@@ -189,7 +191,7 @@ def main() -> None:
     print(f"  mean observed rate         {mean_p:.3f}")
     print(f"  binomial noise             {noise:.5f}")
     print(f"  var(between relievers)     {var_between:.5f}   -> spread K "
-          f"{K_spread:.1f}  (analyze_qs_rate.py's estimator)")
+          f"{K_spread:.1f}  (the between-player-spread estimator)")
     print(f"  E[(prior − true)²]         {prior_err:.5f}   <- the prior is "
           f"individually wrong, not just off-level")
     if zero_prior:

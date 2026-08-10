@@ -24,8 +24,9 @@ BASE_URL = (
 # saves), so both estimates overstate how wrong the prior really is, and the
 # safe side of that is MORE shrinkage. The error curve is flat K=4..10, so the
 # exact value is not load-bearing. Re-measure with
-# `scripts/analyze_svhd_rate.py`, which explains why the spread-based estimator
-# `analyze_qs_rate.py` uses reads ~14 here and should not be used for this one.
+# `scripts/analyze_svhd_rate.py`, which explains why the between-player-spread
+# estimator reads ~14 here and should not be used for this one. (The QS script
+# made exactly that mistake until 2026-08-10 — see `QS_RATE_PRIOR_STARTS`.)
 #
 # Replaced a hard 15-appearance cliff (`MIN_ACT_GP_FOR_SVHD_RATE`) on
 # 2026-08-10: below 15 GP the rate was 100% ESPN's projection, at 15 GP it
@@ -36,12 +37,26 @@ BASE_URL = (
 # appearances immediately instead of ignoring them.
 SVHD_RATE_PRIOR_APPEARANCES = 8.0
 
-# Prior weight, in pseudo-starts, for the QS-rate blend below. Empirical-Bayes
-# (Beta-Binomial method of moments) over the league's rostered starters:
-# between-pitcher variance in true QS rate vs binomial noise ⇒ 9 pseudo-starts.
-# Re-measure with `scripts/analyze_qs_rate.py`, same convention as
-# analyze_variance.py / analyze_cadence.py.
-QS_RATE_PRIOR_STARTS = 9.0
+# Prior weight, in pseudo-starts, for the QS-rate blend below. Same
+# empirical-Bayes shape and calibration as SVHD's constant above: K is measured
+# against how wrong the PRIOR is per pitcher, K = p(1−p) / E[(prior − true)²]
+# ⇒ 8.6, and a direct squared-error back-test puts the optimum at 7.0 —
+# invariant across uniform n, today's per-pitcher start counts, and ROS-start
+# weighting. 7.0 takes the back-test: it measures the objective rather than
+# approximating it, and selection makes both numbers upper bounds (a rostered
+# starter's realized rate is luck-inflated *above* his true talent, while
+# ESPN's prior sits above the realized rate, so the true prior error is larger
+# than measured and the true K smaller). The error curve is flat K=6..10 —
+# within 2.4% of optimum — so the exact value is not load-bearing.
+#
+# Was 9.0 until 2026-08-10. That value was the *between-pitcher-spread*
+# estimator, K = p(1−p)/var_between − 1, run over a stale roster snapshot
+# (`analyze_qs_rate.py` fetched with `scoringPeriodId=0`, which returns rosters
+# 108 players adrift of the current ones). Both defects were real and they
+# nearly cancelled: on the correct sample the spread estimator reads 18.3, and
+# switching to the prior-error estimator brings it back to 8.6. Re-measure with
+# `scripts/analyze_qs_rate.py`, which prints both estimators and the back-test.
+QS_RATE_PRIOR_STARTS = 7.0
 
 
 def blend_qs_rate(ros_gs: float | None, ros_qs: float | None,
@@ -52,18 +67,21 @@ def blend_qs_rate(ros_gs: float | None, ros_qs: float | None,
         rate = (act_qs + K·prior) / (act_gs + K),   prior = ros_qs / ros_gs
 
     Why: ESPN's ROS projections are anchored to preseason "true talent" and do
-    not track current performance, and for QS specifically they run **~+37%
-    above realized rates** (measured 2026-08-10 over the league's rostered
-    starters: ESPN-implied .598 vs actual .438) — the level bias behind the
-    +40.5% start-of-week QS over-projection in `scripts/calibration.py`. ESPN's
-    per-player *ranking* still carries signal, so we keep its rate as the prior
-    and let each pitcher's own starts pull it toward the truth.
+    not track current performance, and for QS specifically they run **~+28%
+    above realized rates** (re-measured 2026-08-10 over the league's 89 rostered
+    starters, 1714 starts: ESPN-implied .596 vs actual .467) — the level bias
+    behind the +40.5% start-of-week QS over-projection in
+    `scripts/calibration.py`. ESPN's per-player *ranking* still carries signal,
+    so we keep its rate as the prior and let each pitcher's own starts pull it
+    toward the truth. (An earlier reading of ".598 vs .438, +37%" came from the
+    stale-roster sample described on `QS_RATE_PRIOR_STARTS`; that sample
+    overstated the level bias as well as mis-estimating K.)
 
     `K = QS_RATE_PRIOR_STARTS` is the empirical-Bayes shrinkage weight, so the
-    blend is sample-size aware by construction: a 21-start pitcher lands ~70%
+    blend is sample-size aware by construction: a 21-start pitcher lands ~75%
     on his actuals, a 2-start callup stays essentially at ESPN's number. The
-    SVHD path (`blend_svhd_rate`) now uses the same shape; it previously had a
-    hard 15-GP cliff, which flipped discontinuously.
+    SVHD path (`blend_svhd_rate`) uses the same shape and the same calibration;
+    it previously had a hard 15-GP cliff, which flipped discontinuously.
 
     Returns None to mean "leave ESPN's projection alone": no projected starts
     (a pure reliever — his spot-start QS is handled by the sim's promoted-starter
