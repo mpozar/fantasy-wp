@@ -1846,6 +1846,54 @@ contributes hundreds of rows; the unit table is the de-duplicated restatement
 and the CIs are matchup-clustered. Full write-up in `INVESTIGATIONS.md`
 (2026-08-10, two rows).
 
+### Is the published WP calibrated? (`scripts/wp_calibration.py`)
+
+```sh
+.venv/bin/python scripts/wp_calibration.py
+```
+`calibration.py` measures the model's *inputs*; this measures its *output* — when
+the site says 70%, does that side win 70%? Two levels: **matchup** (n=54, home
+side only — `away_wp ≈ 1 − home_wp`, so scoring both double-counts and shrinks
+every CI by √2) and **category** (n=540, clustered by matchup, ~10× the power and
+it localises the problem). Ties get half credit on both sides of the comparison.
+Reports skill vs always-50% (a Brier score alone is meaningless), AUC, sharpness,
+a reliability table, and the calibration slope — **slope < 1 = overconfident
+(too extreme), slope > 1 = too timid**.
+
+**Findings 2026-08-10 (periods 10-18, the model AS IT RAN):**
+
+- **Matchup level is fine.** Brier .2127 vs .2500 baseline ⇒ skill **+0.149** [CI
+  +0.015, +0.286], AUC **0.693** [0.567, 0.812], calibration slope **+1.00**. The
+  headline percentage genuinely beats a coin flip and isn't systematically
+  mis-scaled. (Intercept −0.075 and mean forecast .483 vs a .407 home win rate is
+  **not** a model bias — home/away is arbitrary in fantasy, and 0.407 is ~1.4 SE
+  from 0.5 at n=54. Season-wide it's 50 HOME / 58 AWAY.)
+- **Category level is OVERCONFIDENT.** Slope **+0.673**, counting cats pooled
+  **+0.67 [CI +0.517, +0.818] — the CI excludes 1.0.** The reliability table shows
+  it plainly: the 80-100% bin predicted **.910 and observed .739**; the 0-20% bin
+  predicted .092 and observed .210. Per-category win probabilities are too extreme.
+- **SVHD is worse than useless: skill −0.301, and it's the MOST confident
+  category (sharpness 0.332, slope +0.27).** QS (−0.035, slope +0.42) and HR
+  (−0.013, slope +0.45) are also net-negative. The model is most certain exactly
+  where it is least reliable. H (+0.303), K (+0.286) and SB (+0.258) carry all
+  the real skill.
+- **Rate cats are honestly weak, not fixably timid.** Sharpness 0.041-0.067 (they
+  sit at ~50% always) and skill ~+0.013 — near-zero information — but slopes
+  ~1.0, so they're not mis-scaled. Pooled slope +0.90 with CI [−0.32, +2.01] is
+  far too wide to conclude, so the under-dispersion hypothesis from the rate-cat
+  table is **neither confirmed nor refuted**; it just doesn't cost much either way,
+  since a category stuck at 50% barely moves the matchup WP.
+
+**Hypothesis for the overconfidence, code-grounded but unconfirmed:** the two
+worst categories are exactly the two sampled with a **deliberately
+under-dispersed** distribution — QS and SVHD are `PER_EVENT_CAPPED` → Binomial
+(see "Variance / overdispersion"), chosen to stop Poisson returning 2 QS from one
+start. Under-dispersed sampling ⇒ team totals too tightly concentrated ⇒ the
+winner looks more determined than it is. Teammate independence (a known
+limitation) pushes the same way for low-event cats. **Testable prediction:** the
+2026-08-10 RP-denominator + QS-rate + SVHD-rate fixes should move SVHD/QS skill
+upward; re-run this after ~6 post-fix weeks settle before touching the sampling.
+
 ### Decomposing the SP start over-projection
 
 ```sh
