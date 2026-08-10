@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -641,6 +641,56 @@ def refresh_schedule() -> None:
     )
 
 
+@cli.command("backfill-lineups")
+@click.option("--days", type=int, default=14, show_default=True,
+              help="How many days back (ending yesterday) to re-pull.")
+@click.option("--dry-run", is_flag=True, help="Report differences without writing.")
+def backfill_lineups(days: int, dry_run: bool) -> None:
+    """Re-pull past days' locked lineups from ESPN and correct `daily_lineups`.
+
+    The forward fix lives in `refresh-live` (`_authoritative_lineups`); this
+    repairs days already recorded from a pre-lock snapshot. A wrong *active*
+    slot is the expensive direction — `sim.load_settled_floor` credits that
+    day's QS/SVHD from `pitcher_final_lines` only when the slot is active, so
+    one stale row publishes a phantom counting credit (2026-08-10: Baker's
+    08-04 bench slot recorded as 15 → Swamp Dragons SVHD 4 vs ESPN's 3).
+
+    Only rewrites a day when ESPN returns a non-empty lineup for it, and
+    reports every slot that actually changed. Idempotent.
+    """
+    conn = db.connect()
+    try:
+        today = datetime.now(timezone.utc).date()
+        now = _now_iso()
+        changed = scanned = 0
+        for i in range(days, 0, -1):
+            gd = (today - timedelta(days=i)).isoformat()
+            before = {(r[0], r[1]): r[2] for r in conn.execute(
+                "SELECT fantasy_team_id, player_id, lineup_slot_id "
+                "FROM daily_lineups WHERE game_date=?", (gd,))}
+            if not before:
+                continue          # never captured — not ours to invent
+            scanned += 1
+            rows = _authoritative_lineups([gd]).get(gd)
+            if not rows:
+                click.echo(f"  {gd}: ESPN returned nothing, left as-is")
+                continue
+            diffs = [(e, before.get((e["fantasy_team_id"], e["player_id"])))
+                     for e in rows]
+            diffs = [(e, old) for e, old in diffs if old != e["lineup_slot_id"]]
+            for e, old in diffs:
+                click.echo(f"  {gd}: team {e['fantasy_team_id']} "
+                           f"{e['full_name']} slot {old} -> {e['lineup_slot_id']}")
+            if not dry_run:
+                with conn:
+                    _replace_daily_lineups(conn, gd, rows, now)
+            changed += len(diffs)
+        click.echo(f"{'Would correct' if dry_run else 'Corrected'} {changed} "
+                   f"slot(s) over {scanned} day(s).")
+    finally:
+        conn.close()
+
+
 @cli.command("backfill-starts")
 @click.option("--days", type=int, default=21, show_default=True,
               help="Days before the current period start to scan for Final-game starters.")
@@ -764,6 +814,61 @@ def _live_recon_block(since_date, hdec, adec):
     return {"since_date": since_date, "home": hdec, "away": adec}
 
 
+def _authoritative_lineups(game_dates: list[str]) -> dict[str, list[dict]]:
+    """ESPN's own locked lineup for each of `game_dates`, keyed by date.
+
+    Asks `mRoster` per day via that day's `scoringPeriodId` instead of reading
+    the *current* lineup once and stamping it on every date. Two bugs that fixes:
+
+    1. **Pre-lock capture.** The old rule kept each day's *first* snapshot, on
+       the assumption it was taken at/after first pitch. A tick that lands
+       before ESPN locks records the manager's *pre-game intent*, and
+       `INSERT OR IGNORE` then froze it permanently. Real cost (found
+       2026-08-10): Bryan Baker was snapshotted in slot 15 at 22:40:04Z on
+       08-04 but ESPN has him on the **bench** that day, so his save was ours
+       to credit and ESPN's to withhold — `load_settled_floor` counted it and
+       the site published Swamp Dragons SVHD 4 against ESPN's 3, turning a
+       lost category into a tie. Two week-17 credits (Wacha 07-31, Abreu
+       07-29) were wrong the same way; across weeks 1..18 these three were the
+       *only* disagreements between the floor and ESPN's scrape.
+    2. **Cross-day smearing.** The current-day lineup was written for *every*
+       date in the window, so a day whose own snapshot was missing silently
+       inherited a different day's slots.
+
+    Per-day, so one bad response can't poison the others; an empty/failed fetch
+    drops that date from the result and leaves its stored rows untouched.
+    """
+    out: dict[str, list[dict]] = {}
+    for gd in game_dates:
+        try:
+            spid = mlb.scoring_period_for_date(date.fromisoformat(gd))
+            rows = espn.fetch_daily_lineups(spid)
+        except Exception:  # noqa: BLE001 — auth/REST hiccup → keep what we have
+            continue
+        if rows:
+            out[gd] = rows
+    return out
+
+
+def _replace_daily_lineups(conn, game_date: str, rows: list[dict], now: str) -> None:
+    """Overwrite `game_date`'s stored lineup with ESPN's authoritative one.
+
+    A full replace (not an upsert) because a player dropped from a roster
+    mid-week would otherwise keep a stale active-slot row and stay creditable.
+    Caller guarantees `rows` is non-empty, so this never blanks a day.
+    """
+    conn.execute("DELETE FROM daily_lineups WHERE game_date=?", (game_date,))
+    conn.executemany(
+        """
+        INSERT INTO daily_lineups
+            (game_date, fantasy_team_id, player_id, lineup_slot_id, fetched_at)
+        VALUES (?,?,?,?,?)
+        """,
+        [(game_date, e["fantasy_team_id"], e["player_id"],
+          e["lineup_slot_id"], now) for e in rows],
+    )
+
+
 @cli.command("refresh-live")
 def refresh_live() -> None:
     """Upsert recent + near-future MLB games' status + inning state into
@@ -781,8 +886,6 @@ def refresh_live() -> None:
 
     No DELETE, just upserts on the existing rows.
     """
-    from datetime import date  # `timedelta` is imported at module level
-
     today = datetime.now(timezone.utc).date()   # UTC, not host-local (tz-independent)
     yesterday = today - timedelta(days=1)
     end = today + timedelta(days=2)
@@ -827,16 +930,10 @@ def refresh_live() -> None:
         except Exception:  # noqa: BLE001 — best-effort; REST hiccup → skip game
             pass
 
-    # Snapshot today's locked fantasy lineups (who counts for whom), keyed by the
-    # day(s) with games. INSERT OR IGNORE below keeps each day's *first* snapshot
-    # (taken at/after first pitch, when lineups are locked) authoritative.
+    # Snapshot each game-day's locked fantasy lineups (who counts for whom).
+    # Fetched PER DAY via ESPN's own `scoringPeriodId`, and REPLACED each tick.
     lineup_dates = sorted({date_by_pk[pk] for pk in fetch_pks})
-    daily_lineup_rows: list[dict] = []
-    if lineup_dates:
-        try:
-            daily_lineup_rows = espn.fetch_daily_lineups()
-        except Exception:  # noqa: BLE001 — auth hiccup → skip; reconstruction falls back
-            daily_lineup_rows = []
+    lineups_by_date = _authoritative_lineups(lineup_dates)
 
     conn = db.connect()
     try:
@@ -953,19 +1050,10 @@ def refresh_live() -> None:
             for pk in appr_pks - unsettled_pks:
                 conn.execute("DELETE FROM reliever_appearances WHERE game_pk=?", (pk,))
 
-            # Daily lineup snapshots: first snapshot per (day, team, player) wins.
-            for gd in lineup_dates:
-                for e in daily_lineup_rows:
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO daily_lineups
-                            (game_date, fantasy_team_id, player_id,
-                             lineup_slot_id, fetched_at)
-                        VALUES (?,?,?,?,?)
-                        """,
-                        (gd, e["fantasy_team_id"], e["player_id"],
-                         e["lineup_slot_id"], now),
-                    )
+            # Daily lineup snapshots: ESPN's per-scoringPeriod state replaces
+            # whatever we recorded before (see `_authoritative_lineups`).
+            for gd, rows in lineups_by_date.items():
+                _replace_daily_lineups(conn, gd, rows, now)
     finally:
         conn.close()
 
@@ -973,7 +1061,8 @@ def refresh_live() -> None:
         f"Refreshed live game state: {yesterday.isoformat()}..{end.isoformat()}, "
         f"team_game_rows={len(games)}, in_progress={len(in_progress_pks)}, "
         f"boxscore_games={len(fetch_pks)}, live_pitcher_rows={len(live_p)}, "
-        f"live_batter_rows={len(live_b)}, lineup_rows={len(daily_lineup_rows)}, "
+        f"live_batter_rows={len(live_b)}, "
+        f"lineup_days={len(lineups_by_date)}/{len(lineup_dates)}, "
         f"espn_probables_filled={espn_pp}"
     )
 

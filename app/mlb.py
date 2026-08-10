@@ -24,6 +24,20 @@ BASE_URL = "https://statsapi.mlb.com/api/v1"
 # Update once per season.
 SEASON_ANCHOR_MONDAY = date(2026, 3, 30)
 
+# ESPN's daily `scoringPeriodId` (1…187) for a calendar date. One SPID per day,
+# strictly linear, so a single (spid, date) pair pins the whole season. Used to
+# ask ESPN for a *historical* day's locked lineup (`mRoster` with
+# scoringPeriodId) rather than trusting our own in-day snapshot — see
+# `cli._authoritative_lineups`.
+#
+# Verified empirically 2026-08-10 against ESPN's own `mRoster` on five dates
+# spanning two months (07-29, 07-31, 08-04, 08-07, 08-08): each returned the
+# slot assignment that explains ESPN's banked QS/SVHD for that day, including
+# the three bench slots our live snapshots had recorded as active.
+# Update once per season, same cadence as SEASON_ANCHOR_MONDAY.
+SEASON_ANCHOR_SCORING_PERIOD = 62
+SEASON_ANCHOR_SCORING_PERIOD_DATE = date(2026, 5, 25)
+
 # Matchup periods that span MORE than one Mon→Sun week. ESPN keeps the
 # All-Star break as a single `matchupPeriodId` covering two calendar weeks
 # (every team is idle for several days, so a one-week matchup would be mostly
@@ -47,6 +61,15 @@ LONG_MATCHUPS: dict[int, int] = {15: 2}
 def monday_of(d: date) -> date:
     """Monday of the Mon→Sun week containing `d`."""
     return d - timedelta(days=d.weekday())
+
+
+def scoring_period_for_date(d: date) -> int:
+    """ESPN's daily `scoringPeriodId` for calendar date `d`.
+
+    Calendar-absolute, like `matchup_period_window` — depends on nothing but the
+    anchor, so it can't drift with ESPN's lagging `currentMatchupPeriod`.
+    """
+    return SEASON_ANCHOR_SCORING_PERIOD + (d - SEASON_ANCHOR_SCORING_PERIOD_DATE).days
 
 
 def _period_length_weeks(period_id: int) -> int:
