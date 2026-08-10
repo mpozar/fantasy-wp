@@ -97,6 +97,30 @@ CREATE TABLE IF NOT EXISTS player_projections (
     PRIMARY KEY (player_id, stat_id, split_id, season_id)
 );
 
+-- ── Write-once ROS-projection archive (makes backtesting possible) ──
+-- `player_projections` has NO period key: every fetch overwrites it, so the ROS
+-- inputs a past week was projected from are gone forever. That is why the model
+-- as it runs TODAY can never be scored against history — `scripts/calibration.py`
+-- can only score the model *as it ran*, and the 2026-08-10 bias measurements are
+-- therefore a pessimistic read that no later fix can re-baseline.
+--
+-- This archives the split=6 ROS block per matchup period, FIRST WRITE PER PERIOD
+-- WINS (same rule as `daily_lineups`): refresh-rosters runs 4-hourly, so the
+-- first capture after a period becomes current is the pre-play projection — the
+-- one the start-of-week forecast actually used. Later refreshes within the week
+-- must NOT overwrite it, or the archive drifts toward mid-week values and stops
+-- being a record of what was forecast.
+-- ~6.5k rows/week (283 players x ~23 stats), so ~150k rows a season: negligible.
+CREATE TABLE IF NOT EXISTS ros_projection_archive (
+    matchup_period_id INTEGER NOT NULL,
+    player_id         INTEGER NOT NULL,
+    stat_id           INTEGER NOT NULL,
+    value             REAL,
+    season_id         INTEGER NOT NULL,
+    captured_at       TEXT NOT NULL,   -- first tick this period was archived
+    PRIMARY KEY (matchup_period_id, player_id, stat_id, season_id)
+);
+
 -- ── MLB schedule (one row per game per team) ──
 CREATE TABLE IF NOT EXISTS team_schedule (
     matchup_period_id          INTEGER NOT NULL,

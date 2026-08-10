@@ -541,6 +541,22 @@ def refresh_rosters() -> None:
                     (pr["player_id"], pr["stat_id"], pr["value"],
                      pr["split_id"], pr["season_id"], now),
                 )
+                # Write-once ROS archive so this week's projection inputs survive
+                # the next fetch's overwrite (see db.SCHEMA: without it the model
+                # can never be scored against history). INSERT OR IGNORE gives
+                # "first write per period wins" — a later refresh this week must
+                # not drag the archive toward mid-week values.
+                if pr["split_id"] == sim.ROS_SPLIT_ID:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO ros_projection_archive
+                            (matchup_period_id, player_id, stat_id, value,
+                             season_id, captured_at)
+                        VALUES (?,?,?,?,?,?)
+                        """,
+                        (period_id, pr["player_id"], pr["stat_id"],
+                         pr["value"], pr["season_id"], now),
+                    )
 
             # Replace injury return dates wholesale (skip on a failed fetch so
             # we keep the last-good set rather than wiping it).
