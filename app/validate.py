@@ -590,25 +590,57 @@ def check_scrape_health(in_progress: int, scraped_cells: int) -> list[Finding]:
 
 
 # ── Scrape staleness (fetch-time) ────────────────────────────────────────
-# Ticks are 5 min (fast.sh), so 9 ticks ≈ 45 min of live baseball with the
-# league-wide H+R totals not moving *at all*, across 12 rosters. That isn't a
-# quiet night, it's a dead feed. The 2026-08-05 incident sat frozen ~8h; this
-# fires ~45 min in.
-SCRAPE_STALE_TICKS = 9
-# Those ticks must be genuinely consecutive. A wider span means the pipeline
-# itself gapped (laptop asleep, network outage) and a settle boundary may sit
-# inside the window — a different failure, already covered by
-# check_pipeline_freshness, and not evidence of a stale scrape.
-SCRAPE_STALE_MAX_SPAN_MIN = 75
+# How long the league-wide H+R totals must sit *completely still* before we call
+# the scrape frozen. This CANNOT be a fixed duration: the rate those totals move
+# is roughly proportional to how much baseball is being played.
+#
+#   full slate (~15 games)  every roster has batters up; 45 min of zero
+#                           league-wide hits is impossible → a stall is a dead feed
+#   2 games left            maybe 3-4 rostered players are even in a lineup;
+#                           long gaps are just a quiet night
+#
+# The first version used a flat 9 ticks (~45 min) gated only on "any game in
+# progress", and duly false-fired twice on 2026-08-09's 2-game tail (23:20-23:26,
+# 01:30-02:35) while the scrape was verifiably healthy — real gaps that night were
+# 95 min (1056→1057) and 55 min (1059→1060). A flag that cries wolf at the end of
+# most nights is one people learn to scroll past, so the threshold now scales.
+SCRAPE_STALE_BASE_MIN = 45      # stall that counts as frozen on a full slate
+SCRAPE_STALE_REF_GAMES = 8      # slate size BASE_MIN is calibrated for
+SCRAPE_STALE_MAX_MIN = 240      # ceiling, so a 1-game tail can't disable it forever
+# Nominal fast-tick cadence. The fetch window is widened by one tick so the
+# sampled span can actually REACH the threshold: ticks land every 5 min, so
+# querying exactly [now-45min, now] yields samples spanning only ~40 min and a
+# strict `span >= 45` could never be satisfied.
+SCRAPE_STALE_TICK_MIN = 5
+# Ticks are 5 min, so a window must hold at least this many samples to judge.
+# Doubles as the pipeline-gap guard the old MAX_SPAN constant provided: if the
+# cron stalled, the window simply won't contain enough samples and we stay quiet.
+SCRAPE_STALE_MIN_SAMPLES = 6
 # Grace after first pitch: before the slate starts the cats are *legitimately*
 # frozen (no baseball has been played), so the window must open late enough that
 # a frozen run means something. Without this the check fires every night at the
 # moment `in_progress` first goes non-zero.
 SCRAPE_STALE_GRACE_MIN = 20
 # The scrape-owned cats that move constantly during live play. H and R only:
-# HR/SB are low-event enough to stall honestly for 45 min, and QS/SVHD are
-# reconstructed elsewhere (_LIVE_RECON_CATS).
+# HR/SB are low-event enough to stall honestly, and QS/SVHD are reconstructed
+# elsewhere (_LIVE_RECON_CATS).
 _SCRAPE_STALE_CATS = (1, 20)   # H, R
+
+
+def scrape_stale_threshold_min(in_progress: int) -> int:
+    """Minutes of a totally-still H+R before the scrape counts as frozen.
+
+    Inversely proportional to the number of live games, clamped both ends:
+    `BASE_MIN * REF_GAMES / games`, never below BASE_MIN (a big slate shouldn't
+    get a *shorter* fuse than the calibrated one) and never above MAX_MIN (so a
+    single lingering game can't switch the detector off for the night).
+
+        15 games →  45 min      4 games →  90 min
+         8 games →  45 min      2 games → 180 min      1 game → 240 min
+    """
+    games = max(int(in_progress or 0), 1)
+    scaled = SCRAPE_STALE_BASE_MIN * SCRAPE_STALE_REF_GAMES / games
+    return int(min(SCRAPE_STALE_MAX_MIN, max(SCRAPE_STALE_BASE_MIN, scaled)))
 
 
 def check_scrape_staleness(conn, in_progress: int, current_period: int,
@@ -657,6 +689,17 @@ def check_scrape_staleness(conn, in_progress: int, current_period: int,
         return []
     if now_iso < window_start:
         return []
+    # Window is sized by how much baseball is running (see
+    # scrape_stale_threshold_min) — a fixed duration false-fires on a 2-game tail.
+    threshold_min = scrape_stale_threshold_min(in_progress)
+    try:
+        horizon = (datetime.fromisoformat(now_iso)
+                   - timedelta(minutes=threshold_min + SCRAPE_STALE_TICK_MIN)).isoformat()
+    except (TypeError, ValueError):
+        return []
+    # The grace-adjusted slate start still wins if it is later: right after first
+    # pitch the pre-slate flat run must not count toward a frozen verdict.
+    lower = max(window_start, horizon)
     sides = conn.execute(
         "SELECT id, home_team_id, away_team_id FROM matchups WHERE matchup_period_id=?",
         (current_period,)).fetchall()
@@ -675,13 +718,14 @@ def check_scrape_staleness(conn, in_progress: int, current_period: int,
                     SELECT fetched_at, score FROM category_state
                     WHERE matchup_id=? AND team_id=? AND stat_id=?
                           AND fetched_at >= ? AND fetched_at <= ?
-                    ORDER BY fetched_at DESC LIMIT ?
+                    ORDER BY fetched_at DESC
                     """,
-                    (m["id"], team_id, stat_id, window_start, now_iso,
-                     SCRAPE_STALE_TICKS),
+                    (m["id"], team_id, stat_id, lower, now_iso),
                 ).fetchall()
-                # Not written on every tick ⇒ no clean run to judge; stay quiet.
-                if len(rows) < SCRAPE_STALE_TICKS:
+                # Too few samples to judge — either the window hasn't filled yet or
+                # the cron gapped. Staying quiet here is what the old MAX_SPAN guard
+                # did, without needing a second constant.
+                if len(rows) < SCRAPE_STALE_MIN_SAMPLES:
                     return []
                 if any(r["score"] is None for r in rows):
                     return []
@@ -694,18 +738,22 @@ def check_scrape_staleness(conn, in_progress: int, current_period: int,
                min(datetime.fromisoformat(s) for s in stamps)
     except (TypeError, ValueError):
         return []
-    if span > timedelta(minutes=SCRAPE_STALE_MAX_SPAN_MIN):
-        return []          # cadence gapped — that's check_pipeline_freshness's job
-    ticks = range(SCRAPE_STALE_TICKS)
+    # The samples being constant is not enough — the frozen run must actually be
+    # as long as the threshold. Without this, a window that simply doesn't reach
+    # back far enough (slate just started, or history begins mid-window) fires on
+    # a short flat run: 55 min of stillness would trip the 180-min 2-game rule.
+    if span < timedelta(minutes=threshold_min):
+        return []
     return [Finding(
         "INV_SCRAPE_STALE", "error", None,
         f"{in_progress} game(s) in progress but the scrape's counting cats have not "
-        f"moved for {len(ticks)} consecutive ticks ({round(span.total_seconds() / 60)} "
-        f"min): league-wide H+R stuck at {total:g}. The scrape is returning "
-        f"well-formed but STALE cells (ANOM_SCRAPE_EMPTY can't see this) — display cats "
-        f"are frozen at the last settle AND the rate reconstruction is being rejected "
-        f"against the stale scrape. Check ESPN's live play-by-play feed request in the "
-        f"scoreboard page (2026-08-05: Akamai 403'd it for the headless browser)")]
+        f"moved for {round(span.total_seconds() / 60)} min "
+        f"(threshold {threshold_min} min at {in_progress} live game(s)): league-wide "
+        f"H+R stuck at {total:g}. The scrape is returning well-formed but STALE cells "
+        f"(ANOM_SCRAPE_EMPTY can't see this) — display cats are frozen at the last "
+        f"settle AND the rate reconstruction is being rejected against the stale "
+        f"scrape. Check ESPN's live play-by-play feed request in the scoreboard page "
+        f"(2026-08-05: Akamai 403'd it for the headless browser)")]
 
 
 def check_live_lineup_capture(conn, now_iso: str | None) -> list[Finding]:

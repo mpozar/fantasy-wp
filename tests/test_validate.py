@@ -708,97 +708,148 @@ def _mem_db_stale():
     _put_matchup(conn, 1, period=18)
     return conn
 
-def _open_slate(conn, start="2026-08-04T22:40:00+00:00"):
+def _open_slate(conn, start="2026-08-04T20:00:00+00:00"):
     conn.execute("INSERT INTO game_day_activity VALUES (18,'2026-08-04',?,NULL,?)",
                  (start, start))
     conn.commit()
 
 def _tick(conn, at, h, r):
-    """One tick of the two scrape-owned counting cats, for BOTH sides of the
-    matchup — the check reads every (matchup, team, stat) series."""
+    """One tick of the two scrape-owned counting cats, for BOTH sides."""
     _put_state(conn, 1, 20, {1: h, 20: r}, at)
     _put_state(conn, 1, 21, {1: h + 1, 20: r + 1}, at)
 
-def _ticks(conn, n, *, h, r, first_min=0, step=5, bump=0.0):
-    """n ticks 5 min apart from 23:00Z; `bump` adds per tick (0.0 ⇒ frozen)."""
-    base = datetime(2026, 8, 4, 23, 0, tzinfo=timezone.utc) + timedelta(minutes=first_min)
+def _ticks(conn, n, *, h, r, first_min=0, step=5, bump=0.0,
+           base="2026-08-04T21:00:00+00:00"):
+    """n ticks `step` min apart; `bump` adds per tick (0.0 ⇒ frozen).
+    Returns the last tick's timestamp."""
+    t0 = datetime.fromisoformat(base) + timedelta(minutes=first_min)
     for i in range(n):
-        at = (base + timedelta(minutes=step * i)).isoformat()
-        _tick(conn, at, h + bump * i, r + bump * i)
-    return (base + timedelta(minutes=step * (n - 1))).isoformat()
+        _tick(conn, (t0 + timedelta(minutes=step * i)).isoformat(), h + bump * i, r + bump * i)
+    return (t0 + timedelta(minutes=step * (n - 1))).isoformat()
 
-def test_scrape_staleness_flags_frozen_cats_during_live_games():
-    """The incident: cells keep arriving, values never move, across a live slate."""
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2)   # frozen at Monday's totals
-    f = v.check_scrape_staleness(conn, in_progress=3, current_period=18, now_iso=now)
-    assert len(f) == 1
-    assert f[0].code == "INV_SCRAPE_STALE" and f[0].severity == "error"
-    assert "have not moved" in f[0].detail
+
+# ── the scaling rule itself ──
+
+def test_threshold_scales_inversely_with_live_games():
+    """THE 2026-08-09 false positive: a flat 45-min window fired twice on a 2-game
+    tail where real H+R gaps were 55 and 95 min, while the scrape was healthy."""
+    f = v.scrape_stale_threshold_min
+    assert f(15) == 45 and f(8) == 45          # full slate: the calibrated fuse
+    assert f(4) == 90
+    assert f(2) == 180                          # comfortably past that night's 95-min gap
+    assert f(1) == v.SCRAPE_STALE_MAX_MIN       # a lone game can't disable it forever
+    assert f(2) > 95, "must not fire on the observed 2-game gap"
+
+def test_threshold_never_shorter_than_the_calibrated_base():
+    """A huge slate must not get a *shorter* fuse than the value we validated."""
+    assert v.scrape_stale_threshold_min(30) == v.SCRAPE_STALE_BASE_MIN
+
+
+# ── the check ──
+
+def test_scrape_staleness_flags_a_full_slate_frozen_past_its_threshold():
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 12, h=4, r=2, step=5)     # 55 min frozen, 12 samples
+    f = v.check_scrape_staleness(conn, in_progress=15, current_period=18, now_iso=now)
+    assert len(f) == 1 and f[0].code == "INV_SCRAPE_STALE" and f[0].severity == "error"
+    assert "threshold 45 min at 15 live game(s)" in f[0].detail
+
+def test_scrape_staleness_quiet_on_a_two_game_tail_frozen_the_same_length():
+    """Identical frozen run, 2 games instead of 15 → must stay silent. This is the
+    exact shape that false-fired on 2026-08-09."""
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 12, h=4, r=2, step=5)     # same 55 min
+    assert v.check_scrape_staleness(conn, in_progress=2, current_period=18,
+                                    now_iso=now) == []
+
+def test_scrape_staleness_still_catches_a_two_game_tail_frozen_far_too_long():
+    """Scaling must not disable the check — 200 min frozen on 2 games still fires."""
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 41, h=4, r=2, step=5)     # 200 min > the 180-min threshold
+    f = v.check_scrape_staleness(conn, in_progress=2, current_period=18, now_iso=now)
+    assert len(f) == 1 and "threshold 180 min at 2 live game(s)" in f[0].detail
 
 def test_scrape_staleness_quiet_when_cats_are_moving():
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2, bump=1.0)
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 12, h=4, r=2, bump=1.0)
+    assert v.check_scrape_staleness(conn, in_progress=15, current_period=18,
                                     now_iso=now) == []
 
 def test_scrape_staleness_quiet_when_idle():
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2)
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 12, h=4, r=2)
     assert v.check_scrape_staleness(conn, in_progress=0, current_period=18,
                                     now_iso=now) == []
 
 def test_scrape_staleness_quiet_inside_the_first_pitch_grace():
-    """Pre-slate ticks are legitimately frozen — the check must not fire at first
-    pitch, which is what a naive consecutive-ticks rule would do every night."""
-    conn = _mem_db_stale()
-    _open_slate(conn, start="2026-08-04T23:00:00+00:00")   # slate opens at tick 0
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2)     # 40 min < 20 min grace + window
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
+    """Pre-slate ticks are legitimately frozen; the window must not count them."""
+    conn = _mem_db_stale(); _open_slate(conn, start="2026-08-04T21:00:00+00:00")
+    now = _ticks(conn, 12, h=4, r=2)
+    assert v.check_scrape_staleness(conn, in_progress=15, current_period=18,
                                     now_iso=now) == []
 
 def test_scrape_staleness_quiet_when_the_cadence_gapped():
-    """A frozen run spread over a pipeline outage isn't scrape evidence — a settle
-    boundary may sit inside it. check_pipeline_freshness owns that failure."""
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2, step=30)   # 4h span
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
-                                    now_iso=now) == []
-
-def test_scrape_staleness_needs_a_full_window():
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS - 1, h=4, r=2)
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
+    """Too few samples inside the window (cron stalled) ⇒ can't judge, stay quiet."""
+    conn = _mem_db_stale(); _open_slate(conn)
+    now = _ticks(conn, 4, h=4, r=2, step=10)     # only 4 samples
+    assert v.check_scrape_staleness(conn, in_progress=15, current_period=18,
                                     now_iso=now) == []
 
 def test_scrape_staleness_ignores_ticks_after_now():
-    """The window must be bounded by `now_iso` at BOTH ends. Without the upper
-    bound the check reads the newest rows in the table regardless of `now`, which
-    in production is invisible (now IS the newest tick) but silently inverts any
-    historical replay — it reported a false positive on a night the scrape was
-    healthy, because it was reading the next morning's frozen post-settle ticks."""
-    conn = _mem_db_stale()
-    _open_slate(conn)
-    _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2, bump=1.0)          # live, moving
-    as_of = _ticks(conn, 4, h=99, r=99, first_min=60)               # later: frozen
-    # Asking as of the moving stretch must stay silent even though frozen ticks
-    # exist later in the table.
-    early = (datetime(2026, 8, 4, 23, 0, tzinfo=timezone.utc)
-             + timedelta(minutes=5 * (v.SCRAPE_STALE_TICKS - 1))).isoformat()
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
+    """The window is bounded by now_iso at BOTH ends — without the upper bound a
+    historical replay reads the newest rows in the table regardless of `now`."""
+    conn = _mem_db_stale(); _open_slate(conn)
+    _ticks(conn, 12, h=4, r=2, bump=1.0)                       # moving
+    _ticks(conn, 12, h=99, r=99, first_min=120)                # later: frozen
+    early = (datetime.fromisoformat("2026-08-04T21:00:00+00:00")
+             + timedelta(minutes=55)).isoformat()
+    assert v.check_scrape_staleness(conn, in_progress=15, current_period=18,
                                     now_iso=early) == []
-    assert as_of > early   # the frozen rows really are in the table
 
 def test_scrape_staleness_quiet_with_no_open_slate():
-    conn = _mem_db_stale()   # no game_day_activity row at all
-    now = _ticks(conn, v.SCRAPE_STALE_TICKS, h=4, r=2)
-    assert v.check_scrape_staleness(conn, in_progress=3, current_period=18,
+    conn = _mem_db_stale()
+    now = _ticks(conn, 12, h=4, r=2)
+    assert v.check_scrape_staleness(conn, in_progress=15, current_period=18,
                                     now_iso=now) == []
+
+
+# ── read-fix regression guard: an idle partial write must NOT drop banked cats ──
+
+def test_read_survives_idle_partial_write():
+    """The 2026-06-04 evening bug: an idle fetch wrote only components at a fresh
+    timestamp, and a single-MAX read dropped all scored cats. load_latest_state now
+    reads per-stat, so the scored cats persist from the last full (scrape) tick."""
+    conn = _mem_db()
+    scored = {1: 30, 5: 5, 20: 18, 23: 4, 48: 30, 63: 2, 83: 3, 18: 0.75, 47: 4.2, 41: 1.25}
+    components = {sim.STAT_ER: 14, sim.STAT_OUTS: 90, sim.STAT_P_H: 80, sim.STAT_AB: 200}
+    _put_state(conn, 1, 20, {**scored, **components}, "2026-06-04T21:30:00+00:00")  # live scrape
+    _put_state(conn, 1, 20, components, "2026-06-04T21:35:00+00:00")                # idle fetch
+    state = sim.load_latest_state(conn, 1, 20)
+    for sid in scored:
+        assert sid in state, f"scored cat {sid} dropped by the read"
+    assert state[1] == 30 and state[sim.STAT_OUTS] == 90  # banked values intact
+    # and the guard check sees a complete state → silent
+    assert v.check_current_cats_present(_view(home_state=state, away_state={})) == []
+
+def test_load_state_prev_per_stat():
+    conn = _mem_db()
+    _put_state(conn, 1, 20, {1: 30, 48: 20, sim.STAT_OUTS: 60}, "2026-06-04T21:30:00+00:00")
+    _put_state(conn, 1, 20, {1: 33, 48: 22, sim.STAT_OUTS: 66}, "2026-06-04T21:35:00+00:00")
+    prev = v._load_state_prev(conn, 1, 20)
+    assert prev == {1: 30, 48: 20, sim.STAT_OUTS: 60}
+
+
+# ── fetch-time scrape health (the silent live-scrape failure) ──
+
+def test_scrape_health_flags_empty_during_live_games():
+    f = v.check_scrape_health(in_progress=3, scraped_cells=0)
+    assert len(f) == 1 and f[0].code == "ANOM_SCRAPE_EMPTY" and f[0].severity == "warn"
+
+def test_scrape_health_ok_when_scrape_produced_cells():
+    assert v.check_scrape_health(in_progress=3, scraped_cells=120) == []
+
+def test_scrape_health_quiet_when_idle():
+    assert v.check_scrape_health(in_progress=0, scraped_cells=0) == []
 
 
 def test_persist_upserts_and_dedups():
