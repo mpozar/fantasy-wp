@@ -765,7 +765,8 @@ straight:
   is what the old cliff already fell back to.
 - **`K` is calibrated against the prior's per-player error**, not against
   between-player spread: `K = p(1−p) / E[(prior − true)²]` ⇒ 7.6, vs ~14 from
-  the spread-based estimator `analyze_qs_rate.py` uses. The two agree only when
+  the between-player-spread estimator (which `analyze_qs_rate.py` used as its
+  headline until 2026-08-10 — see the QS section). The two agree only when
   the prior is the population mean; ESPN's is a *preseason* forecast that misses
   mid-season role changes outright (2026-08-10: 5 of 47 rostered relievers had a
   **.000** projected rate against realized rates up to .571). Re-measure with
@@ -791,40 +792,61 @@ near it (league max ≈ .69).
 Unlike SVHD, QS has no *encoding* bug — ESPN's ROS QS is a well-formed number
 that is simply **biased high in level**, because ROS projections are anchored to
 preseason talent and don't track current performance. Measured over the league's
-65 rostered starters (1161 actual starts): ESPN-implied **.598 vs actual .438,
-i.e. +36.7%** — the level bias behind the +40.5% start-of-week QS
-over-projection.
+89 rostered starters (1714 actual starts): ESPN-implied **.596 vs actual .467,
+i.e. +27.5%** — the level bias behind the +40.5% start-of-week QS
+over-projection. (First reported as ".598 vs .438, +36.7%" over 65 starters;
+that came from the stale-roster sample described under "`K` is measured" below,
+which overstated the level bias as well as mis-estimating K.)
 
 So `espn.fetch_rosters_and_projections` rewrites ROS QS at fetch time via
 `espn.blend_qs_rate` / `apply_qs_rate_blend`, an **empirical-Bayes shrinkage
 toward each pitcher's season-to-date actual rate**:
 
     rate = (act_qs + K·prior) / (act_gs + K),   prior = ros_qs / ros_gs
-    QS_RATE_PRIOR_STARTS = 9.0
+    QS_RATE_PRIOR_STARTS = 7.0
 
 `K` is the prior weight in *pseudo-starts*, so the blend is sample-size aware by
-construction: ~21 actual starts ⇒ ~70% weight on actuals, a 2-start callup stays
-essentially at ESPN's number. The SVHD path above now uses the same shape (it
-previously had a hard 15-GP cliff that flipped discontinuously).
+construction: ~21 actual starts (the league median) ⇒ ~75% weight on actuals, a
+2-start callup stays essentially at ESPN's number. The SVHD path above uses the
+same shape and the same calibration (it previously had a hard 15-GP cliff that
+flipped discontinuously).
 
-`K` is *measured*, not chosen: Beta-Binomial method of moments on the spread of
-observed QS rates minus binomial noise (`scripts/analyze_qs_rate.py`, same
-paste-the-constant convention as `analyze_variance.py`). Re-measure yearly. The
-league aggregate is flat across K=8-12 (+10.8% to +14.4% residual), so the exact
-value is not load-bearing.
+**`K` is measured, not chosen — and it was re-measured on 2026-08-10 after two
+defects surfaced in `scripts/analyze_qs_rate.py`, giving 9.0 → 7.0.** The
+estimator is the same as SVHD's: calibrate against how wrong the *prior* is per
+pitcher, `K = p(1−p) / E[(prior − true)²]` ⇒ **8.6**, then validate directly with
+a squared-error back-test, which puts the optimum at **7.0** — invariant across
+uniform *n*, today's per-pitcher start counts, and ROS-start weighting. 7.0
+takes the back-test (it measures the objective instead of approximating it), and
+selection makes both numbers *upper* bounds: a rostered starter's realized rate
+is luck-inflated above his true talent while ESPN's prior sits above the realized
+rate, so the true prior error is larger than measured and the true K smaller.
+The error curve is **flat K=6..10** (within 2.4% of optimum), so the exact value
+is not load-bearing — but stay inside that band, which is what
+`test_prior_weight_constant_sits_in_the_measured_flat_basin` guards.
 
-> **`QS_RATE_PRIOR_STARTS` is due a re-measure — two defects found in
-> `analyze_qs_rate.py` on 2026-08-10 while building its SVHD sibling, neither
-> fixed (changing the constant moves live projections and needs its own
-> verification).** (1) It fetches with `{"scoringPeriodId": 0}`, and that
-> parameter makes ESPN **omit the split=6 ROS block for ~60 rostered players**
-> — since the collector requires that block, K was measured on a biased subset
-> of the population it is applied to. Use a plain `_get(["mRoster"])`, as
-> `fetch_rosters_and_projections` and `analyze_svhd_rate.py` do. (2) The
-> spread-based estimator assumes the prior is the population mean; ESPN's is a
-> per-player forecast that can be individually wrong, which calls for
-> `K = p(1−p) / E[(prior − true)²]` instead (see the SVHD section). Both push
-> the QS K *down*, i.e. toward trusting actuals sooner.
+The two defects, both real, and they **nearly cancelled** — which is why the
+constant barely moved and why neither should be re-introduced:
+- **A stale roster sample.** The script fetched with `{"scoringPeriodId": 0}`.
+  That parameter does *not* filter stats; it returns a **different roster
+  snapshot** — 108 of its 279 players are not on any current roster, and it
+  misses 41 of the 90 currently-rostered usable starters (deGrom, Wheeler, Cole,
+  Snell, …). For a player present in *both* responses the split=6 ROS block is
+  identical, so this was never "ESPN omits the ROS block" (the original
+  diagnosis, since corrected): the plain fetch matches the league's stored
+  `team_rosters` 283/283, `scoringPeriodId=0` only 206/279. Fixing it pushes K
+  **up** (spread estimator 9.0 → 15.5).
+- **The wrong estimator.** Between-player-spread MoM
+  (`K = p(1−p)/var_between − 1`) is only correct when the prior *is* the
+  population mean; ESPN's is a per-player forecast that can be individually
+  wrong. Switching to the prior-error form pushes K back **down** (18.3 → 8.6 on
+  the correct sample). Both scripts now print the pair, so the disagreement is
+  visible rather than assumed away.
+
+Also fixed: `--min-starts` now defaults to 3 (was 1), matching
+`analyze_svhd_rate.py`. A 1-start pitcher contributes a maximal squared
+deviation with a *zero* binomial-noise correction, so he biases K downward with
+no information — 7.2 at min 1 vs 8.6 at min 3.
 
 **Written back as a TOTAL** (`rate × ros_gs`), not a rate, so the stored shape
 matches every other ROS counter and `sim` needs no change — it recovers the rate
@@ -833,11 +855,16 @@ as `ros_qs / gs_ros` (`_make_budget`'s per-start denominator and
 spot-start QS goes through the promoted-starter path) and when actuals are
 missing. Tests: `tests/test_qs_rate_blend.py`.
 
-**Effect (2026-08-10):** league projected QS fell **−14%** in every remaining
-week (wk19 54.4→46.9, wk22 63.4→54.2), and it is a genuine blend, not a haircut
-— Logan Webb went *up* (.636→.658, actual .667) while Peralta fell .600→.294
-(actual .174). WP moved ≤2.7pp, for the usual reason (a symmetric bias mostly
-cancels head-to-head). **Expected residual QS bias ≈ +20%, not ~+12%** — the
+**Effect (2026-08-10):** introducing the blend dropped league projected QS
+**−14%** in every remaining week at K=9 (wk19 54.4→46.9, wk22 63.4→54.2), and it
+is a genuine blend, not a haircut — Logan Webb went *up* (.636→.658, actual .667)
+while Peralta fell .600→.294 (actual .174). WP moved ≤2.7pp, for the usual reason
+(a symmetric bias mostly cancels head-to-head). The **K=9→7 re-measure later the
+same day** is a second-order tweak on top of that: A/B'd end-to-end on a sandbox
+copy (single ESPN payload, both arms, paired RNG) it moved wk19 projected QS
+46.9→46.3 (**−1.3%**, so ≈−15% against no blend at all) and **max WP 0.2pp**
+across all six matchups — as expected, since K=9 was already only +1.2% off the
+back-tested optimum. **Expected residual QS bias ≈ +20%, not ~+12%** — the
 +40.5% total was rate bias × *start-count* bias, and only the rate half is
 fixed. The remainder is projected starts, the same suspected root as K's flat
 +18%.
@@ -1797,9 +1824,13 @@ under ESPN API quirks.
 ```sh
 .venv/bin/python scripts/analyze_qs_rate.py
 ```
-Prints `QS_RATE_PRIOR_STARTS` to paste into `app/espn.py`, plus ESPN's current
-aggregate QS level bias and what the blend does to it at several K. Read-only;
-hits the ESPN API. See the `stat_id 63` section under ESPN API quirks.
+Prints `QS_RATE_PRIOR_STARTS` to paste into `app/espn.py` — both estimators
+(prior-error and between-player-spread) with the reason they disagree, ESPN's
+current aggregate QS level bias and what the blend does to it at several K, and a
+squared-error back-test against using ESPN's ROS rate as-is, which is what
+actually justifies a chosen K. Read-only; hits the ESPN API. See the `stat_id 63`
+section under ESPN API quirks — including the two defects this script had until
+2026-08-10, neither of which is safe to re-introduce.
 
 ### Re-measuring variance
 
