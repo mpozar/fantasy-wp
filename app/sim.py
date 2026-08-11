@@ -394,53 +394,6 @@ def _sum_counted(lines: list[dict], slot_by_norm_name: dict[str, int],
     return totals, matched
 
 
-def _count_qs(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int, int]:
-    """Quality starts among **Final** starter lines whose pitcher was slotted in a
-    pitching slot that day. QS is computed from the raw line — a started game with
-    ≥ QS_OUTS outs and ≤ QS_MAX_ER ER — same definition as the in-progress model.
-
-    Final-only on purpose: while a game is In Progress, `ingame.py` already supplies
-    the QS probability in the budget, so crediting it here too would double-count.
-    Once Final, that override switches off and the credit otherwise waits for ESPN's
-    once-daily settle — the gap this closes. Returns (qs_count, n_started_matched)."""
-    qs = matched = 0
-    for ln in lines:
-        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
-        if slot is None or slot not in PITCHER_SLOTS:
-            continue
-        if not ln.get("games_started"):
-            continue
-        if (ln.get("game_status") or "") != "Final":
-            continue
-        matched += 1
-        if (ln.get("outs") or 0) >= ingame.QS_OUTS and (ln.get("er") or 0) <= ingame.QS_MAX_ER:
-            qs += 1
-    return qs, matched
-
-
-def _count_svhd(lines: list[dict], slot_by_norm_name: dict[str, int]) -> tuple[int, int]:
-    """SVHD (saves + holds) from **Final** reliever lines whose pitcher was slotted
-    in a pitching slot. This league scores SVHD = SV + HLD; blown saves are *not*
-    scored (ESPN's stat 83 is the standard SV+HLD category — an earlier note that it
-    "subtracts blown saves" was a mis-read of the broken ROS projection split, not
-    the actuals). Final-only (the in-progress SVHD model in `ingame.py` owns live
-    games — crediting here too would double-count) and additive to the banked total
-    (the unsettled window prevents double-counting settled games), same safeties as
-    `_count_qs`. Returns (svhd, n_decisions_matched)."""
-    total = matched = 0
-    for ln in lines:
-        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
-        if slot is None or slot not in PITCHER_SLOTS:
-            continue
-        if (ln.get("game_status") or "") != "Final":
-            continue
-        sv, hld = (ln.get("sv") or 0), (ln.get("hld") or 0)
-        if sv or hld:
-            matched += 1
-            total += sv + hld
-    return total, matched
-
-
 def _judge_group(name: str, state: dict[int, float], recon: dict[int, float],
                  components: tuple[int, ...], derivers: dict[int, callable],
                  scraped: dict[int, float], n_matched: int) -> dict:
@@ -506,7 +459,6 @@ def reconcile_live_components(
     batter_lines: list[dict],
     slot_by_norm_name: dict[str, int],
     scraped: dict[int, float],
-    settled_floor: dict[int, float] | None = None,
 ) -> tuple[dict[int, float], list[dict]]:
     """Replace ESPN's once-daily-stale pitching/OPS components in `baseline` with
     live values reconstructed from MLB box-score lines — but only for a rate
@@ -516,12 +468,6 @@ def reconcile_live_components(
     not yet in ESPN's banked totals). `slot_by_norm_name` is each rostered
     player's fantasy lineup slot that day. `scraped` holds the live displayed
     rates {STAT_ERA, STAT_WHIP, STAT_OPS} (authoritative for current standings).
-
-    `settled_floor` (optional) is {STAT_QS|STAT_SVHD: floor} — the count already
-    banked from games *aged out* of the window (see `load_settled_floor`). It
-    guards the QS/SVHD counting credits against double-counting the live scrape
-    (see the QS/SVHD block below). Omitted ⇒ those credits fall back to additive
-    (isolated/unit callers only; production always supplies it).
 
     Returns (state, decisions): `state` is a copy of `baseline` with components
     swapped in for accepted groups; `decisions` records each group's verdict.
@@ -562,52 +508,22 @@ def reconcile_live_components(
         {STAT_OPS: derive_ops}, scraped, n_bat,
     ))
 
-    # ── QS / SVHD: counting credits the live *scrape* ALSO owns. Unlike the rate
-    #    components above (ER/OUTS/AB… are REST-only and genuinely settle-lagged, so
-    #    adding box-score values to a baseline that lacks them is safe), QS and SVHD
-    #    are scored *display* cats the DOM scrape banks into `baseline` the instant a
-    #    game goes Final — long before the 7h settle boundary. So they must NOT be
-    #    added on top of `baseline`: the scrape and `_count_qs`/`_count_svhd` both see
-    #    the same in-window Final games, and naive addition double-counts for the
-    #    whole settle window.
-    #      (deGrom incident, 2026-06-07: a legitimate QS the scrape banked (weekly
-    #       2→3) was *also* re-added by `_count_qs` while its game sat inside the 7h
-    #       window → sim QS 3→4 → WP 100%, reverting to 3 only when the window aged
-    #       the game out at the next 07:00 roll → a 100%→0% flip on the tiebreaker.)
-    #    Correct rule — split the weekly total into settled (before the window) +
-    #    in-window credit, and take whichever source is ahead:
-    #        result = max(scraped_weekly, settled_floor + box_count)
-    #    `settled_floor` is the QS/SVHD already banked from aged-out games (running
-    #    min of the scraped weekly count over the window-day — observation-driven, so
-    #    it needs no settle-clock assumption and self-heals a downward correction).
-    #    The `max` is fail-safe: never below the authoritative scrape (a lagging
-    #    scrape can't drop a real credit — preserves the in-progress→Final gap fill),
-    #    never the double-count. No floor (isolated callers) ⇒ default floor =
-    #    scraped ⇒ behaves additively. Final-only still avoids overlap with the
-    #    in-progress QS/SVHD model. ──
-    floors = settled_floor or {}
-
-    qs_added, n_qs = _count_qs(pitcher_lines, slot_by_norm_name)
-    qs_scraped = baseline.get(STAT_QS, 0) or 0
-    qs_result = qs_scraped
-    if qs_added:
-        qs_floor = floors.get(STAT_QS, qs_scraped)   # no floor → additive
-        qs_result = max(qs_scraped, qs_floor + qs_added)
-        state[STAT_QS] = qs_result
-    decisions.append({"group": "qs", "accepted": qs_added > 0, "matched_lines": n_qs,
-                      "qs_added": qs_added, "scraped": qs_scraped,
-                      "floor": floors.get(STAT_QS), "result": qs_result})
-
-    svhd_added, n_svhd = _count_svhd(pitcher_lines, slot_by_norm_name)
-    svhd_scraped = baseline.get(STAT_SVHD, 0) or 0
-    svhd_result = svhd_scraped
-    if svhd_added:
-        svhd_floor = floors.get(STAT_SVHD, svhd_scraped)
-        svhd_result = max(svhd_scraped, svhd_floor + svhd_added)
-        state[STAT_SVHD] = svhd_result
-    decisions.append({"group": "svhd", "accepted": svhd_added > 0, "matched_lines": n_svhd,
-                      "svhd_added": svhd_added, "scraped": svhd_scraped,
-                      "floor": floors.get(STAT_SVHD), "result": svhd_result})
+    # QS / SVHD are deliberately NOT reconstructed here — they pass through from
+    # `baseline` (i.e. straight from ESPN via the scrape). Until 2026-08-11 this
+    # block rebuilt them as `max(scraped, settled_floor + box_count)` to bridge one
+    # specific gap: the scrape only ran while games were In Progress, so a credit
+    # earned by the LAST game of a night sat un-banked until the ~07:00 UTC settle.
+    # The closing scrape (`cli._scrape_due`, 2026-08-09) closed that window with
+    # ESPN's own number — measured 2026-08-10: four credits from games that
+    # finalized with nothing else live, every one banked within ~8s of Final. With
+    # the gap gone the reconstruction had no job left, and it carried real cost:
+    # four consumers of one value with four different gates, which produced 1830
+    # false INV_SITE_QS_OVERCREDIT flags, the m105 +16.4pp/−8.6pp swing pair (a
+    # box credit unlocking an already-earned floor made a +1 credit land as +2),
+    # and a live sim-vs-display disagreement. One source of truth is worth more
+    # than the redundancy. If ESPN ever regresses to settle-only crediting,
+    # `INV_SCRAPE_STALE` is the detector, and `scripts/late_credit_probe.py`
+    # re-measures the premise for any date.
 
     return state, decisions
 
@@ -2332,90 +2248,17 @@ def load_active_slots(conn: sqlite3.Connection, fantasy_team_id: int, *,
     return out
 
 
-def load_settled_floor(conn: sqlite3.Connection, matchup_id: int, team_id: int,
-                       stat_ids, *, since_date: str,
-                       as_of: str | None = None) -> dict[int, float]:
-    """Per-cat 'settled floor' for the QS/SVHD double-count guard: the QS/SVHD
-    already banked from games **aged out** of the reconstruction window (in-period
-    games with `game_date < since_date`), counted directly from the write-once
-    `pitcher_final_lines` archive + that date's locked `daily_lineups` slots — the
-    same definition `_count_qs`/`_count_svhd` apply to in-window games.
-
-    Why not the scrape: this used to be the running MIN of the scraped weekly count
-    over the window-day, on the assumption that aged-out games' credits were all
-    banked *before* the window-day began. That breaks when a prior-day (West-Coast /
-    post-midnight) game's QS/SVHD scrape-banks **late** — *inside* the window-day:
-    the day-min is then taken before that credit lands and drops it from the floor,
-    which masks an in-window box credit. (2026-06-26: Ohtani's Jun-24 QS banked
-    02:30 Jun-25 → floor=1 vs the true 2 → Early's Jun-25 box QS was hidden until the
-    07:00 settle.) Counting aged-out games straight from the archive + that day's
-    lineup is immune to *when* the scrape happened to capture them.
-
-    The deGrom double-count guard is preserved: aged-out games are `game_date <
-    since_date`, exactly disjoint from the in-window box count (`game_date >=
-    since_date`), so `floor + box` never counts the same game twice.
-
-    `as_of` (publish reproducibility) bounds the archive to lines finalized by then.
-    Trade-off vs the old MIN: a *downward* correction to a settled QS/SVHD no longer
-    self-heals (the archive is write-once) — but QS/SVHD are deterministic thresholds
-    rarely revised after Final (unlike the H/error revisions the min guarded against).
-    Returns {stat_id: floor} for whichever of QS/SVHD were requested."""
-    want = {sid for sid in stat_ids if sid in (STAT_QS, STAT_SVHD)}
-    if not want:
-        return {}
-    prow = conn.execute("SELECT matchup_period_id FROM matchups WHERE id=?",
-                        (matchup_id,)).fetchone()
-    if prow is None:
-        return {}
-    try:
-        period_start = mlb.matchup_period_window(prow["matchup_period_id"])[0].isoformat()
-    except Exception:
-        return {}
-    # That date's pitching-slot players, keyed by (game_date, normalized name), so
-    # a pitcher is credited only on a day he was actually slotted to pitch.
-    try:
-        slot_rows = conn.execute(
-            "SELECT dl.game_date, p.full_name, dl.lineup_slot_id "
-            "FROM daily_lineups dl JOIN players p ON p.id = dl.player_id "
-            "WHERE dl.fantasy_team_id=? AND dl.game_date>=? AND dl.game_date<?",
-            (team_id, period_start, since_date)).fetchall()
-        slot_by_day_name = {(r["game_date"], _norm_name(r["full_name"])): r["lineup_slot_id"]
-                            for r in slot_rows}
-        sql = ("SELECT game_date, name, games_started, outs, er, sv, hld "
-               "FROM pitcher_final_lines WHERE game_date>=? AND game_date<?")
-        params: list = [period_start, since_date]
-        if as_of:
-            sql += " AND final_at <= ?"
-            params.append(as_of)
-        lines = conn.execute(sql, params).fetchall()
-    except sqlite3.OperationalError:
-        return {}
-    qs = svhd = 0
-    for ln in lines:
-        if slot_by_day_name.get((ln["game_date"], _norm_name(ln["name"]))) not in PITCHER_SLOTS:
-            continue
-        if (ln["games_started"] and (ln["outs"] or 0) >= ingame.QS_OUTS
-                and (ln["er"] or 0) <= ingame.QS_MAX_ER):
-            qs += 1
-        svhd += (ln["sv"] or 0) + (ln["hld"] or 0)
-    out: dict[int, float] = {}
-    if STAT_QS in want:
-        out[STAT_QS] = qs
-    if STAT_SVHD in want:
-        out[STAT_SVHD] = svhd
-    return out
-
-
 def apply_live_components(conn: sqlite3.Connection, fantasy_team_id: int,
                          baseline: dict[int, float], roster: list[dict],
                          unsettled_lines: dict[str, list[dict]], *,
-                         since_date: str,
-                         matchup_id: int | None = None) -> tuple[dict[int, float], list[dict]]:
+                         since_date: str) -> tuple[dict[int, float], list[dict]]:
     """Thin DB wrapper around `reconcile_live_components`: loads this team's
     daily lineup slots, takes the live scraped rates straight from `baseline`
-    (the scrape writes them), looks up the QS/SVHD settled floors (when
-    `matchup_id` is given), and returns (adjusted_state, decisions). No-op
-    (returns baseline unchanged) when there are no live lines."""
+    (the scrape writes them), and returns (adjusted_state, decisions). No-op
+    (returns baseline unchanged) when there are no live lines.
+
+    Took a `matchup_id` until 2026-08-11, solely to look up the QS/SVHD settled
+    floor; that reconstruction is gone (see reconcile_live_components)."""
     if not unsettled_lines["pitchers"] and not unsettled_lines["batters"]:
         return baseline, []
     slot_by_norm_name = load_active_slots(
@@ -2423,18 +2266,12 @@ def apply_live_components(conn: sqlite3.Connection, fantasy_team_id: int,
     scraped = {STAT_ERA: baseline.get(STAT_ERA),
                STAT_WHIP: baseline.get(STAT_WHIP),
                STAT_OPS: baseline.get(STAT_OPS)}
-    settled_floor = None
-    if matchup_id is not None:
-        settled_floor = load_settled_floor(
-            conn, matchup_id, fantasy_team_id, (STAT_QS, STAT_SVHD),
-            since_date=since_date)
     return reconcile_live_components(
         baseline,
         pitcher_lines=unsettled_lines["pitchers"],
         batter_lines=unsettled_lines["batters"],
         slot_by_norm_name=slot_by_norm_name,
         scraped=scraped,
-        settled_floor=settled_floor,
     )
 
 

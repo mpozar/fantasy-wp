@@ -1032,8 +1032,17 @@ trap 'rm -f .app.lock' EXIT
 > 4. **In-progress QS/SVHD model (`ingame.py`)** — threshold/context stats; SVHD judged
 >    from **entry/exit margins**, spot-starters skip the SVHD path. *Fixes flickering
 >    holds / phantom saves (2026-06-10).*
-> 5. **Settle-window QS/SVHD credit** = `max(scraped, settled_floor + box)`, never
->    additive. *Fixes the deGrom QS double-count → 100%→0% flip (2026-06-08).*
+> 5. **~~Settle-window QS/SVHD credit~~ — REMOVED 2026-08-11.** QS/SVHD now pass
+>    straight through from ESPN (the scrape). The `max(scraped, settled_floor + box)`
+>    reconstruction existed to bridge one gap: the scrape only ran while games were
+>    In Progress, so a credit from the LAST game of a night waited for the ~07:00
+>    settle. The **closing scrape** (`cli._scrape_due`, 2026-08-09) closed that at
+>    source — measured 2026-08-10, four credits from games finalizing with nothing
+>    else live all banked within ~8s. Deleting it removed four consumers of one
+>    value with four different gates, which had produced 1830 false
+>    `INV_SITE_QS_OVERCREDIT` flags, the m105 +16.4pp/−8.6pp swing pair, and a live
+>    sim-vs-display disagreement. `scripts/late_credit_probe.py` re-measures the
+>    premise for any date; `INV_SCRAPE_STALE` is the detector if the scrape dies.
 >
 > **Debugging a wrong-looking projection — the telemetry names the layer:**
 > `details_json.live_recon` (per tick: scraped vs reconstructed vs baseline rate + the
@@ -1134,8 +1143,9 @@ rate they imply matches ESPN's live scraped rate. Pieces:
     first tick of a day lands at/after lineup lock. When it doesn't, the
     snapshot captures the manager's **pre-game intent** and `INSERT OR IGNORE`
     freezes it forever — and a wrong *active* slot is the expensive direction,
-    because `load_settled_floor` credits that day's QS/SVHD from the archive
-    only when the slot is active, and publish's `max(scrape, floor)` can never
+    because slots gate which box-score lines count for a team. (Until 2026-08-11
+    the sharpest case was the QS/SVHD settled floor, where publish's
+    `max(scrape, floor)` could never
     pull the phantom back down. Bryan Baker was stored slot 15 for 08-04 while
     ESPN had him **benched**, so the site published Swamp Dragons SVHD **4
     against ESPN's 3** — a lost category displayed as a tie, for six days.
@@ -1175,51 +1185,19 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   rejected) while no longer discarding a good-enough reconstruction over a stale one.
   The decision (verdict + scraped/reconstructed/baseline rates) is recorded in
   `details_json.live_recon` for debugging.
-- **QS (counting credit, `_count_qs`).** QS is *not* a rate, so the rate-match guard
-  doesn't apply. We count quality starts from **Final** starter lines whose pitcher
-  was slotted in a pitching slot (QS = started + ≥`QS_OUTS` outs + ≤`QS_MAX_ER` ER,
-  same definition as `ingame.py`). **Combined via `max`, NOT added** (fixed
-  2026-06-08, see below): `state[QS] = max(scraped_weekly, settled_floor + box_count)`.
-  Final-only still avoids overlap with the in-progress model.
-  - **Why `max`, not add — the deGrom double-count.** QS/SVHD (unlike the rate
-    *components* ER/OUTS/AB…, which are REST-only and genuinely settle-lagged) are
-    scored **display** cats the live DOM scrape banks the instant a game goes Final —
-    well before the 7h settle boundary. So a naive `baseline + box_count` double-counts
-    any Final game that's *both* scrape-banked *and* still inside the window. On
-    2026-06-07 m60 (Bus vs Mamas, week 10), deGrom's legit QS was scrape-banked
-    (weekly 2→3) **and** re-added by `_count_qs` → sim QS 3→**4** → That Bus 100%;
-    it reverted to the official 3 only when `now−7h` crossed midnight at **07:00** and
-    aged deGrom's game out of the window → **100%→0%** flip (lost the QS-tiebreaker
-    on hits). The "settle revert" was the *window boundary*, not an ESPN correction.
-  - **`settled_floor`** (`sim.load_settled_floor`) is the QS already banked from
-    aged-out games (in-period games with `game_date < since_date`), counted directly
-    from the write-once **`pitcher_final_lines` archive + that date's `daily_lineups`
-    slots** — the same definition `_count_qs`/`_count_svhd` apply in-window. Aged-out
-    (`< since_date`) is disjoint from the in-window box count (`>= since_date`), so
-    `floor + box` never double-counts a game. The `max` is **fail-safe**: never below
-    the authoritative scrape (a lagging scrape can't drop a real credit — preserves the
-    in-progress→Final gap-fill), never the double-count. No floor (isolated callers)
-    ⇒ default floor = scrape ⇒ additive.
-    - *Was the running MIN of the scraped weekly count over the window-day — replaced
-      2026-06-26.* That assumed all aged-out credits banked **before** the window-day
-      began, which breaks when a prior-day (West-Coast/post-midnight) game's QS/SVHD
-      scrape-banks **late, inside** the window-day: the day-min is then taken before
-      that credit lands and drops it from the floor, masking an in-window box credit.
-      (Ohtani's Jun-24 QS banked 02:30 Jun-25 → MIN floor = 1 vs the true 2 → Connelly
-      Early's Jun-25 QS stayed hidden until the 07:00 settle.) The box-archive count is
-      immune to *when* the scrape captured a game. Trade-off: a *downward* correction to
-      a settled QS/SVHD no longer self-heals (the archive is write-once) — accepted, as
-      QS/SVHD are deterministic thresholds rarely revised after Final.
-  - **Caught by validation:** `INV_SITE_QS_OVERCREDIT` (published-site) independently
-    recomputes `max(scrape, floor+box)` and errors if the site shows more;
-    `ANOM_WP_RAIL_FLIP` flags the near-0↔near-100 UX symptom.
-- **SVHD (counting credit, `_count_svhd`).** Same `max`/Final-only treatment as QS,
-  summed from `live_pitchers.sv/hld`. **SVHD = SV + HLD** — this
-  league does *not* score blown saves. (An earlier note claimed stat 83 "subtracts
-  blown saves," but that was a mis-read of the broken split=6 ROS projection, not the
-  actuals; the `stat_id 56` quirk note under "ESPN API quirks" should be taken with
-  that grain of salt.) Worth a one-time sanity check against a real banked stat-83
-  delta once a save/hold lands in an unsettled game, same as the OUTS 10/12 validation.
+- **QS / SVHD — no longer reconstructed (2026-08-11).** They pass through from
+  `category_state`, i.e. straight from ESPN via the scrape. Previously
+  `state[QS] = max(scraped_weekly, settled_floor + box_count)` (`max`, never
+  additive — the 2026-06-07 deGrom double-count that flipped a matchup 100%→0%
+  came from adding a Final game the scrape had already banked). All of it —
+  `load_settled_floor`, `_count_qs`/`_count_svhd`, `cli._apply_qs_svhd_floor`,
+  `validate._supported_credit` and `INV_SITE_QS_OVERCREDIT` — is deleted. Do not
+  reintroduce a QS/SVHD adjustment on either the sim or the display side without
+  first re-running `scripts/late_credit_probe.py`: the whole justification is that
+  ESPN now credits within ~8s of Final even with nothing live, so any adjustment
+  is either a no-op or an over-credit. Guarded by
+  `tests/test_publish_display_lag.py::test_publish_does_not_adjust_qs_svhd`.
+
 - **Wiring.** `compute` (current week only, mc-v1) loads the unsettled lines once
   and calls `sim.apply_live_components` per team before `simulate`; the echo reports
   `live_component_groups_accepted`. No-op for `--future`, non-mc models, or when
@@ -1418,7 +1396,7 @@ When ESPN expires the session (weeks/months later), the scraper returns empty da
 > | wrong for DAYS, corrects at a refresh boundary | phantom schedule game / stale budget input | past-dated non-Final `team_schedule` row (#7) |
 > | decided matchup stuck at ~9x% overnight | finalization lag (status-lag sliver) | fractional remaining avg in `category_wp` |
 > | one-tick blip that snaps back | transient bad read — don't over-attribute | (#6) |
-> | touches BOTH near-0 and near-100 | over-credited stat (QS/SVHD double-count family) | `live_recon` result vs scrape; `INV_SITE_QS_OVERCREDIT` |
+> | touches BOTH near-0 and near-100 | over-credited stat (historically the QS/SVHD double-count family, removed 2026-08-11) | `live_recon` result vs scrape; `INV_SITE_DB_MISMATCH` |
 
 Common case: user notices a sudden WP shift and asks why. Method:
 
@@ -1444,7 +1422,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - 5-min boundary fast.sh fires every `*/5` minute. New live data lands every tick.
    - GitHub Pages rebuild lag — pushes appear ~30-90s later on the live site.
 6. **Investigation telemetry** (added 2026-06-10 — closes the gaps that made the deGrom/Melton digs slow):
-   - **`details_json.live_recon`** (per snapshot, live week) — the live-component reconciliation that fed *that* tick: per team, QS/SVHD `{scrape, floor, box, result}` and the rate-group verdicts + `since_date`. Answers "why is current QS=N this tick, and was it scrape, floor, or box?" without reverse-engineering from `category_wp`. A QS/SVHD `result` above `scrape` with `box=0` is a phantom (the bug `INV_SITE_QS_OVERCREDIT` guards).
+   - **`details_json.live_recon`** (per snapshot, live week) — the live-component reconciliation that fed *that* tick: per team, QS/SVHD `{scrape, floor, box, result}` and the rate-group verdicts + `since_date`. Answers "why is current QS=N this tick, and was it scrape, floor, or box?" without reverse-engineering from `category_wp`. Since 2026-08-11 the QS/SVHD entries are gone — those cats are no longer reconstructed — so `live_recon` carries the rate groups only.
    - **`pitcher_final_lines`** table — write-once archive of every Final starter/reliever line (`outs/er/k/p_h/p_bb/sv/hld`, `games_started`, `final_at`), durable past the `live_pitchers` prune. The line that earned/missed a QS/SVHD credit, answerable offline (this is how the Melton spot-start surfaced).
    - **`team_schedule.became_final_at`** — the first tick a game read Final (the credit boundary), instead of inferring it from `category_state` steps.
    - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
@@ -2161,7 +2139,7 @@ needed. And treat a flagged anomaly as *investigate-first*: a correlated swing +
 | `ANOM_STALE_SNAPSHOTS` / `ANOM_STALE_FETCH` | warn | newest wp_snapshot / category_state fetch < `STALE_MINUTES` (20) old | a cron stalled (wedged lock, exception, macOS FDA revoked) — site serves stale data. Legit briefly while `medium.sh` holds the lock (≤5 min). |
 | `INV_SITE_MISSING_SCORES` | error | each started (live/final) week's matchup blocks in `data.json` carry all scored cats | the published artifact is missing stats — "no data on the site". Pairs with `INV_CURRENT_CATS_MISSING` (DB cause) but checks the actual output. |
 | `INV_SITE_MISSING` / `INV_SITE_UNREADABLE` | error | `data.json` exists and parses | publish never ran / wrote garbage. |
-| `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. Skips the live-recon cats (ERA/WHIP/OPS, QS/SVHD) — those are guarded by `INV_SITE_QS_OVERCREDIT` / `INV_RATE_RANGE` instead. |
+| `INV_SITE_DB_MISMATCH` | error | each live-week published score == the DB's banked value | publish transform bug / corrupted artifact — the site shows a *different* number than the DB. Compared against `category_state` **as of `data.json`'s `generated_at`** (what publish read), so a later fetch can't cause a false mismatch. Live week only. Skips only the derived rate cats (ERA/WHIP/OPS), guarded by `INV_RATE_RANGE`. **Since 2026-08-11 it also covers QS/SVHD**, which are no longer reconstructed — published must equal ESPN's `category_state` exactly, a stricter test than the deleted `INV_SITE_QS_OVERCREDIT` recompute. |
 | `INV_SITE_QS_OVERCREDIT` | error | published QS/SVHD ≤ independently-recomputed `max(scrape, settled_floor + box)` | the site shows a **phantom counting credit** — the QS/SVHD double-count vs the live scrape (the 2026-06-07 deGrom case: site QS 4 where only 3 is supportable). Recomputed from raw `category_state` + box scores (a second implementation, so it catches a regression of the `max`-rule fix, not just publish drift). Live week only; best-effort (skips if the recompute can't load). **The recompute must consult the settled floor even when `box == 0`** — publish applies the floor in *two* places (the fold's `max(scrape, floor+box)`, and independently `cli._apply_qs_svhd_floor`'s `max(scrape, floor)` on every current-week publish). `_supported_credit` originally modelled only the fold and short-circuited to `scraped` when there was no in-window box credit, so a credit resting purely on the floor read as unsupportable: **1830 flag-occurrences over 2026-07-30..08-07**, judged false positives at the time and silenced on 2026-08-07 by teaching `_supported_credit` to consult the floor (regression tests `test_site_qs_overcredit_quiet_when_credit_rests_on_the_settled_floor` + the still-fires-above-the-floor counterpart). **⚠ That triage was wrong, established 2026-08-10.** The reasoning was "the floor genuinely held Bryan Baker's 8/04 save"; ESPN's own `mRoster` for that scoring period has Baker **benched**, ESPN never credited the save, and the site was showing a real phantom (m105 SVHD 4 vs ESPN's 3). The check was firing correctly and we taught it to stop. Two lessons, both expensive: (a) **1830 was never 1830 distinct problems** — flags carry an `occurrences` count and m105 alone was 185+233+117 ticks of the *same* credit, so a big number meant "long-lived", not "widespread"; count **distinct (code, matchup, stat)** before concluding a check is noisy. (b) **Never resolve a QS/SVHD flag by reasoning about our own archive** — ask ESPN (`espn.fetch_all_matchups()` carries the settled per-period `scoreByStat`); it is the authority the site is judged against. The underlying phantom is fixed at source (per-scoring-period lineups), so the floor path is sound and the 2026-08-07 accommodation now costs nothing — but it is an accommodation, not a validation. Lesson that still holds: this check is a *second implementation* of publish's rule — when publish gains a new path to a displayed value, this recompute has to gain it too. |
 | `INV_SITE_RECORD_ASYMMETRIC` | error | a matchup's two W-L-T records mirror (home W=away L, etc.) | always a bug — head-to-head category scoring is zero-sum. Was caused by summing per-team stored `result` flags that desync under temporal skew (fixed: `cli._apply_counting_results` derives results from a single home-vs-away score comparison). |
 | `ANOM_SITE_STALE` | warn | `data.json` `generated_at` < `STALE_MINUTES` old | publish step failing while compute still runs. |

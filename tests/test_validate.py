@@ -579,20 +579,6 @@ _GEN_QS = "2026-06-07T22:00:00+00:00"
 def _qs_block(team_id, qs, svhd):
     s = {1: 30, 5: 5, 20: 18, 23: 4, 18: 0.75, 48: 30, 47: 4.2, 41: 1.25, 63: qs, 83: svhd}
     return _live_site_block(team_id, s)
-
-def test_site_qs_overcredit_flagged(tmp_path):
-    # The deGrom shape: scrape banked the QS (weekly →3), but publish *also* added
-    # the box-score credit → site shows 4. max(scrape 3, floor 2 + box 1) = 3, so 4
-    # is a phantom double-count → flag.
-    conn = _mem_db_qs(tmp_path)
-    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
-        {"matchup_id": 1, "home": _qs_block(20, qs=4, svhd=3),
-         "away": _qs_block(21, qs=2, svhd=3)}]}]
-    f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
-                               "2026-06-07T22:01:00+00:00", conn=conn)
-    oc = [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"]
-    assert len(oc) == 1 and oc[0].matchup_id == 1 and "QS" in oc[0].detail
-
 def test_site_qs_no_overcredit_when_correct(tmp_path):
     # Post-fix value: site shows 3 = max(3, 2+1). No flag. (SVHD 3 also fine.)
     conn = _mem_db_qs(tmp_path)
@@ -602,62 +588,6 @@ def test_site_qs_no_overcredit_when_correct(tmp_path):
     f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
                                "2026-06-07T22:01:00+00:00", conn=conn)
     assert [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"] == []
-
-
-def _mem_db_qs_floor_only(tmp_path):
-    """The m105 shape: a credit resting PURELY on the settled floor, with no
-    in-window box credit at all (the slate is over, the unsettled window is empty).
-
-    Bryan Baker saved on 8/04 and it was archived to pitcher_final_lines at Final,
-    but the scrape idled without ever banking it into category_state — so the scrape
-    reads SVHD 0 while the durable floor holds 1, and `cli._apply_qs_svhd_floor`
-    correctly publishes 1.
-    """
-    conn = _mem_db_qs(tmp_path)
-    # No live game: every period-10 game is Final and outside the unsettled window,
-    # so `_count_svhd` finds nothing to add (box == 0).
-    conn.execute("DELETE FROM live_pitchers")
-    # The aged-out save: game_date < since_date, archived, slotted in a pitcher slot.
-    conn.execute("INSERT INTO pitcher_final_lines VALUES "
-                 "('2026-06-05','Bryan Baker',0,3,0,1,0,'2026-06-06T04:05:00+00:00')")
-    conn.execute("INSERT INTO players VALUES (102,'Bryan Baker',26,14,'[]',NULL)")
-    conn.execute("INSERT INTO team_rosters (matchup_period_id, fantasy_team_id, "
-                 "player_id, lineup_slot_id, status) VALUES (10, 20, 102, 15, NULL)")
-    conn.execute("INSERT INTO daily_lineups VALUES ('2026-06-05', 20, 102, 15, 't')")
-    # Scrape never banked it: SVHD goes to 0 for team 20 (later tick than the base
-    # fixture's, so the per-stat latest read picks this up).
-    _put_state(conn, 1, 20, {63: 3.0, 83: 0.0}, "2026-06-07T21:20:00+00:00")
-    conn.commit()
-    return conn
-
-def test_site_qs_overcredit_quiet_when_credit_rests_on_the_settled_floor(tmp_path):
-    """THE 2026-08-07 false positive: 1830 occurrences over 8 days on m105.
-
-    `_supported_credit` short-circuited to `scraped` whenever box == 0, so it never
-    consulted the floor — while publish raises the display to it unconditionally via
-    `_apply_qs_svhd_floor`. A legitimately floor-backed credit read as unsupportable.
-    """
-    conn = _mem_db_qs_floor_only(tmp_path)
-    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
-        {"matchup_id": 1, "home": _qs_block(20, qs=3, svhd=1),   # floor-backed
-         "away": _qs_block(21, qs=2, svhd=3)}]}]
-    f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
-                               "2026-06-07T22:01:00+00:00", conn=conn)
-    oc = [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"]
-    assert oc == [], f"floor-backed SVHD must not flag, got: {[x.detail for x in oc]}"
-
-def test_site_qs_overcredit_still_fires_above_the_floor(tmp_path):
-    """The guard must not be weakened: with box == 0 the ceiling is the floor (1),
-    so a site showing 2 is still a genuine over-credit."""
-    conn = _mem_db_qs_floor_only(tmp_path)
-    weeks = [{"matchup_period_id": 10, "state": "live", "matchups": [
-        {"matchup_id": 1, "home": _qs_block(20, qs=3, svhd=2),   # one above the floor
-         "away": _qs_block(21, qs=2, svhd=3)}]}]
-    f = v.check_published_site(_write_site(tmp_path, weeks, _GEN_QS),
-                               "2026-06-07T22:01:00+00:00", conn=conn)
-    oc = [x for x in f if x.code == "INV_SITE_QS_OVERCREDIT"]
-    assert len(oc) == 1 and "SVHD" in oc[0].detail
-
 
 # ── read-fix regression guard: an idle partial write must NOT drop banked cats ──
 

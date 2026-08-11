@@ -128,30 +128,21 @@ def test_replace_leaves_other_days_alone():
 
 # ───────────────────── the credit that depended on it ─────────────────────
 
-def _floor_conn(slot):
-    """Minimal DB for load_settled_floor: one archived save on 2026-08-04."""
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    c.execute("CREATE TABLE matchups (id INTEGER PRIMARY KEY, matchup_period_id INTEGER)")
-    c.execute("INSERT INTO matchups VALUES (105, 18)")
-    c.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, full_name TEXT)")
-    c.execute("INSERT INTO players VALUES (641329, 'Bryan Baker')")
-    c.execute("""CREATE TABLE daily_lineups (game_date TEXT, fantasy_team_id INTEGER,
-                 player_id INTEGER, lineup_slot_id INTEGER, fetched_at TEXT)""")
-    c.execute("INSERT INTO daily_lineups VALUES ('2026-08-04',3,641329,?, 't0')", (slot,))
-    c.execute("""CREATE TABLE pitcher_final_lines (game_pk INTEGER, name TEXT,
-                 game_date TEXT, games_started INTEGER, outs INTEGER, er INTEGER,
-                 sv INTEGER, hld INTEGER, final_at TEXT)""")
-    c.execute("INSERT INTO pitcher_final_lines VALUES "
-              "(824321,'Bryan Baker','2026-08-04',0,3,0,1,0,'2026-08-05T04:05:03+00:00')")
-    return c
+@pytest.mark.parametrize("slot,expected_outs", [(15, 18), (16, 0)])
+def test_recorded_slot_gates_the_component_reconstruction(slot, expected_outs):
+    """Why a stale slot row is expensive.
 
-
-@pytest.mark.parametrize("slot,expected", [(15, 1), (16, 0)])
-def test_settled_floor_follows_the_recorded_slot(slot, expected):
-    """Why the stale row was expensive: the floor credits the save iff the slot
-    is active, and publish takes max(scrape, floor) — so a wrong 15 becomes a
-    phantom the scrape can never pull back down."""
-    floor = sim.load_settled_floor(_floor_conn(slot), 105, 3, (sim.STAT_SVHD,),
-                                   since_date="2026-08-10")
-    assert floor[sim.STAT_SVHD] == expected
+    Until 2026-08-11 the sharpest consequence was the QS/SVHD settled floor: it
+    credited a save iff the slot was active and publish took max(scrape, floor),
+    so a wrong 15 became a phantom the scrape could never pull back down (Baker's
+    08-04 bench slot recorded as 15 → Swamp Dragons SVHD 4 vs ESPN's 3). That
+    floor is gone — QS/SVHD now come straight from ESPN — but slots still gate
+    which box-score lines feed the ERA/WHIP/OPS component reconstruction, where a
+    wrong slot silently mis-attributes innings instead. Same lesson, quieter
+    failure mode, so it keeps a test.
+    """
+    lines = [{"name": "Bryan Baker", "outs": 18, "er": 2, "p_h": 4, "p_bb": 1}]
+    totals, matched = sim._sum_counted(
+        lines, {"bryanbaker": slot}, sim.PITCHER_SLOTS, ("outs", "er", "p_h", "p_bb"))
+    assert totals["outs"] == expected_outs
+    assert matched == (1 if expected_outs else 0)

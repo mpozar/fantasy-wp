@@ -5,6 +5,9 @@ scored display cats while REST kept settling the raw components, so the display
 diverged from the (correct) WP — a re-derived OPS off time-mismatched components
 flipped the OPS category, and an un-credited just-Final QS showed a stale low
 count. Both made the scoreboard contradict its own 100% WP.
+
+The QS/SVHD half is now handled at source by the closing scrape rather than by a
+display-side floor — see `test_publish_does_not_adjust_qs_svhd`.
 """
 from app import cli, sim
 
@@ -41,16 +44,33 @@ def test_derived_false_trusts_scraped_ops():
     assert a[18]["result"] == "WIN"
 
 
-def test_qs_svhd_floor_raises_a_lagging_scrape(monkeypatch):
-    # The scrape banked only QS=4, but the durable archive floor is 5 (a just-Final
-    # QS the idle scrape hasn't picked up). The floor credit raises the display to 5;
-    # an already-ahead SVHD (6 ≥ floor 2) is never lowered.
-    monkeypatch.setattr(sim, "load_settled_floor",
-                        lambda *a, **k: {sim.STAT_QS: 5, sim.STAT_SVHD: 2})
-    home = {sim.STAT_QS: {"score": 4.0, "result": "TIE"},
-            sim.STAT_SVHD: {"score": 6.0, "result": "WIN"}}
-    away = {sim.STAT_QS: {"score": 4.0, "result": "TIE"},
-            sim.STAT_SVHD: {"score": 2.0, "result": "LOSS"}}
-    cli._apply_qs_svhd_floor(None, 96, 1, 2, home, away)
-    assert home[sim.STAT_QS]["score"] == 5      # 4 → 5 (floor)
-    assert home[sim.STAT_SVHD]["score"] == 6    # 6 ≥ 2 → unchanged (never lowers)
+def test_publish_does_not_adjust_qs_svhd(monkeypatch):
+    """The QS/SVHD half of the 2026-07-27 case, inverted.
+
+    Back then an idle scrape could leave a just-Final QS un-banked for hours, so
+    publish raised the display to a durable archive floor (`_apply_qs_svhd_floor`,
+    `max(scrape, floor)`). The closing scrape (`cli._scrape_due`, 2026-08-09)
+    removed the gap at its source — measured 2026-08-10, four credits from games
+    that finalized with nothing else live all banked within ~8s — so on 2026-08-11
+    the floor was deleted and QS/SVHD now come straight from `category_state`.
+
+    This guards the new contract: publish must leave them EXACTLY as ESPN reports
+    them. Re-introducing any display-side raise would put the scoreboard back on a
+    number the WP doesn't share — the sim/display disagreement that cost the m105
+    +16.4pp/−8.6pp swing pair.
+    """
+    assert not hasattr(cli, "_apply_qs_svhd_floor"), \
+        "the display-side QS/SVHD raise was deleted 2026-08-11; see the docstring"
+    assert not hasattr(sim, "load_settled_floor"), \
+        "the QS/SVHD settled floor was deleted 2026-08-11; see the docstring"
+
+    # A publish over a finished week must pass the scraped values through untouched.
+    home, away = _state(_BEAR), _state(_OPP)
+    before = (home[sim.STAT_QS]["score"], home[sim.STAT_SVHD]["score"])
+    cli._apply_derived_rates(home, away, derived=False)
+    cli._apply_counting_results(home, away)
+    assert (home[sim.STAT_QS]["score"], home[sim.STAT_SVHD]["score"]) == before
+    # …and the results still get decided, just from ESPN's own numbers:
+    # Bear QS 4 vs 4 → TIE; SVHD 2 vs 6 → LOSS.
+    assert home[sim.STAT_QS]["result"] == "TIE"
+    assert home[sim.STAT_SVHD]["result"] == "LOSS"

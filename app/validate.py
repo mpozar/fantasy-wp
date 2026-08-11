@@ -23,9 +23,9 @@ Four layers of check, by scope:
   - **pipeline freshness** (`check_pipeline_freshness`): newest snapshot/fetch too
     old ⇒ a cron died silently and the site is serving stale data.
   - **published site** (`check_published_site`): the actual `data.json` the site
-    renders — a started week with no scored-cat values is "no stats on the site";
-    a cross-source DB mismatch; and an independent QS/SVHD over-credit recompute
-    (`max(scrape, settled_floor + box)`) that catches the phantom double-count.
+    renders — a started week with no scored-cat values is "no stats on the site",
+    and a cross-source DB mismatch (which since 2026-08-11 covers QS/SVHD too, now
+    that they come straight from category_state rather than being reconstructed).
 
 Design note: most past bugs were *emergent* (a fetch change broke what the sim
 consumes), so unit tests missed them. These checks assert end-to-end properties
@@ -55,7 +55,11 @@ NAME = stats.STAT_NAMES                    # canonical stat_id -> name (single s
 # and QS/SVHD (reconstructed counting credits). The cross-source DB check skips
 # these — they aren't comparable to raw category_state during live games — and only
 # checks the scrape-owned counting cats (H/HR/R/SB/K).
-_LIVE_RECON_CATS = {18, 47, 41, 63, 83}   # OPS, ERA, WHIP, QS, SVHD
+# QS/SVHD left this set on 2026-08-11 when their reconstruction was deleted: they
+# now come straight from category_state, so INV_SITE_DB_MISMATCH validates them
+# directly against ESPN's number — a stricter check than the bespoke
+# INV_SITE_QS_OVERCREDIT recompute it replaces.
+_LIVE_RECON_CATS = {18, 47, 41}   # OPS, ERA, WHIP
 
 # Tunable thresholds.
 WP_SWING = 0.15           # |home_wp - prev| flagged for review
@@ -116,8 +120,6 @@ RAIL_FLIP = 0.10               # WP within this of a rail (0 or 1) is "at the ra
                                # near-0↔near-100 flip — worst-case UX and a fingerprint
                                # of a flaky/over-credited stat (e.g. a phantom QS).
 
-QS_OVERCREDIT_TOL = 0.5        # published QS/SVHD may exceed the independently-supported
-                               # max(scrape, settled_floor + box) by at most this (rounding)
 WP_DECIDED = 0.99              # a published WP this lopsided should not have its own
                                # displayed category majority favor the OTHER side
 
@@ -931,43 +933,6 @@ def resolve(conn, code: str, *, now: str, by: str, note: str | None = None) -> i
         return conn.execute(sql, params).rowcount
 
 
-def _supported_credit(conn, matchup_id, period_id, team_id, sid, *,
-                      scraped, gen, unsettled, since_date) -> float:
-    """The maximum QS(63)/SVHD(83) the published artifact is *allowed* to show for one
-    side, recomputed independently of publish: `max(scraped_weekly, settled_floor +
-    box_count)` — the same rule `cli._fold_live_components` applies, re-derived here
-    from raw category_state + box scores. A publish/fold bug (or a regression of the
-    double-count fix) then surfaces as `published > supported`. Returns `scraped`
-    when no in-window box credit exists (nothing to add), and `None` if the
-    supporting data can't be loaded — the caller then skips, so we never flag on an
-    inability to recompute, only on a genuine over-credit.
-
-    The floor is consulted **even when there is no in-window box credit** (`box == 0`).
-    Publish applies the settled floor in *two* places, not one: the fold's
-    `max(scrape, floor + box)`, and — independently — `cli._apply_qs_svhd_floor`,
-    which raises the display to `max(scrape, floor)` on every current-week publish so
-    a just-Final QS/SVHD the idle scrape hasn't banked yet doesn't render as a stale
-    low count (added 2026-07-27, m96 QS 4→5). This recompute originally modelled only
-    the fold and short-circuited to `scraped` when `box == 0`, so any credit resting
-    purely on the floor read as unsupportable. That produced 1830 false-positive
-    occurrences over 2026-07-30..08-07 (m105 Swamp Dragons SVHD site=1 vs "supportable
-    0", where the floor genuinely held Bryan Baker's 8/04 save from
-    `pitcher_final_lines` and the scrape had never banked it). Always consulting the
-    floor keeps the guard intact — a real double-count still exceeds
-    `max(scrape, floor + box)` — while matching what publish actually does."""
-    try:
-        roster = sim.load_team_roster(conn, period_id, team_id)
-        slots = sim.load_active_slots(conn, team_id, since_date=since_date,
-                                      fallback_roster=roster)
-        counter = sim._count_qs if sid == sim.STAT_QS else sim._count_svhd
-        box, _ = counter(unsettled["pitchers"], slots)
-        floor = sim.load_settled_floor(conn, matchup_id, team_id, (sid,),
-                                       since_date=since_date, as_of=gen).get(sid, scraped)
-    except Exception:
-        return None
-    return max(scraped, floor + box)
-
-
 def check_published_site(data_json_path: str | None, now_iso: str | None,
                          *, conn=None) -> list[Finding]:
     """Validate the *actual published artifact* the site renders. Catches the
@@ -1040,30 +1005,6 @@ def check_published_site(data_json_path: str | None, now_iso: str | None,
                                                f"period {pid} {side} {NAME.get(sid, sid)} "
                                                f"site={pub} vs DB={dbstate[sid]} (as of {gen[:16]}) "
                                                f"— published artifact disagrees with the DB"))
-                    # The live-recon counting cats (QS/SVHD) are skipped above because
-                    # they're derived, not raw category_state — but they're exactly the
-                    # ones prone to the phantom double-count. Guard them with their own
-                    # independent recompute: site must not exceed max(scrape, floor+box).
-                    if unsettled is not None:
-                        pubmap = {c.get("stat_id"): c.get("score") for c in cats}
-                        for sid in (sim.STAT_QS, sim.STAT_SVHD):
-                            pub = pubmap.get(sid)
-                            if pub is None:
-                                continue
-                            scraped_sid = dbstate.get(sid, 0) or 0
-                            expected = _supported_credit(
-                                conn, m.get("matchup_id"), pid, blk["team_id"], sid,
-                                scraped=scraped_sid, gen=gen, unsettled=unsettled,
-                                since_date=since_date)
-                            if expected is None:
-                                continue
-                            if pub - expected > QS_OVERCREDIT_TOL:
-                                out.append(Finding("INV_SITE_QS_OVERCREDIT", "error",
-                                    m.get("matchup_id"),
-                                    f"period {pid} {side} {NAME.get(sid, sid)} site={pub:g} "
-                                    f"> supportable {expected:g} (scrape {scraped_sid:g} + "
-                                    f"box-score in-window) — phantom counting credit, the "
-                                    f"QS/SVHD double-count vs the live scrape"))
             # Records must mirror: head-to-head category scoring means home wins a
             # category ⟺ away loses it. A non-mirror record is the asymmetric-record
             # bug — per-team stored results desynced under temporal skew (see

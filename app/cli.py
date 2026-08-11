@@ -666,10 +666,13 @@ def backfill_lineups(days: int, dry_run: bool) -> None:
 
     The forward fix lives in `refresh-live` (`_authoritative_lineups`); this
     repairs days already recorded from a pre-lock snapshot. A wrong *active*
-    slot is the expensive direction — `sim.load_settled_floor` credits that
-    day's QS/SVHD from `pitcher_final_lines` only when the slot is active, so
-    one stale row publishes a phantom counting credit (2026-08-10: Baker's
-    08-04 bench slot recorded as 15 → Swamp Dragons SVHD 4 vs ESPN's 3).
+    slot is the expensive direction: slots gate which box-score lines count for a
+    team, so one stale row skews the reconstruction. (2026-08-10: Baker's 08-04
+    bench slot recorded as 15 → Swamp Dragons SVHD 4 vs ESPN's 3, via the
+    QS/SVHD settled floor. That floor was deleted 2026-08-11 — QS/SVHD now come
+    straight from ESPN — so the counting-cat blast radius is gone, but slots still
+    gate the ERA/WHIP/OPS component reconstruction, where a wrong slot silently
+    mis-attributes innings.)
 
     Only rewrites a day when ESPN returns a non-empty lineup for it, and
     reports every slot that actually changed. Idempotent.
@@ -869,9 +872,9 @@ def _authoritative_lineups(game_dates: list[str]) -> dict[str, list[dict]]:
        `INSERT OR IGNORE` then froze it permanently. Real cost (found
        2026-08-10): Bryan Baker was snapshotted in slot 15 at 22:40:04Z on
        08-04 but ESPN has him on the **bench** that day, so his save was ours
-       to credit and ESPN's to withhold — `load_settled_floor` counted it and
-       the site published Swamp Dragons SVHD 4 against ESPN's 3, turning a
-       lost category into a tie. Two week-17 credits (Wacha 07-31, Abreu
+       to credit and ESPN's to withhold — the (since-removed) QS/SVHD settled
+       floor counted it and the site published Swamp Dragons SVHD 4 against
+       ESPN's 3, turning a lost category into a tie. Two week-17 credits (Wacha 07-31, Abreu
        07-29) were wrong the same way; across weeks 1..18 these three were the
        *only* disagreements between the floor and ESPN's scrape.
     2. **Cross-day smearing.** The current-day lineup was written for *every*
@@ -1257,12 +1260,10 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
                     if live_components:
                         home_scores, hdec = sim.apply_live_components(
                             conn, m["home_team_id"], home_scores, home_roster,
-                            unsettled_lines, since_date=settle_boundary,
-                            matchup_id=m["id"])
+                            unsettled_lines, since_date=settle_boundary)
                         away_scores, adec = sim.apply_live_components(
                             conn, m["away_team_id"], away_scores, away_roster,
-                            unsettled_lines, since_date=settle_boundary,
-                            matchup_id=m["id"])
+                            unsettled_lines, since_date=settle_boundary)
                         live_accepts += sum(1 for d in (hdec + adec) if d["accepted"])
                         # Daily lineup slots → gate the in-game QS/SVHD override:
                         # a pitcher benched at first pitch is locked out of today's
@@ -2177,38 +2178,11 @@ def _fold_live_components(conn, home_state, away_state,
                     if c.get("score") is not None}
         roster = sim.load_team_roster(conn, period_id, tid)
         recon, _ = sim.apply_live_components(conn, tid, baseline, roster, unsettled,
-                                             since_date=settle, matchup_id=matchup_id)
+                                             since_date=settle)
         for sid, val in recon.items():
             if val is not None:
                 state.setdefault(sid, {"score": None, "result": None})["score"] = val
     return True
-
-
-def _apply_qs_svhd_floor(conn, matchup_id: int, home_team_id: int,
-                         away_team_id: int, home_state: dict[int, dict],
-                         away_state: dict[int, dict]) -> None:
-    """Raise displayed QS/SVHD to the durable settled floor when the live scrape
-    lags it. Mutates the states in place (score only; results are recomputed by
-    `_apply_counting_results` afterward).
-
-    QS/SVHD are scored display cats the scrape banks into category_state only
-    *while it runs* (during a slate). Once games finish and the scrape idles, a
-    QS/SVHD earned in a just-Final game can sit un-banked for hours — so the
-    scoreboard shows a stale low count (e.g. Norsemen QS 4) while the WP, which
-    credits it via `max(scrape, settled_floor + box)`, already reads the true 5
-    (2026-07-27 m96). Mirror that floor for the display: `settled_floor` counts
-    the QS/SVHD from the write-once `pitcher_final_lines` archive, gated by each
-    day's lineup slots (`sim.load_settled_floor`). Fail-safe — only ever raises to
-    the floor (`max`), never lowers; a no-op once the scrape catches up (scrape ≥
-    floor) or when the archive/lineups aren't available (floor absent)."""
-    settle = _settle_boundary()
-    for tid, state in ((home_team_id, home_state), (away_team_id, away_state)):
-        floor = sim.load_settled_floor(
-            conn, matchup_id, tid, (sim.STAT_QS, sim.STAT_SVHD), since_date=settle)
-        for sid, fv in floor.items():
-            cur = (state.get(sid) or {}).get("score")
-            if fv is not None and (cur is None or fv > cur):
-                state.setdefault(sid, {"score": None, "result": None})["score"] = fv
 
 
 def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
@@ -2243,12 +2217,12 @@ def _matchup_block(conn, teams: dict, m, *, started: bool, live: bool = False,
         # to a bogus value that can flip a category (2026-07-27 m96 OPS).
         _apply_derived_rates(home_state, away_state,
                              derived=(folded or not is_current))
-        # Counting QS/SVHD: raise the current week's display to the durable settled
-        # floor so a scrape that hasn't yet banked a just-Final QS/SVHD doesn't show
-        # a stale low count that contradicts the WP (2026-07-27 m96 QS 4→5).
-        if is_current:
-            _apply_qs_svhd_floor(conn, m["id"], home_team_id, away_team_id,
-                                 home_state, away_state)
+        # QS/SVHD need no display adjustment: they come straight from
+        # category_state (ESPN via the scrape). The settled-floor raise that lived
+        # here until 2026-08-11 existed because an idle scrape could leave a
+        # just-Final credit un-banked for hours; the closing scrape (_scrape_due)
+        # now keeps ESPN current within a tick, so the display and the WP read the
+        # same number from the same source.
         _apply_counting_results(home_state, away_state)
     wp_row = conn.execute(
         """
