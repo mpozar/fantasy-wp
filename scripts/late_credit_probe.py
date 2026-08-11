@@ -126,8 +126,10 @@ def probe(conn, game_date: str) -> None:
     batch_start = _iso(datetime.fromisoformat(last) - timedelta(minutes=CLOSING_BATCH_MIN))
 
     creds = credits_for(conn, game_date)
-    print(f"\n{game_date}  (period {period})  last Final {last[11:19]}Z  "
+    print(f"\n{game_date}  (period {period})  last Final {last[5:19].replace('T',' ')}Z  "
           f"— {len(creds)} rostered credit(s)")
+    print(f"   (games dated {game_date} finalize in the early hours of the NEXT UTC day — "
+          f"dates shown below, don't read the wrong day's log)")
     if not creds:
         print("   NOT EXERCISED — no rostered+slotted QS/SVHD earned this date")
         return
@@ -143,13 +145,15 @@ def probe(conn, game_date: str) -> None:
             ok = delay <= CLOSING_SCRAPE_WINDOW_MIN
             mark = "prompt" if ok else "SETTLE-ONLY"
             print(f"   {tag} {c['name']:<20} {c['kind']:<4} {names[c['team_id']][:18]:<18} "
-                  f"final {c['final_at'][11:19]} → banked {land[11:19]}  "
+                  f"final {c['final_at'][5:19].replace('T',' ')} → banked "
+                  f"{land[5:19].replace('T',' ')}  "
                   f"+{delay:5.1f} min  {mark}")
             if late:
                 verdicts.append(ok)
         else:
             print(f"   {'LATE ' if late else '  mid'} {c['name']:<20} {c['kind']:<4} "
-                  f"{names[c['team_id']][:18]:<18} final {c['final_at'][11:19]} → NEVER BANKED")
+                  f"{names[c['team_id']][:18]:<18} "
+                  f"final {c['final_at'][5:19].replace('T',' ')} → NEVER BANKED")
             if late:
                 verdicts.append(False)
     if not verdicts:
