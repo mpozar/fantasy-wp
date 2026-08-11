@@ -951,10 +951,11 @@ def _put_player(conn, pid, *, slot, injury="NORMAL", team=2):
                  (pid, f"Player {pid}", team, injury))
 
 
-def _put_game(conn, *, pk, date, status, team=2):
+def _put_game(conn, *, pk, date, status, team=2, inning=None):
+    """`inning` set ⇒ the game is underway (the sim's own in-progress marker)."""
     conn.execute(
-        "INSERT INTO team_schedule VALUES (16,?,?,?,99,1,NULL,NULL,?,NULL,NULL,NULL,NULL)",
-        (pk, date, team, status))
+        "INSERT INTO team_schedule VALUES (16,?,?,?,99,1,NULL,NULL,?,?,NULL,NULL,NULL)",
+        (pk, date, team, status, inning))
 
 
 def test_side_remaining_counts_healthy_active_player():
@@ -980,6 +981,39 @@ def test_side_remaining_skips_out_player_in_active_slot():
     roster_n, rem = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
     assert roster_n == 1          # roster WAS fetched (so not a fetch failure)
     assert rem == 0               # …but nothing left to budget → benign end-of-week
+
+
+def test_side_remaining_ignores_a_game_already_underway():
+    """THE 2026-08-09/10 recurrence (m104 home, m106 away, 37 occurrences).
+
+    Not an end-of-week drain — it fired 23:36→02:36 *mid-slate* and stopped at the
+    last tick before game 823268 went Final at 02:40:14. Each side had exactly ONE
+    active player left in that live game (WAR's Peter Lambert slot 14, That Bus's
+    Jason Adam slot 15, both relievers); every other active player's game was
+    already Final. A non-Final game counted as a full remaining game here, but the
+    sim gives an underway game a *factor* — `_rp_factor` ramps to ~0 deep in the
+    bullpen window — so `_make_budget` dropped them and the side legitimately
+    projected nothing. remaining > 0 with 0 budgets ⇒ spurious error.
+    """
+    conn = _remaining_db()
+    _put_player(conn, 1, slot=15)                                   # active pitcher slot
+    _put_game(conn, pk=1, date="2026-07-26", status="In Progress", inning=8)
+    conn.commit()
+    sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T23:40:00+00:00")
+    roster_n, rem = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
+    assert roster_n == 1          # roster fetched — not a fetch failure
+    assert rem == 0               # underway ⇒ the sim decides; 0 budgets is legitimate
+
+
+def test_side_remaining_still_counts_a_game_that_has_not_started():
+    """The fix must not blunt the check: a not-yet-started game is unambiguous —
+    the sim WILL project from it, so empty budgets there is a real failure."""
+    conn = _remaining_db()
+    _put_player(conn, 1, slot=15)
+    _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")    # no inning ⇒ not started
+    conn.commit()
+    sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T23:40:00+00:00")
+    assert v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26)) == (1, 1)
 
 
 def test_side_remaining_drops_stale_past_dated_game():

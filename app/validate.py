@@ -1069,14 +1069,39 @@ def _side_remaining(conn, period_id: int, team_id: int, sched: dict,
     which is benign rather than a failure. Used by check_empty_budgets.
 
     **Must exclude every game `build_budgets` excludes, or the gate it feeds
-    mis-fires.** Two filters mirror the sim: `sched` is loaded with `now` by the
-    caller (so the past-date guard drops stale non-Final rows — see
-    `sim.load_schedule_by_team`), and unplayable players (OUT/INJURY_RESERVE, or
-    any status with no return estimate) are skipped via `sim._is_playable` even
-    when parked in an *active* slot. Without them this counted games the sim had
-    already dropped → `remaining > 0` while budgets were legitimately empty →
-    spurious INV_EMPTY_BUDGETS every Sun→Mon (2026-07-26/27: m94/m95/m96, 83
-    occurrences, all benign end-of-week drain)."""
+    mis-fires.** Three filters mirror the sim:
+
+    1. `sched` is loaded with `now` by the caller, so the past-date guard drops
+       stale non-Final rows (see `sim.load_schedule_by_team`).
+    2. Unplayable players (OUT/INJURY_RESERVE, or any status with no return
+       estimate) are skipped via `sim._is_playable` even when parked in an
+       *active* slot.
+    3. **Games already underway (`current_inning is not None`) don't count.**
+
+    (1) and (2) landed in `f31ace2d` after the 2026-07-26/27 end-of-week drain
+    (m94/m95/m96, 83 spurious occurrences). They were not enough: the check
+    recurred on week 17 and again on 2026-08-09/10 (m104 home, m106 away, 37
+    occurrences), and that recurrence was **not** an end-of-week drain at all — it
+    fired 23:36→02:36, mid-slate, and stopped at the last tick before game 823268
+    went Final at 02:40:14.
+
+    Root cause is (3). Each of those two sides had exactly **one** active-slot
+    player left in a live game — WAR's Peter Lambert (slot 14) and That Bus's Jason
+    Adam (slot 15), both relievers in that same late game. Every other active
+    player's game was already Final. A non-Final game counted as a full
+    "remaining game" here, but the sim gives an underway game a *factor*, and for
+    those two it was ~0: `_rp_factor` ramps to zero once a game is deep in the
+    bullpen window, so `_make_budget` dropped them and the side legitimately
+    projected nothing. `remaining > 0` with 0 budgets ⇒ spurious error.
+
+    An underway game is precisely where the sim decides per-player whether anything
+    remains — a removed hitter (`still_in=False`), an exited starter, a reliever
+    past the bullpen window — and zero is a legitimate answer. This gate can't
+    cheaply second-guess that, so it only counts games that **haven't started**,
+    where "the sim will project something" is unambiguous. Real failures are still
+    caught: `roster_n == 0` (fetch produced nothing) fires regardless, and empty
+    budgets with a not-yet-started game still fire. The narrow case now missed is a
+    genuine projection failure occurring when *only* in-progress games remain."""
     roster = sim.load_team_roster(conn, period_id, team_id)
     rem = 0
     for p in roster:
@@ -1085,7 +1110,8 @@ def _side_remaining(conn, period_id: int, team_id: int, sched: dict,
         if not sim._is_playable(p, as_of):                      # OUT/IR → the sim won't budget him
             continue
         rem += sum(1 for g in sched.get(p["pro_team_id"], [])
-                   if g.get("game_status") not in _FINAL_GAME_STATES)
+                   if g.get("game_status") not in _FINAL_GAME_STATES
+                   and g.get("current_inning") is None)
     return len(roster), rem
 
 
