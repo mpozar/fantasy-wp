@@ -1195,7 +1195,10 @@ rate they imply matches ESPN's live scraped rate. Pieces:
   reintroduce a QS/SVHD adjustment on either the sim or the display side without
   first re-running `scripts/late_credit_probe.py`: the whole justification is that
   ESPN now credits within ~8s of Final even with nothing live, so any adjustment
-  is either a no-op or an over-credit. Guarded by
+  is either a no-op or an over-credit. **Confirmed on the decisive case 2026-08-11**
+  (the earlier 08-10 measurement had no closing-batch credit to test): the night's
+  LAST game finalized 05:05:02Z with nothing else live and its two QS both banked at
+  05:05:13Z, **+11s**, against 12 mid-slate controls at 9-14s. Guarded by
   `tests/test_publish_display_lag.py::test_publish_does_not_adjust_qs_svhd`.
 
 - **Wiring.** `compute` (current week only, mc-v1) loads the unsettled lines once
