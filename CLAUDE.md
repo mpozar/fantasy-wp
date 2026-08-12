@@ -29,7 +29,20 @@ Context for future Claude sessions working on this repo. The README has the user
    with a return estimate is included and gated per-game by his return date
    (`_is_playable`/`_est_return_date`); only genuinely-out statuses are dropped.
 5. **The editable install is live**: an `app/` edit runs on the next 5-min
-   cron tick. Never leave unwanted working-tree edits sitting.
+   cron tick. Never leave unwanted working-tree edits sitting. **A multi-step
+   edit is the real hazard** — change a signature in one edit and its call site
+   in the next, and a tick landing between them dies on a half-applied tree.
+   This has now killed a tick **three times** (`CLOSING_SCRAPE_WINDOW_MIN`
+   NameError; `daily_lineup_rows` NameError; `_cadence_extra_start_dist()
+   takes 3 to 4 positional arguments but 5 were given`, 2026-08-12T10:20Z).
+   So for any edit that isn't atomic, **hold the lock for the whole edit**, not
+   just the test run:
+   ```sh
+   echo $$ > .app.lock; trap 'rm -f .app.lock' EXIT   # ticks skip; release when consistent
+   ```
+   Cost of getting it wrong is one lost tick (no snapshot, no publish) and it
+   self-heals on the next one — no corruption — but it is pure noise in the log
+   and it can mislead the next investigation.
 6. **Never leave anything staged**: `fast.sh`'s bare `git commit` sweeps the
    whole index every 5 min. Stage+commit atomically, only after
    `pgrep -fl 'scripts/(fast|medium|daily).sh'` comes back clear.
