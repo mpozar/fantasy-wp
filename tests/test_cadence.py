@@ -10,6 +10,7 @@ Two layers:
 
 import random
 import statistics
+from datetime import date
 
 import pytest
 
@@ -53,7 +54,8 @@ def _daily(start_day, end_day, probable=None):
 def _dist(last_start, games):
     sched = {TEAM: games}
     last = {sim._norm_name(PITCHER): last_start} if last_start else {}
-    return _cadence_extra_start_dist(PITCHER, TEAM, sched, last, None)
+    anchor = sim._rotation_anchor(PITCHER, TEAM, sched, last, None)
+    return _cadence_extra_start_dist(TEAM, sched, anchor, None)
 
 
 def _ek(dist):
@@ -100,11 +102,58 @@ def test_announced_probable_anchors_phase():
     # That announced game anchors the phase (and is itself the fixed piece, not
     # credited here); the next open turn is projected from 06-02.
     games = [_game("2026-06-02", probable=PITCHER)] + _daily(3, 8)
-    dist = _cadence_extra_start_dist(
-        PITCHER, TEAM, {TEAM: games}, {}, None,
-    )
+    dist = _dist(None, games)
     assert dist is not None
     assert _ek(dist) > 0.8           # ~one more start projected from 06-02
+
+
+# ── _rotation_anchor ────────────────────────────────────────────────────────
+
+def _anchor(last_start, games, return_date=None):
+    last = {sim._norm_name(PITCHER): last_start} if last_start else {}
+    return sim._rotation_anchor(PITCHER, TEAM, {TEAM: games}, last, return_date)
+
+
+def test_rotation_anchor_takes_the_later_of_recorded_and_announced():
+    games = [_game("2026-06-05", probable=PITCHER)] + _daily(6, 8)
+    # Announced 06-05 is later than the recorded 06-01 → it wins.
+    assert _anchor("2026-06-01", games) == date(2026, 6, 5)
+    # ...and the recorded start wins when it's the later of the two.
+    assert _anchor("2026-06-09", games) == date(2026, 6, 9)
+
+
+def test_rotation_anchor_is_none_without_either_source():
+    assert _anchor(None, _daily(2, 7)) is None
+
+
+def test_rotation_anchor_sees_a_benched_pitchers_live_start():
+    """THE REGRESSION THIS FIX EXISTS FOR (2026-08-12 Hunter Brown, m113).
+
+    A benched pitcher's In-Progress start is dropped from his *scoring* view by
+    `_drop_inprogress_for_benched`, but the anchor is built from the UNFILTERED
+    schedule, so the start still sets his rotation phase. Before the fix the
+    anchor stayed on his previous turn and the walk invented a phantom extra
+    start — the very turn he was making.
+    """
+    live_start = _game("2026-06-06", status="In Progress", inning=3,
+                       probable=PITCHER)
+    unfiltered = {TEAM: [live_start] + _daily(7, 12)}
+    filtered = sim._drop_inprogress_for_benched(
+        unfiltered, TEAM, PITCHER, {sim._norm_name(PITCHER): 16})
+
+    # The benched view really does hide the start (guards the premise).
+    assert live_start not in filtered[TEAM]
+
+    last = {sim._norm_name(PITCHER): "2026-06-01"}
+    from_unfiltered = sim._rotation_anchor(PITCHER, TEAM, unfiltered, last, None)
+    from_filtered = sim._rotation_anchor(PITCHER, TEAM, filtered, last, None)
+    assert from_unfiltered == date(2026, 6, 6)    # the live start sets the phase
+    assert from_filtered == date(2026, 6, 1)      # the stale anchor = the old bug
+
+    # And the consequence: the stale anchor projects a turn the correct one doesn't.
+    stale = _cadence_extra_start_dist(TEAM, filtered, from_filtered, None)
+    fixed = _cadence_extra_start_dist(TEAM, filtered, from_unfiltered, None)
+    assert _ek(stale) > _ek(fixed)
 
 
 def test_probable_games_not_credited():

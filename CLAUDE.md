@@ -207,6 +207,26 @@ enumerating rest-day scenarios (`REST_DAY_WEIGHTS`, modal 5), snapping each
 projected date to this team's next **open** game (no probable yet), capped at
 `MAX_EXTRA_STARTS`. Aggregated over all scenarios into the discrete dist.
 
+**The anchor is resolved ONCE, in `_rotation_anchor`, off the UNFILTERED
+schedule — and this is load-bearing (fixed 2026-08-12).** It lives on
+`PitcherSituation.cadence_anchor`; `_cadence_extra_start_dist` now *receives* a
+resolved anchor rather than deriving one, so there is exactly one definition.
+Why unfiltered: a benched pitcher's In-Progress start is dropped from his
+*scoring* view by `_drop_inprogress_for_benched` (he's locked out, so it must
+score nothing) — but the start still happened and is exactly what sets his
+phase. Deriving the anchor from that filtered view left a benched starter
+anchored on his **previous** turn for the whole length of his outing, so the
+walk projected a phantom extra start — the very turn he was making — which then
+vanished at Final. Measured 2026-08-12: **~1 benched starter/day** league-wide
+(16 cases in 15 days), each worth ~5-6 phantom K and ~0.45 QS for ~3h; the
+Hunter Brown case (m113) moved the matchup **5.8pp**. Note the physical
+start-count cap (`_max_remaining_starts`) deliberately keeps its **own**,
+*unraised* anchor — the last recorded start — because its window must begin
+before the announced start for the `- probable_units` subtraction to be right.
+**Two anchors, two jobs; don't unify them.** Tests:
+`test_cadence.py::test_rotation_anchor_*`,
+`test_budget_flags.py::test_a_benched_starter_gets_no_impossible_turn`.
+
 `E[k] = sum(i·P(i))` is reused for the displayed start count (`Budget.units` =
 fixed + E[k]) and the two-way hitter-day subtraction; `_display_expected` folds
 `E[k]·rate` back into the per-stat means for the budget summary in `data.json`.

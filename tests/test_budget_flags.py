@@ -107,13 +107,36 @@ def test_svhd_ingame_flag_on_live_reliever():
 
 def test_benched_drop_flag():
     slot_map = {sim._norm_name("Test Starter"): 16}   # BE slot
+    # Open game on 06-07, a legal turn (5 days) after his 06-02 live start, so a
+    # cadence turn fits and he still has a budget to carry the flag. It used to
+    # be 06-04 — only 2 days' rest — which the pre-2026-08-12 stale anchor
+    # happily projected; see test_a_benched_starter_gets_no_impossible_turn.
     budgets = build_budgets(
         [_starter()],
-        {TEAM: [_game(), _game(status="Scheduled", game_pk=1000,
-                               game_date="2026-06-04", probable=None)]},
+        {TEAM: [_game(), _game(status="Scheduled", game_pk=1000, inning=None,
+                               game_date="2026-06-07", probable=None)]},
         sim.SimContext(team_total_ros_games={TEAM: 60}, live_by_team=_live(),
                        slot_by_norm_name=slot_map))
     assert "benched-live-drop" in _flags(budgets, "SP")
+
+
+def test_a_benched_starter_gets_no_impossible_turn():
+    """A benched pitcher's live start is hidden from his scoring view but still
+    sets his rotation phase (2026-08-12 fix), so the only open game — 2 days
+    after that start — is correctly unreachable and he projects nothing.
+
+    Before the fix the anchor was read off the benched (filtered) view, so it
+    fell back to 'no anchor' and the flat ROS-share handed him a share of that
+    physically impossible turn.
+    """
+    slot_map = {sim._norm_name("Test Starter"): 16}
+    budgets = build_budgets(
+        [_starter()],
+        {TEAM: [_game(), _game(status="Scheduled", game_pk=1000, inning=None,
+                               game_date="2026-06-04", probable=None)]},
+        sim.SimContext(team_total_ros_games={TEAM: 60}, live_by_team=_live(),
+                       slot_by_norm_name=slot_map))
+    assert not [b for b in budgets if b.role == "SP"]
 
 
 def test_flags_do_not_change_numbers():

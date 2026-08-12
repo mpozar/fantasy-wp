@@ -791,36 +791,30 @@ def _open_sp_game_weight(team_id: int,
     return total
 
 
-def _cadence_extra_start_dist(player_name: str, team_id: int,
-                              schedule_by_team: dict[int, list[dict]],
-                              last_start_by_pitcher: dict[str, str],
-                              return_date: date | None = None,
-                              ) -> list[float] | None:
-    """Distribution over the number of *extra* (un-probabled, open) starts this
-    pitcher gets in the period, from a rotation-turn projection.
+def _rotation_anchor(player_name: str, team_id: int,
+                     schedule_by_team: dict[int, list[dict]],
+                     last_start_by_pitcher: dict[str, str],
+                     return_date: date | None = None) -> date | None:
+    """This pitcher's rotation phase: the later of his last *recorded* start and
+    his latest *announced* probable in this period (an arm slated for Tuesday
+    projects his next turn from Tuesday). `None` when neither exists — the
+    cadence model then has no usable anchor and the caller falls back to flat.
 
-    Returns `[P(0), P(1), ...]`, or `None` when there's no usable anchor (no
-    recorded last start and no announced probable) — the caller then falls back
-    to the flat ROS-share estimate, so behavior never regresses below today's.
-
-    Model: anchor on the later of the pitcher's last recorded start and his
-    latest *announced* probable in this period (an arm slated for Tuesday
-    projects his next turn from Tuesday). From the anchor, project forward turns
-    by sampling rest-days (`REST_DAY_WEIGHTS`), snapping each projected date to
-    this team's next **open** game (no probable announced yet) on/after it.
-    Announced-probable starts are the 'fixed' piece counted by
-    `_probable_starts_for`, so they're never credited here (no double-count) —
-    they only set the rotation phase. Aggregated over all rest-day scenarios
-    into a discrete distribution, capped at `MAX_EXTRA_STARTS`.
+    **Build this from the UNFILTERED schedule.** A benched pitcher's In-Progress
+    start is dropped from his *scoring* view by `_drop_inprogress_for_benched`
+    (he's locked out, so it must contribute nothing) — but the start still
+    happened, and it is precisely what sets his phase. Deriving the anchor from
+    that filtered view left a benched starter anchored on his *previous* turn for
+    the whole length of his outing, so the cadence walk projected him a phantom
+    extra start — the very turn he was making — which then vanished the instant
+    the game went Final (2026-08-12 Hunter Brown, m113: ~6 phantom K and ~0.45 QS
+    for ~3h, worth 5.8pp on the matchup). Measured ~1 benched starter/day
+    league-wide. Resolved once per pitcher in `PitcherSituation.cadence_anchor`;
+    do not re-derive it from a schedule view.
     """
     target = _norm_name(player_name)
     if not target:
         return None
-    sched = [g for g in schedule_by_team.get(team_id, [])
-             if _game_after_return(g, return_date)]
-
-    # Anchor: last recorded start, raised to the latest announced probable for
-    # this pitcher in-period (announced games chain the phase into the open tail).
     anchor: date | None = None
     last = last_start_by_pitcher.get(target)
     if last:
@@ -828,16 +822,44 @@ def _cadence_extra_start_dist(player_name: str, team_id: int,
             anchor = date.fromisoformat(last)
         except ValueError:
             anchor = None
-    for g in sched:
-        if _norm_name(g.get("probable_pitcher_name")) == target:
-            try:
-                gd = date.fromisoformat(g["game_date"])
-            except (ValueError, KeyError):
-                continue
-            if anchor is None or gd > anchor:
-                anchor = gd
+    for g in schedule_by_team.get(team_id, []):
+        if not _game_after_return(g, return_date):
+            continue
+        if _norm_name(g.get("probable_pitcher_name")) != target:
+            continue
+        try:
+            gd = date.fromisoformat(g["game_date"])
+        except (ValueError, KeyError):
+            continue
+        if anchor is None or gd > anchor:
+            anchor = gd
+    return anchor
+
+
+def _cadence_extra_start_dist(team_id: int,
+                              schedule_by_team: dict[int, list[dict]],
+                              anchor: date | None,
+                              return_date: date | None = None,
+                              ) -> list[float] | None:
+    """Distribution over the number of *extra* (un-probabled, open) starts this
+    pitcher gets in the period, from a rotation-turn projection.
+
+    Returns `[P(0), P(1), ...]`, or `None` when there's no usable `anchor` (see
+    `_rotation_anchor`) — the caller then falls back to the flat ROS-share
+    estimate, so behavior never regresses below today's.
+
+    Model: from the anchor, project forward turns
+    by sampling rest-days (`REST_DAY_WEIGHTS`), snapping each projected date to
+    this team's next **open** game (no probable announced yet) on/after it.
+    Announced-probable starts are the 'fixed' piece counted by
+    `_probable_starts_for`, so they're never credited here (no double-count) —
+    they only set the rotation phase. Aggregated over all rest-day scenarios
+    into a discrete distribution, capped at `MAX_EXTRA_STARTS`.
+    """
     if anchor is None:
         return None  # no usable anchor → caller uses flat-rate fallback
+    sched = [g for g in schedule_by_team.get(team_id, [])
+             if _game_after_return(g, return_date)]
 
     # Candidate open games: no probable yet, not finished, not in progress
     # (an in-progress game already has a starter). Future games only.
@@ -1366,10 +1388,13 @@ class PitcherSituation:
     exited: bool                  # started and a later pitcher has appeared
     live_start_in_progress: bool  # the started game is In Progress in `sched`
     sched: dict[int, list[dict]]  # his schedule view (benched ⇒ In-Progress dropped)
+    cadence_anchor: date | None   # rotation phase, from the UNFILTERED schedule
 
 
 def _resolve_pitcher_situation(p: dict, schedule_by_team: dict[int, list[dict]],
-                               ctx: SimContext) -> PitcherSituation:
+                               ctx: SimContext,
+                               return_date: date | None = None,
+                               ) -> PitcherSituation:
     """Build the PitcherSituation for one rostered pitcher — pure, and the single
     place a pitcher's identity is matched against live lines and lineup slots."""
     team_id = p["pro_team_id"]
@@ -1409,11 +1434,19 @@ def _resolve_pitcher_situation(p: dict, schedule_by_team: dict[int, list[dict]],
     # caveat that protects a swingman's remaining relief).
     promoted = (not ratio_sp) and _is_announced_or_live_starter(
         full_name, team_id, sched, ctx.live_by_team)
+    # Rotation phase — deliberately off `schedule_by_team`, NOT `sched`: a
+    # benched pitcher's live start must score nothing but must still set his
+    # phase, or the cadence walk invents the turn he is currently making.
+    # See _rotation_anchor for the incident this prevents.
+    cadence_anchor = _rotation_anchor(
+        full_name, team_id, schedule_by_team,
+        ctx.last_start_by_pitcher, return_date)
     return PitcherSituation(
         role="SP" if (ratio_sp or promoted) else "RP",
         ratio_sp=ratio_sp, promoted=promoted, benched_today=benched_today,
         live=live, has_live_start=has_live_start, exited=exited,
-        live_start_in_progress=live_start_in_progress, sched=sched)
+        live_start_in_progress=live_start_in_progress, sched=sched,
+        cadence_anchor=cadence_anchor)
 
 
 def build_budgets(roster: list[dict],
@@ -1488,7 +1521,7 @@ def build_budgets(roster: list[dict],
             # every branch below reads the struct (see PitcherSituation: the
             # SP-vs-RP classification incl. spot-starter promotion, the benched
             # schedule view, and the live-line/exited state all live there).
-            sit = _resolve_pitcher_situation(p, schedule_by_team, ctx)
+            sit = _resolve_pitcher_situation(p, schedule_by_team, ctx, ret)
             sched = sit.sched
             # Provenance flags for this pitcher's budget (see Budget.flags).
             # Telemetry only — collected along the way, attached at the end.
@@ -1546,8 +1579,7 @@ def build_budgets(roster: list[dict],
                 #     the walk snap the first turn to day 1 and over-project. The
                 #     start *count* still varies per sim either way.
                 extra_dist = _cadence_extra_start_dist(
-                    p["full_name"], team_id, sched,
-                    last_start_by_pitcher, ret,
+                    team_id, sched, sit.cadence_anchor, ret,
                 ) if use_cadence else None
                 extra_src = "cadence" if extra_dist is not None else None
                 if extra_dist is None:
@@ -1576,6 +1608,12 @@ def build_budgets(roster: list[dict],
                     # so the physical bound is meaningful. For future weeks the anchor
                     # is ~a week stale (the flat fallback is anchor-independent by
                     # design — see test_use_cadence_flag_gates_the_model), so skip.
+                    #
+                    # NOTE this is deliberately NOT `sit.cadence_anchor`. That one is
+                    # raised to the latest announced probable (it sets rotation phase);
+                    # here the window must START before the announced start so that
+                    # subtracting `probable_units` below doesn't double-count it. Two
+                    # anchors, two different jobs — don't "unify" them.
                     anchor_iso = (last_start_by_pitcher.get(_norm_name(p["full_name"]))
                                   if use_cadence else None)
                     if anchor_iso:
