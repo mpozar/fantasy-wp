@@ -32,9 +32,11 @@ Context for future Claude sessions working on this repo. The README has the user
    cron tick. Never leave unwanted working-tree edits sitting. **A multi-step
    edit is the real hazard** — change a signature in one edit and its call site
    in the next, and a tick landing between them dies on a half-applied tree.
-   This has now killed a tick **three times** (`CLOSING_SCRAPE_WINDOW_MIN`
-   NameError; `daily_lineup_rows` NameError; `_cadence_extra_start_dist()
-   takes 3 to 4 positional arguments but 5 were given`, 2026-08-12T10:20Z).
+   This has now killed a tick **three times** — two NameErrors (on a constant
+   and on a local that the half-applied edit hadn't defined yet) and, on
+   2026-08-12T10:20Z, "_cadence_extra_start_dist() takes from 3 to 4
+   positional arguments but 5 were given" from editing a signature and its
+   call site as two separate steps.
    So for any edit that isn't atomic, **hold the lock for the whole edit**, not
    just the test run:
    ```sh
