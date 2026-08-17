@@ -1979,6 +1979,35 @@ K's +18.4% total ⇒ per-start K rate ≈ **−4%** (ESPN's K rate is fine), and
 removed (−14%). So after that fix the residual pitching over-projection is
 essentially all item 1 — i.e. as calibrated as the modelling choices allow.
 
+### What-if playoff odds ("what does this one game swing?")
+
+```sh
+.venv/bin/python scripts/whatif_playoffs.py 115                       # both outcomes
+.venv/bin/python scripts/whatif_playoffs.py "Desert Dawgs"            # their next undecided matchup
+.venv/bin/python scripts/whatif_playoffs.py 115 --winner "Desert Dawgs"
+```
+Pins one undecided matchup to a result and re-prices the season. `app playoffs`
+says where things stand; this says what a single game is *worth* — which is a
+different question, because a result's value to a team is mostly about which
+**rival** it eliminates. Worked example (2026-08-14, m115 Dragons @ Dawgs): a
+Dawgs win is worth only **+11.0pp** to them but **−34.5pp** to the Dragons, and
+the biggest gainer is neither side — **Big Giraffes +12.6pp**, the team actually
+contesting that spot. A Dawgs loss eliminates them outright (2.4% → 0.0%).
+
+**READ-ONLY by design** — never writes `docs/playoffs.json`, never inserts into
+`playoff_odds_runs`. That second one is the load-bearing part:
+`playoffs.load_odds_history` rebuilds the published odds-over-time chart from
+that table, so one stray hypothetical row would put a fictional kink in it.
+
+Two seeding properties, both needed for the deltas to mean anything:
+**paired arms** (each arm re-runs `simulate_odds` with a fresh `Random(seed)`;
+`simulate_odds` consumes one `rng.random()` per remaining matchup regardless of
+its WP, so pinning one does not desynchronise the stream and the ~±0.5pp of MC
+noise cancels instead of landing in the delta), and a **seeded bracket sample**
+(`sim.sample_team_totals` draws from the module-global RNG with no seed hook, so
+unseeded the *baseline* drifts ~0.5pp between invocations — observed before this
+was fixed). Deltas within a run are precise; absolute levels are still ~±0.5pp.
+
 ### Repairing past daily lineups
 
 ```sh
