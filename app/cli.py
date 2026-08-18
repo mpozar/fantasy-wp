@@ -915,26 +915,59 @@ def _replace_daily_lineups(conn, game_date: str, rows: list[dict], now: str) -> 
     )
 
 
+LIVE_FORWARD_MAX_DAYS = 7   # caps the reach on a LONG_MATCHUPS fortnight
+
+
+def _live_window(today: date) -> tuple[date, date]:
+    """(start, end) MLB game dates for `refresh-live`, from a UTC `today`.
+
+    Start is always yesterday (late West-Coast games are dated to the prior
+    day). End reaches the current matchup period's last day, so every probable
+    that can still affect THIS week's projection is refreshed each tick — but:
+      * never shorter than the old `today+2`, so late in a week (when the
+        period ends tomorrow) the near-term reach is unchanged, and
+      * capped at `LIVE_FORWARD_MAX_DAYS`, so an All-Star `LONG_MATCHUPS`
+        fortnight can't quietly turn one tick into a 14-day upsert.
+    Pure so the boundaries are testable without a network call.
+    """
+    period_end = mlb.matchup_period_window(mlb.period_for_date(today))[1]
+    end = max(today + timedelta(days=2),
+              min(period_end, today + timedelta(days=LIVE_FORWARD_MAX_DAYS)))
+    return today - timedelta(days=1), end
+
+
 @cli.command("refresh-live")
 def refresh_live() -> None:
     """Upsert recent + near-future MLB games' status + inning state into
     team_schedule.
 
-    Window = yesterday … today+2 (4 days). Yesterday covers in-progress games
-    from the previous MLB calendar day (any timezone east of US Pacific rolls
-    over local "today" while West Coast night games are still being played and
-    dated to the prior day). The +2-day forward reach refreshes the back half of
-    the current week's *probable pitchers* every fast tick — otherwise those
-    games only update at the daily `refresh-schedule`, so a newly-posted probable
-    (MLB posts ~24-48h out) could lag up to a day. Only one MLB statsapi call
-    either way; in-progress boxscore fetches are unaffected (no live games 2 days
-    out), so the runtime cost is negligible.
+    Window = `_live_window`: yesterday … the end of the current matchup period
+    (never less than today+2). Yesterday covers in-progress games from the
+    previous MLB calendar day (any timezone east of US Pacific rolls over local
+    "today" while West Coast night games are still being played and dated to the
+    prior day).
+
+    The forward reach refreshes the rest of the week's *probable pitchers* every
+    fast tick. It used to stop at today+2, which left days 3-6 of a period
+    updatable only by the daily `refresh-schedule` — so a probable that MLB or
+    the ESPN overlay posted mid-day sat unseen for up to 24h. That is not
+    hypothetical: on 2026-08-17 the back half of period 20 had no probables at
+    all (ESPN's horizon is ~5 days, so 08-23 was still beyond it), and the two
+    second starts that appeared the moment the horizon advanced were worth
+    ~4pp of WP to Bear Nation in one tick. Widening lets those land within 5
+    minutes instead of at the next 04:02Z daily run.
+
+    Cost is ~nil: still ONE MLB statsapi call (a wider date range), and boxscore
+    fetches are gated on `{"In Progress"} | _FINAL_GAME_STATES`, which future
+    games never match — so no extra per-game requests. It also avoids
+    `refresh-schedule`'s DELETE+INSERT, which is why the freshness is bought
+    here rather than by running the daily job twice (that path resets
+    `became_final_at`, the closing-scrape credit boundary).
 
     No DELETE, just upserts on the existing rows.
     """
     today = datetime.now(timezone.utc).date()   # UTC, not host-local (tz-independent)
-    yesterday = today - timedelta(days=1)
-    end = today + timedelta(days=2)
+    yesterday, end = _live_window(today)
     games = mlb.fetch_schedule(yesterday, end)
     espn_pp = _overlay_espn_probables(games, yesterday, end)
     now = _now_iso()

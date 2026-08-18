@@ -944,7 +944,14 @@ re-add an HR-rate correction on the strength of the old sentence.
 
 When a probable pitcher gets announced for an upcoming game (typically by MLB ~24h before), that game flips from the estimated open-game share to a confirmed start. With the hybrid SP estimate the swing is now modest (the start was already partly credited via the ROS estimate) rather than the old 0→1 jump — that confirmed-start credit replaces the estimate it had displaced. This is normal behavior.
 
-**Source lag — ESPN leads MLB statsapi, so we overlay it.** Primary probable source is MLB statsapi (`mlb.fetch_schedule`), but ESPN's feed surfaces expected probables a day or two earlier. So `fetch_schedule`'s results get a **fill-only overlay** from ESPN's public API (`espn_public.fetch_probables` → `_overlay_espn_probables` in cli.py): for any game where MLB has *no* probable yet, we fill in ESPN's. MLB always wins once it posts (we never overwrite an existing probable), so ESPN is just an early stand-in for the un-announced tail; the cadence model only kicks in for games neither source has named. Wired into `refresh-schedule` (current period only — ESPN has nothing useful for future weeks) and `refresh-live` (its 4-day window, every tick). Observed 2026-06-03: ESPN had Roupp (Sat) and Gausman (Sun) while MLB's feed still showed those games open; the overlay now fills them so both project a confirmed 1.0 start instead of a ~0.88/0.34 cadence estimate. **Caveat:** ESPN's early probables are tentative and can change — but since we only fill where MLB is blank and MLB overrides on post, the blast radius is just the few-day tail.
+**Source lag — ESPN leads MLB statsapi, so we overlay it.** Primary probable source is MLB statsapi (`mlb.fetch_schedule`), but ESPN's feed surfaces expected probables a day or two earlier. So `fetch_schedule`'s results get a **fill-only overlay** from ESPN's public API (`espn_public.fetch_probables` → `_overlay_espn_probables` in cli.py): for any game where MLB has *no* probable yet, we fill in ESPN's. MLB always wins once it posts (we never overwrite an existing probable), so ESPN is just an early stand-in for the un-announced tail; the cadence model only kicks in for games neither source has named. Wired into `refresh-schedule` (current period only — ESPN has nothing useful for future weeks) and `refresh-live` (its window, every tick — since 2026-08-18 that reaches the
+end of the current period, so the back half of the week's probables refresh every
+5 min instead of only at the 04:02Z daily run). **ESPN's probable horizon is ~5
+days and hard** — measured 2026-08-18, games 5 days out had 29/30 probables and 6
+days out had **0/30** — so widening buys *latency, not reach*: a probable crossing
+the horizon mid-day now lands within a tick, but nothing surfaces one ESPN has not
+posted. That distinction is what made the 2026-08-18 Bear Nation +4.1pp look like
+a run-timing problem when it was really the horizon advancing overnight. Observed 2026-06-03: ESPN had Roupp (Sat) and Gausman (Sun) while MLB's feed still showed those games open; the overlay now fills them so both project a confirmed 1.0 start instead of a ~0.88/0.34 cadence estimate. **Caveat:** ESPN's early probables are tentative and can change — but since we only fill where MLB is blank and MLB overrides on post, the blast radius is just the few-day tail.
 
 **Doubleheader guard (fixed 2026-07-22).** `fetch_probables` is keyed by
 `(game_date, pro_team_id)` — one probable per team per day — so on a
@@ -995,10 +1002,15 @@ guards it.)
 - `compute --future` recomputes 78 matchups (13 weeks × 6) × 10k sims each. Takes ~3-5 min.
 - `refresh-rosters` pulls 12 teams × ~25 players × ROS projections. ~10s.
 - `refresh-schedule` (all weeks) hits MLB statsapi 14 times. ~5-10s.
-- `refresh-live` hits MLB statsapi once for the schedule (2-day window) plus one
-  boxscore per *unsettled* game (in-progress + recently-Final today, ~10-30 during
-  a slate) and one ESPN `mRoster` call **per game-day in the window** (1-2, each
-  addressed by its own `scoringPeriodId`) for the daily lineups. ~1s idle,
+- `refresh-live` hits MLB statsapi once for the schedule (window = yesterday
+  through the current period's end, `cli._live_window`; widened from a flat
+  today+2 on 2026-08-18) plus one boxscore per *unsettled* game (in-progress +
+  recently-Final today, ~10-30 during a slate) and one ESPN `mRoster` call **per
+  game-day that actually has such a game** (1-2, each addressed by its own
+  `scoringPeriodId`) for the daily lineups. That last count is driven by
+  `fetch_pks` — days holding only *Scheduled* games are excluded — **not** by the
+  width of the window. That is why widening cost no extra ESPN or boxscore
+  calls, just a wider date range on the one statsapi request. ~1s idle,
   ~2-4s during a live slate — still well under the 5-min budget. All best-effort
   (failures fall back silently; live component reconstruction degrades to ESPN's
   stale-but-safe components).

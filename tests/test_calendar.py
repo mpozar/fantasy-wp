@@ -75,3 +75,38 @@ def test_no_gaps_or_overlaps_across_break():
 
 def test_dates_before_anchor_clamp_to_period_1():
     assert period_for_date(date(2026, 3, 25)) == 1  # ESPN period 1 opening days
+
+
+# ── refresh-live window (cli._live_window) ──────────────────────────────────
+# Widened 2026-08-18 from a flat today+2 to "through the current period's end",
+# so days 3-6 of a week get their probables refreshed every 5-min tick instead
+# of only at the 04:02Z daily refresh-schedule.
+
+def test_live_window_reaches_the_end_of_the_current_period():
+    from datetime import date
+    from app import cli
+    # Period 20 = 2026-08-17 (Mon) .. 2026-08-23 (Sun).
+    start, end = cli._live_window(date(2026, 8, 18))
+    assert start == date(2026, 8, 17)            # always yesterday
+    assert end == date(2026, 8, 23)              # period end, not today+2
+
+
+def test_live_window_never_shrinks_below_the_old_two_day_reach():
+    """Late in a week the period ends sooner than today+2 — the near-term reach
+    must not regress, or a just-posted probable for tomorrow's game would fall
+    outside the window entirely."""
+    from datetime import date
+    from app import cli
+    for d in (date(2026, 8, 22), date(2026, 8, 23)):   # Sat, Sun of period 20
+        _, end = cli._live_window(d)
+        assert end == d + timedelta(days=2)
+
+
+def test_live_window_caps_a_long_matchup_fortnight():
+    """`LONG_MATCHUPS` period 15 spans 2026-07-06..07-19; without the cap the
+    window would be a 14-day upsert on every 5-minute tick."""
+    from datetime import date
+    from app import cli
+    _, end = cli._live_window(date(2026, 7, 8))
+    assert end == date(2026, 7, 8) + timedelta(days=cli.LIVE_FORWARD_MAX_DAYS)
+    assert end < mlb.matchup_period_window(15)[1]
