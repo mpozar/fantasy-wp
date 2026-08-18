@@ -40,9 +40,9 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
-from app import db, sim, stats
+from app import db, names, sim, stats
 
 # League category stat ids, split by kind.
 _COUNTING = [1, 5, 20, 23, 48, 63, 83]   # H, HR, R, SB, K, QS, SVHD (cumulative)
@@ -79,6 +79,9 @@ MIN_OUTS_FOR_RATE = 60    # ~20 IP banked before a rate divergence is meaningful
 RATE_DIVERGENCE_ABS = {47: 2.50, 41: 0.80}   # ERA, WHIP — rate points
 PROJ_BELOW_CURRENT_TOL = 0.5  # counting: projected may dip this far below current (MC noise)
 MAX_SP_UNITS_PER_WEEK = 2.3    # ceiling on SP starts per 7 days; scaled by actual
+
+SP_START_CAP_TOL = 0.25     # units carries a fractional cadence tail; only
+                            # flag a materially impossible count, not rounding
                                # period length (some periods — e.g. the All-Star
                                # break — span 14 days, where ~2-3 starts is real).
 
@@ -238,6 +241,70 @@ def check_units(view) -> list[Finding]:
             out.append(Finding("INV_SP_UNITS_CAP", "error", view["matchup_id"],
                                f"{b.get('name')} SP units {u:.2f} > {max_sp:.2f} "
                                f"({days}-day period)"))
+    return out
+
+
+def check_sp_start_physical_cap(view) -> list[Finding]:
+    """An SP's projected starts can't exceed what min-rest spacing physically
+    allows between his last recorded start and the end of the period.
+
+    `INV_SP_UNITS_CAP` above is a blunt per-period ceiling (~2.3 starts / 7 days)
+    and structurally cannot see this: the 2026-08-13 case projected exactly
+    **2.0** starts — comfortably under 2.3 — for a pitcher whose anchor left room
+    for **1**.
+
+    Why the sim's own cap doesn't already prevent it: `_cap_extra_dist` folds only
+    the *cadence* distribution, and announced probable starts are always respected
+    by design (deliberate, from the 2026-06-26 Rasmussen fix). So when two
+    probables land closer than `MIN_REST_DAYS` — a tentative ESPN-overlay entry
+    alongside the real MLB one — their sum sails past the physical bound with
+    nothing to clip it. Detection only; this changes no projection.
+
+    Deliberately calls `sim._max_remaining_starts`, the same function the cap
+    uses, rather than recomputing the bound. A second implementation is exactly
+    what made `INV_SITE_QS_OVERCREDIT` drift from publish and cost 1830 false
+    flags. The scope here is "was the cap BYPASSED", not "is the bound correct" —
+    a bug inside that function is out of reach by construction, and that is the
+    right trade.
+
+    Current period only, matching where the sim applies the cap at all
+    (`use_cadence`); on a future week the flat model is anchor-independent and the
+    bound is meaningless. Skips a pitcher with no recorded start — no anchor,
+    nothing to bound. A stale anchor makes the bound *looser*, so this
+    under-detects rather than false-fires.
+    """
+    if not view.get("is_current_period"):
+        return []
+    end_iso = view.get("period_end")
+    anchors = view.get("last_starts") or {}
+    if not end_iso or not anchors:
+        return []
+    try:
+        window_end = date.fromisoformat(end_iso)
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for b in view["budgets"]:
+        if b.get("role") != "SP":
+            continue
+        u, name = b.get("units"), b.get("name")
+        if u is None or not name:
+            continue
+        last = anchors.get(names.norm_name(name))
+        if not last:
+            continue
+        try:
+            phys = sim._max_remaining_starts(date.fromisoformat(last), window_end)
+        except (ValueError, TypeError):
+            continue
+        if phys is None or u <= phys + SP_START_CAP_TOL:
+            continue
+        out.append(Finding(
+            "INV_SP_STARTS_IMPOSSIBLE", "error", view["matchup_id"],
+            f"{name} projected {u:.2f} starts but only {phys} fit between his last "
+            f"recorded start {last} and period end {end_iso} (min rest "
+            f"{sim.MIN_REST_DAYS}d) — suspect two announced probables closer than "
+            f"min-rest; check team_schedule NOW, it is current-state"))
     return out
 
 
@@ -553,7 +620,7 @@ _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
            check_banked_not_regressed, check_rate_ranges, check_category_sim_counts,
            check_wp_details_consistency, check_empty_budgets, check_proj_vs_current,
            check_units, check_wp_swing, check_wp_flapping, check_wp_rail_flip,
-           check_rate_divergence]
+           check_rate_divergence, check_sp_start_physical_cap]
 
 # League-level checks operate on *all* views at once (cross-matchup correlations).
 _LEAGUE_CHECKS = []  # populated below (after the functions are defined)
@@ -1171,6 +1238,13 @@ def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
         "away_state": sim.load_latest_state(conn, matchup_id, m["away_team_id"]),
         "home_state_prev": _load_state_prev(conn, matchup_id, m["home_team_id"]),
         "away_state_prev": _load_state_prev(conn, matchup_id, m["away_team_id"]),
+        # For check_sp_start_physical_cap. The "is this the current period" test is
+        # calendar-absolute (period_for_date), never ESPN's currentMatchupPeriod,
+        # which lags the Monday rollover by hours.
+        "period_end": we.isoformat(),
+        "is_current_period": m["matchup_period_id"] == mlb.period_for_date(
+            datetime.now(timezone.utc).date()),
+        "last_starts": sim.load_last_starts(conn),
     }
 
 

@@ -1030,3 +1030,62 @@ def test_side_remaining_drops_stale_past_dated_game():
     # …and without `now` the guard is off (old callers/tests keep prior behavior)
     assert v._side_remaining(conn, 16, 20,
                              sim.load_schedule_by_team(conn, 16))[1] == 1
+
+
+# ── INV_SP_STARTS_IMPOSSIBLE (added 2026-08-18) ─────────────────────────────
+# Encodes the 2026-08-13 defect: two announced probables closer than MIN_REST
+# summed past the physical bound and nothing caught it — the sim's cap folds only
+# the cadence piece, and INV_SP_UNITS_CAP's ~2.3/week ceiling sits above 2.0.
+
+def _sp_view(units, last_start, period_end="2026-08-16", current=True,
+             name="Peter Lambert"):
+    from app import names
+    return {"matchup_id": 104, "is_current_period": current,
+            "period_end": period_end,
+            "last_starts": {names.norm_name(name): last_start},
+            "budgets": [{"name": name, "role": "SP", "units": units}]}
+
+
+def test_sp_starts_impossible_fires_on_the_real_2026_08_13_case():
+    # Anchor 08-08 through period-19 end 08-16 physically allows ONE more start.
+    out = v.check_sp_start_physical_cap(_sp_view(2.0, "2026-08-08"))
+    assert [f.code for f in out] == ["INV_SP_STARTS_IMPOSSIBLE"]
+    assert out[0].severity == "error"
+
+
+def test_sp_starts_impossible_quiet_on_a_legitimate_two_start_week():
+    # Anchor 08-12 through period-20 end 08-23 genuinely allows two turns, so
+    # Bear Nation's real 08-18 + 08-23 two-start week must NOT flag.
+    assert v.check_sp_start_physical_cap(
+        _sp_view(2.0, "2026-08-12", period_end="2026-08-23")) == []
+
+
+def test_sp_starts_impossible_is_blind_without_an_anchor():
+    """No recorded start ⇒ no bound. Skip rather than guess — a pitcher called up
+    mid-week legitimately has no `pitcher_starts` row."""
+    view = _sp_view(3.0, "2026-08-08")
+    view["last_starts"] = {}
+    assert v.check_sp_start_physical_cap(view) == []
+
+
+def test_sp_starts_impossible_skips_future_periods():
+    """The sim applies the physical cap only on the current week (`use_cadence`);
+    on a future week the flat model is anchor-independent, so the bound would be
+    meaningless and this would false-fire every tick."""
+    assert v.check_sp_start_physical_cap(
+        _sp_view(2.0, "2026-08-08", current=False)) == []
+
+
+def test_sp_starts_impossible_tolerates_the_fractional_cadence_tail():
+    """units carries a fractional extra-start tail, so a hair over the bound is
+    rounding, not a defect — only a materially impossible count should fire."""
+    assert v.check_sp_start_physical_cap(
+        _sp_view(1.0 + v.SP_START_CAP_TOL - 0.01, "2026-08-08")) == []
+    assert v.check_sp_start_physical_cap(
+        _sp_view(1.0 + v.SP_START_CAP_TOL + 0.30, "2026-08-08"))
+
+
+def test_sp_starts_impossible_ignores_relievers():
+    view = _sp_view(9.0, "2026-08-08")
+    view["budgets"][0]["role"] = "RP"
+    assert v.check_sp_start_physical_cap(view) == []
