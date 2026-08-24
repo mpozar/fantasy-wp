@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from app import LEAGUE_ID, SEASON_ID, db, espn, espn_public, mlb, model, sim, stats
+from app import LEAGUE_ID, SEASON_ID, db, espn, espn_public, mlb, model, names, sim, stats
 
 
 def _now_iso() -> str:
@@ -167,6 +167,27 @@ def _overlay_espn_probables(games: list[dict], start, end) -> int:
     the overlay for any `(date, team)` that has more than one game and leave
     those to MLB: the started game gets MLB's real probable, the open game
     stays open until MLB names it. Single-game days are unaffected.
+
+    Min-rest conflict guard (2026-08-24): **the two feeds can disagree about
+    which DAY a starter goes, and fill-only merging cannot see the conflict.**
+    Observed live on two teams the same tick — MLB had Misiorowski on 08-27 and
+    Sale on 08-27, while ESPN's rotation slotted an extra arm there and pushed
+    both to 08-28. Since MLB had not named 08-28, the overlay filled ESPN's guess
+    and the same pitcher ended up probable on consecutive days. Nothing
+    downstream catches that: `_cap_extra_dist` clips only the *cadence* piece and
+    always respects announced starts, so both were credited and the two teams
+    projected 2.00 starts where 1 was possible (`INV_SP_STARTS_IMPOSSIBLE`).
+
+    So an overlay fill is skipped when that pitcher is already probable for the
+    same team within `sim.MIN_REST_DAYS`. MLB's row always wins because we only
+    ever skip the *fill*. Accepted fills join the claim set too, so ESPN cannot
+    duplicate a name inside its own un-announced tail either. Leaving the day
+    genuinely open is the right outcome — the cadence model can then project a
+    real candidate for it.
+
+    Widening `refresh-live`'s window (2026-08-18) took overlay fills from ~27 to
+    ~97 per tick, i.e. far more of ESPN's speculative tail, which is where these
+    disagreements live — this surfaced within a week of that change.
     """
     try:
         esp = espn_public.fetch_probables(start, end)
@@ -177,17 +198,45 @@ def _overlay_espn_probables(games: list[dict], start, end) -> int:
     for g in games:
         key = (g["game_date"], g["espn_team_id"])
         games_per_day_team[key] = games_per_day_team.get(key, 0) + 1
-    n = 0
+    # Days each pitcher is ALREADY claimed on, per team — seeded from the
+    # probables MLB has posted, then extended by each fill we accept.
+    claimed: dict[int, list[tuple[date, str]]] = {}
     for g in games:
+        nm = names.norm_name(g.get("probable_pitcher_name"))
+        if not nm:
+            continue
+        try:
+            gd = date.fromisoformat(g["game_date"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        claimed.setdefault(g["espn_team_id"], []).append((gd, nm))
+
+    def _conflicts(team_id: int, gd: date, nm: str) -> bool:
+        return any(other_nm == nm and abs((gd - other_d).days) < sim.MIN_REST_DAYS
+                   for other_d, other_nm in claimed.get(team_id, ()))
+
+    n = 0
+    # Date order so an accepted fill is visible to later candidates.
+    for g in sorted(games, key=lambda x: x.get("game_date") or ""):
         if g.get("probable_pitcher_name"):
             continue
         key = (g["game_date"], g["espn_team_id"])
         if games_per_day_team[key] > 1:
             continue  # doubleheader — ESPN can't disambiguate; leave to MLB
         name = esp.get(key)
-        if name:
-            g["probable_pitcher_name"] = name
-            n += 1
+        if not name:
+            continue
+        nm = names.norm_name(name)
+        try:
+            gd = date.fromisoformat(g["game_date"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if nm and _conflicts(g["espn_team_id"], gd, nm):
+            continue  # feeds disagree on his day — keep MLB's, leave this open
+        g["probable_pitcher_name"] = name
+        if nm:
+            claimed.setdefault(g["espn_team_id"], []).append((gd, nm))
+        n += 1
     return n
 
 
