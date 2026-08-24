@@ -377,17 +377,39 @@ RATE_DERIVERS = {STAT_OPS: derive_ops, STAT_ERA: derive_era, STAT_WHIP: derive_w
 
 
 def _sum_counted(lines: list[dict], slot_by_norm_name: dict[str, int],
-                 counting_slots: set[int], fields: tuple[str, ...]) -> tuple[dict, int]:
+                 counting_slots: set[int], fields: tuple[str, ...],
+                 team_by_norm_name: dict[str, int] | None = None,
+                 ) -> tuple[dict, int]:
     """Sum box-score `fields` over the lines whose matched fantasy player was in
     a counting lineup slot that day. A line is matched to a rostered player by
     normalized name (no ESPN↔MLBAM id crosswalk); unrostered players and ones on
-    the bench/IL contribute nothing. Returns ({field: total}, n_matched)."""
+    the bench/IL contribute nothing. Returns ({field: total}, n_matched).
+
+    `team_by_norm_name` disambiguates a **name collision** — two different MLB
+    players normalizing to the same key. Both of their box lines match the one
+    rostered player and BOTH get summed, silently inflating the component. Real
+    case 2026-08-24: two active Max Muncys (mlbam 571970 on ESPN team 19, the
+    rostered one, 3 AB; and 691777 on team 11, 4 AB) were both counted, putting
+    the Giraffes' OPS denominator 4 AB high. That dropped derived OPS to 0.6387
+    against a scraped 0.6491 — inside `LIVE_RATE_TOL` (0.012), so `_judge_group`
+    called it `matched` and committed it, and since the Bus sat at 0.6448 the
+    category flipped. m120 published a 100%-confident WRONG winner for 4h40m,
+    until the 07:00Z settle corrected it.
+
+    Fails safe by design: a line is dropped **only** when both team ids are known
+    and disagree. Unknown either side ⇒ old name-only behaviour, so a missing
+    `pro_team_id` can never cost a legitimate line."""
     totals = {f: 0.0 for f in fields}
     matched = 0
     for ln in lines:
-        slot = slot_by_norm_name.get(_norm_name(ln.get("name")))
+        nm = _norm_name(ln.get("name"))
+        slot = slot_by_norm_name.get(nm)
         if slot is None or slot not in counting_slots:
             continue
+        if team_by_norm_name:
+            want, got = team_by_norm_name.get(nm), ln.get("pro_team_id")
+            if want is not None and got is not None and want != got:
+                continue        # same name, different MLB player
         matched += 1
         for f in fields:
             totals[f] += ln.get(f) or 0
@@ -459,6 +481,7 @@ def reconcile_live_components(
     batter_lines: list[dict],
     slot_by_norm_name: dict[str, int],
     scraped: dict[int, float],
+    team_by_norm_name: dict[str, int] | None = None,
 ) -> tuple[dict[int, float], list[dict]]:
     """Replace ESPN's once-daily-stale pitching/OPS components in `baseline` with
     live values reconstructed from MLB box-score lines — but only for a rate
@@ -478,7 +501,7 @@ def reconcile_live_components(
     # ── pitching group (ERA + WHIP): OUTS/ER/P_H/P_BB, all REST-only ──
     pit, n_pit = _sum_counted(
         pitcher_lines, slot_by_norm_name, PITCHER_SLOTS,
-        ("outs", "er", "p_h", "p_bb"),
+        ("outs", "er", "p_h", "p_bb"), team_by_norm_name,
     )
     recon_pit = dict(baseline)
     recon_pit[STAT_OUTS] = baseline.get(STAT_OUTS, 0) + pit["outs"]
@@ -494,7 +517,7 @@ def reconcile_live_components(
     #    they're scored cats the scrape already keeps live. ──
     bat, n_bat = _sum_counted(
         batter_lines, slot_by_norm_name, HITTER_SLOT_IDS,
-        ("ab", "b2", "b3", "bb", "hbp", "sf"),
+        ("ab", "b2", "b3", "bb", "hbp", "sf"), team_by_norm_name,
     )
     recon_ops = dict(baseline)
     recon_ops[STAT_AB]   = baseline.get(STAT_AB, 0)   + bat["ab"]
@@ -2241,7 +2264,7 @@ def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[s
     nothing is live, in which case reconciliation is a no-op."""
     pit = [dict(r) for r in conn.execute(
         """
-        SELECT lp.name, lp.outs, lp.er, lp.p_h, lp.p_bb, lp.games_started,
+        SELECT lp.name, lp.pro_team_id, lp.outs, lp.er, lp.p_h, lp.p_bb, lp.games_started,
                lp.sv, lp.hld,
                (SELECT ts.game_status FROM team_schedule ts
                 WHERE ts.game_pk = lp.game_pk LIMIT 1) AS game_status
@@ -2251,7 +2274,7 @@ def load_unsettled_lines(conn: sqlite3.Connection, *, since_date: str) -> dict[s
         """, (since_date,))]
     bat = [dict(r) for r in conn.execute(
         """
-        SELECT lb.name, lb.ab, lb.h, lb.b2, lb.b3, lb.hr, lb.bb, lb.hbp, lb.sf
+        SELECT lb.name, lb.pro_team_id, lb.ab, lb.h, lb.b2, lb.b3, lb.hr, lb.bb, lb.hbp, lb.sf
         FROM live_batters lb
         WHERE EXISTS (SELECT 1 FROM team_schedule ts
                       WHERE ts.game_pk = lb.game_pk AND ts.game_date >= ?)
@@ -2310,6 +2333,8 @@ def apply_live_components(conn: sqlite3.Connection, fantasy_team_id: int,
         batter_lines=unsettled_lines["batters"],
         slot_by_norm_name=slot_by_norm_name,
         scraped=scraped,
+        team_by_norm_name={_norm_name(p.get("full_name")): p.get("pro_team_id")
+                           for p in roster if p.get("full_name")},
     )
 
 

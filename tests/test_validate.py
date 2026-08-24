@@ -965,7 +965,7 @@ def test_side_remaining_counts_healthy_active_player():
     _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")   # period 16 = Jul 20-26
     conn.commit()
     sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T12:00:00+00:00")
-    roster_n, rem = v._side_remaining(conn, 16, 20, sched)
+    roster_n, rem, _unf = v._side_remaining(conn, 16, 20, sched)
     assert (roster_n, rem) == (1, 1)
 
 
@@ -978,7 +978,7 @@ def test_side_remaining_skips_out_player_in_active_slot():
     _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")
     conn.commit()
     sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T12:00:00+00:00")
-    roster_n, rem = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
+    roster_n, rem, _unf = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
     assert roster_n == 1          # roster WAS fetched (so not a fetch failure)
     assert rem == 0               # …but nothing left to budget → benign end-of-week
 
@@ -1000,7 +1000,7 @@ def test_side_remaining_ignores_a_game_already_underway():
     _put_game(conn, pk=1, date="2026-07-26", status="In Progress", inning=8)
     conn.commit()
     sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T23:40:00+00:00")
-    roster_n, rem = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
+    roster_n, rem, _unf = v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26))
     assert roster_n == 1          # roster fetched — not a fetch failure
     assert rem == 0               # underway ⇒ the sim decides; 0 budgets is legitimate
 
@@ -1013,7 +1013,7 @@ def test_side_remaining_still_counts_a_game_that_has_not_started():
     _put_game(conn, pk=1, date="2026-07-26", status="Scheduled")    # no inning ⇒ not started
     conn.commit()
     sched = sim.load_schedule_by_team(conn, 16, now="2026-07-26T23:40:00+00:00")
-    assert v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26)) == (1, 1)
+    assert v._side_remaining(conn, 16, 20, sched, date(2026, 7, 26)) == (1, 1, 1)
 
 
 def test_side_remaining_drops_stale_past_dated_game():
@@ -1089,3 +1089,38 @@ def test_sp_starts_impossible_ignores_relievers():
     view = _sp_view(9.0, "2026-08-08")
     view["budgets"][0]["role"] = "RP"
     assert v.check_sp_start_physical_cap(view) == []
+
+
+# ── INV_SETTLED_RATE_DRIFT (added 2026-08-24) ───────────────────────────────
+
+def _settled_view(proj_ops, banked_ops, unfinished=0, current=True):
+    return {"matchup_id": 120, "is_current_period": current,
+            "home_unfinished": unfinished, "away_unfinished": 0,
+            "home_state": {18: banked_ops}, "away_state": {18: 0.6448},
+            "cat_avg": {18: (proj_ops, 0.6448)}}
+
+
+def test_settled_rate_drift_fires_on_the_2026_08_24_m120_incident():
+    """Nothing left to play, yet the sim's derived OPS (0.6387) disagreed with
+    ESPN's scraped 0.6491 — and the 0.0043 margin to the Bus meant that decided
+    the matchup the wrong way for 4h40m."""
+    out = v.check_settled_rate_matches_banked(_settled_view(0.6387, 0.6491))
+    assert [f.code for f in out] == ["INV_SETTLED_RATE_DRIFT"]
+    assert out[0].severity == "error"
+
+
+def test_settled_rate_drift_quiet_when_projection_matches_banked():
+    assert v.check_settled_rate_matches_banked(_settled_view(0.6491, 0.6491)) == []
+
+
+def test_settled_rate_drift_requires_nothing_left_to_play():
+    """Gated on `unfinished`, NOT `active_remaining`. While a game is underway
+    there IS a remainder to project, so a gap is legitimate and must not fire."""
+    assert v.check_settled_rate_matches_banked(
+        _settled_view(0.6387, 0.6491, unfinished=1)) == []
+
+
+def test_settled_rate_drift_skips_settled_past_weeks():
+    """A past week is REST-only — no scrape to disagree with."""
+    assert v.check_settled_rate_matches_banked(
+        _settled_view(0.6387, 0.6491, current=False)) == []

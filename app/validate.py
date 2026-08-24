@@ -308,6 +308,58 @@ def check_sp_start_physical_cap(view) -> list[Finding]:
     return out
 
 
+SETTLED_RATE_EPS = {18: 0.004, 41: 0.01, 47: 0.05}   # OPS, WHIP, ERA
+
+
+def check_settled_rate_matches_banked(view) -> list[Finding]:
+    """Once a side has nothing left to play, its PROJECTED rate must equal its
+    BANKED rate — there is no remainder left to project.
+
+    This is the detector for the 2026-08-24 m120 incident. The scrape owns the
+    displayed ERA/WHIP/OPS and is authoritative, but the sim *derives* those from
+    components, and `sim._judge_group` will commit a box-score reconstruction
+    whose implied rate is merely within `LIVE_RATE_TOL` of the scrape. There the
+    Giraffes' derived OPS was 0.6387 against a scraped 0.6491 — 0.0104 off, inside
+    the 0.012 tolerance, so it was accepted. The head-to-head margin was 0.0043, so
+    the committed value landed on the *wrong side* of the opponent and the site
+    published a 100%-confident wrong winner for **4h40m**, until the 07:00Z REST
+    settle rewrote the components.
+
+    Nothing in the battery could see it: every other check is a change, freshness
+    or internal-consistency test, and this state was stable, fresh and internally
+    consistent — just wrong. This compares the model against the authoritative
+    scrape, which is why it catches it.
+
+    Gated on `{side}_unfinished == 0`, NOT `{side}_active_remaining` — the latter
+    excludes in-progress games (see `_side_remaining`), so it hits 0 while a game
+    is still being played and there IS legitimately a remainder to project.
+
+    Per-stat epsilons sit well under any plausible deciding margin but above float
+    noise. Current period only: a settled past week is REST-only, with no scrape to
+    disagree with."""
+    if not view.get("is_current_period"):
+        return []
+    out = []
+    for side, idx in (("home", 0), ("away", 1)):
+        if view.get(f"{side}_unfinished") != 0:
+            continue
+        state = view.get(f"{side}_state") or {}
+        for sid, eps in SETTLED_RATE_EPS.items():
+            banked = state.get(sid)
+            pair = view["cat_avg"].get(sid)
+            proj = pair[idx] if pair else None
+            if banked is None or proj is None or banked == 0:
+                continue
+            if abs(proj - banked) > eps:
+                out.append(Finding(
+                    "INV_SETTLED_RATE_DRIFT", "error", view["matchup_id"],
+                    f"{side} {stats.STAT_NAMES.get(sid, sid)} projected {proj:.4f} "
+                    f"but banked (scraped) {banked:.4f} with nothing left to play "
+                    f"(|Δ|={abs(proj - banked):.4f} > {eps}) — the sim is deciding "
+                    f"this category on a reconstruction, not on ESPN's value"))
+    return out
+
+
 def check_wp_swing(view) -> list[Finding]:
     p = view.get("prev_home_wp")
     h = view["home_wp"]
@@ -620,7 +672,8 @@ _CHECKS = [check_wp_range, check_rate_components, check_current_cats_present,
            check_banked_not_regressed, check_rate_ranges, check_category_sim_counts,
            check_wp_details_consistency, check_empty_budgets, check_proj_vs_current,
            check_units, check_wp_swing, check_wp_flapping, check_wp_rail_flip,
-           check_rate_divergence, check_sp_start_physical_cap]
+           check_rate_divergence, check_sp_start_physical_cap,
+           check_settled_rate_matches_banked]
 
 # League-level checks operate on *all* views at once (cross-matchup correlations).
 _LEAGUE_CHECKS = []  # populated below (after the functions are defined)
@@ -1128,8 +1181,15 @@ _FINAL_GAME_STATES = sim.FINAL_GAME_STATES
 
 
 def _side_remaining(conn, period_id: int, team_id: int, sched: dict,
-                    as_of: date | None = None) -> tuple[int, int]:
-    """(roster_n, remaining_active_games) for one fantasy side. `roster_n` is the
+                    as_of: date | None = None) -> tuple[int, int, int]:
+    """(roster_n, remaining_active_games, unfinished_games) for one fantasy side.
+
+    `unfinished_games` counts active-slot games **not yet Final, in-progress
+    included** — deliberately a different question from `remaining_active_games`,
+    which excludes underway games (filter 3 below). Zero unfinished means there is
+    genuinely nothing left to play, which is the precondition
+    `check_settled_rate_matches_banked` needs; `remaining_active_games` can be 0
+    while a game is still being played, so it must NOT be used for that. `roster_n` is the
     fetched roster size (0 ⇒ a real roster-fetch failure); `remaining_active_games`
     counts non-Final games for players in active (non-bench/IL) slots — 0 with a
     fetched roster means the side is done for the week (nothing left to budget),
@@ -1171,15 +1231,19 @@ def _side_remaining(conn, period_id: int, team_id: int, sched: dict,
     genuine projection failure occurring when *only* in-progress games remain."""
     roster = sim.load_team_roster(conn, period_id, team_id)
     rem = 0
+    unfinished = 0
     for p in roster:
         if p.get("lineup_slot_id") in sim.NON_COUNTING_SLOTS:   # bench / IL → don't count
             continue
         if not sim._is_playable(p, as_of):                      # OUT/IR → the sim won't budget him
             continue
-        rem += sum(1 for g in sched.get(p["pro_team_id"], [])
+        games = sched.get(p["pro_team_id"], [])
+        unfinished += sum(1 for g in games
+                          if g.get("game_status") not in _FINAL_GAME_STATES)
+        rem += sum(1 for g in games
                    if g.get("game_status") not in _FINAL_GAME_STATES
                    and g.get("current_inning") is None)
-    return len(roster), rem
+    return len(roster), rem, unfinished
 
 
 def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
@@ -1207,8 +1271,8 @@ def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
             as_of = datetime.fromisoformat(now).date()
         except (ValueError, TypeError):
             as_of = None
-    h_roster_n, h_rem = _side_remaining(conn, m["matchup_period_id"], m["home_team_id"], sched, as_of)
-    a_roster_n, a_rem = _side_remaining(conn, m["matchup_period_id"], m["away_team_id"], sched, as_of)
+    h_roster_n, h_rem, h_unf = _side_remaining(conn, m["matchup_period_id"], m["home_team_id"], sched, as_of)
+    a_roster_n, a_rem, a_unf = _side_remaining(conn, m["matchup_period_id"], m["away_team_id"], sched, as_of)
     d = json.loads(snaps[0]["details_json"] or "{}")
     cat_wp = d.get("category_wp", [])
     have_tally = all(k in d for k in ("home_wins", "away_wins", "ties"))
@@ -1229,6 +1293,8 @@ def load_view(conn, matchup_id: int, now: str | None = None) -> dict | None:
         "away_roster_n": a_roster_n,
         "home_active_remaining": h_rem,
         "away_active_remaining": a_rem,
+        "home_unfinished": h_unf,
+        "away_unfinished": a_unf,
         "n_sims": d.get("n_sims"),
         "tally": (d.get("home_wins"), d.get("away_wins"), d.get("ties")) if have_tally else None,
         "cat_counts": [{"stat_id": c["stat_id"], "home_wins": c.get("home_wins", 0),

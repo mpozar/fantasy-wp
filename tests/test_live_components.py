@@ -576,3 +576,46 @@ def test_live_pitcher_upsert_last_write_wins():
     got = conn.execute("SELECT outs, er, k, fetched_at FROM live_pitchers").fetchall()
     assert len(got) == 1
     assert (got[0]["outs"], got[0]["er"], got[0]["k"], got[0]["fetched_at"]) == (18, 3, 7, "t1")
+
+
+# ── name-collision guard in _sum_counted (added 2026-08-24) ─────────────────
+
+def test_sum_counted_drops_a_same_name_different_team_line():
+    """THE 2026-08-24 m120 REGRESSION. Two active MLB players named Max Muncy
+    normalize to one key, so both box lines matched the single rostered player and
+    BOTH were summed — 7 AB where 3 belonged, putting the Giraffes' OPS denominator
+    4 high. Derived OPS fell to 0.6387 vs a scraped 0.6491; that 0.0104 error sat
+    inside LIVE_RATE_TOL (0.012), so _judge_group accepted it, and with the Bus on
+    0.6448 the category flipped. The site published a confidently wrong winner for
+    4h40m until the 07:00Z settle.
+    """
+    from app import sim
+    lines = [  # rostered Muncy is on ESPN team 19
+        {"name": "Max Muncy", "pro_team_id": 19, "ab": 3},
+        {"name": "Max Muncy", "pro_team_id": 11, "ab": 4},   # different player
+    ]
+    slots = {sim._norm_name("Max Muncy"): 0}          # an active hitter slot
+    teams = {sim._norm_name("Max Muncy"): 19}
+
+    naive, n_naive = sim._sum_counted(lines, slots, sim.HITTER_SLOT_IDS, ("ab",))
+    assert naive["ab"] == 7 and n_naive == 2          # the bug: both counted
+
+    fixed, n_fixed = sim._sum_counted(lines, slots, sim.HITTER_SLOT_IDS, ("ab",), teams)
+    assert fixed["ab"] == 3 and n_fixed == 1          # only the rostered one
+
+
+def test_sum_counted_team_guard_fails_open_on_unknown_ids():
+    """Must only drop a line when BOTH ids are known and disagree — a missing
+    pro_team_id can never cost a legitimate line."""
+    from app import sim
+    slots = {sim._norm_name("Some Hitter"): 0}
+    teams = {sim._norm_name("Some Hitter"): 19}
+    for line in ({"name": "Some Hitter", "ab": 4},                       # no team on the line
+                 {"name": "Some Hitter", "pro_team_id": None, "ab": 4},  # explicit None
+                 {"name": "Some Hitter", "pro_team_id": 19, "ab": 4}):   # matching team
+        got, n = sim._sum_counted([line], slots, sim.HITTER_SLOT_IDS, ("ab",), teams)
+        assert got["ab"] == 4 and n == 1, line
+    # and with no team map at all, behaviour is exactly as before
+    got, n = sim._sum_counted([{"name": "Some Hitter", "pro_team_id": 11, "ab": 4}],
+                              slots, sim.HITTER_SLOT_IDS, ("ab",))
+    assert got["ab"] == 4 and n == 1
