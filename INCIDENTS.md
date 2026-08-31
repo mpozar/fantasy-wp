@@ -5,6 +5,61 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-08-31 — published site frozen 4 days by a wedged Pages deploy (ops, fixed; no data edit)
+
+**TL;DR.** The live site served **`2026-08-27T16:00:37Z`** data for four days while
+`docs/data.json` on disk was current every 5 minutes. **No flag ever fired**, because
+every check in the battery reads LOCAL state. No data was lost or edited — the DB and
+the local artifact were correct throughout; only the last hop was broken.
+
+**How it looked.** Everything upstream was healthy and said so: `publish` wrote a fresh
+`data.json` each tick, `fast.sh` logged `pushed update`, `origin/main == main`,
+`ANOM_SITE_STALE` quiet (it watches the local file's `generated_at`, which was seconds
+old). The owner noticed the site content was stale; nothing in the pipeline had.
+
+**Root cause.** Workflow run **33091447664** (created `2026-08-27T16:06:01Z`) wedged in
+status `waiting` on the `github-pages` environment gate, with `wait_timer: 0`,
+`reviewers: []` and `current_user_can_approve: false` — no timer to expire and nobody
+able to approve it, so it waited indefinitely. It held `pages.yml`'s
+`concurrency: group: "pages"`, so every one of the ~1150 runs behind it collapsed to
+`cancelled`. The last success was `16:00:57Z`, which published exactly the payload the
+site was still serving — the freeze boundary matches to the second.
+
+**Note the cancellations were the SYMPTOM, not the cause.** This is *not* the
+2026-07-02 failure recorded in `pages.yml` (where `cancel-in-progress: true` killed
+in-flight deploys during a Pages slowdown). That setting was already `false` and is
+still correct. Changing it would not have helped.
+
+**Fix.** Cancelled the wedged run (`POST /actions/runs/33091447664/cancel` → 202); the
+group released and the next tick deployed in 18s. A second orphan, run
+**30157820421** queued since `2026-07-25T12:20:41Z`, **refused to cancel** (HTTP 500
+"Failed to cancel workflow run") and was left in place — it does not appear to hold the
+lock, since deploys resumed with it still queued.
+
+**Safeguard now in place.** `app pages-guard` (`app/pages.py`), run every tick from
+`fast.sh` after the git step, non-fatal: compares the deployed SHA against the newest
+`docs/`-touching commit and cancels `waiting`/`queued` runs older than 30 min —
+**never `in_progress`**, which is what stops it recreating the July failure. Raises
+`ANOM_DEPLOY_STALE` (warn) when it recovers the wedge and `INV_SITE_NOT_DEPLOYED`
+(error) when it cannot — the latter exists precisely because of the uncancellable
+orphan above. Shipped in `45136c7e`; details in CLAUDE.md, tests in
+`tests/test_pages_guard.py`.
+
+**Lessons.**
+- **A "site fresh" check that reads the local artifact does not check the site.**
+  `ANOM_SITE_STALE` and `INV_SITE_*` all read `docs/data.json` on disk. The whole
+  deploy hop had no watcher, which is the same structural blind spot
+  `ANOM_CALIBRATION_JUMP` was added for: change/freshness/invariant detectors over
+  our own output cannot see a stable failure downstream of it.
+- **A wedge is invisible when the symptom is a cancellation.** ~1150 `cancelled` runs
+  look like the concurrency group doing its job. The signal was a single run in
+  `waiting`, which no dashboard surfaces by default.
+- **At 12 pushes/hour, one wedged run freezes the site indefinitely.** The cadence
+  (24,904 runs on the repo) is what makes this expensive; loosening the concurrency
+  group is an independent lever, not taken.
+
+---
+
 ## 2026-06-09 / 06-11 — settle-bound rate swings (ERA/WHIP, OPS) (model bug, fixed; no data edit)
 
 **TL;DR.** Two matchups dropped sharply on the first tick after a daily ~07:00 UTC
