@@ -67,6 +67,16 @@ source "$(dirname "$0")/_common.sh"
     fi
     log fast "step git: $((SECONDS - git_start))s"
 
+    # The published site is the one hop nothing else watches: the steps above can
+    # all succeed while GitHub's Pages deploy is wedged, leaving docs/data.json
+    # fresh on disk and the live site frozen — 2026-08-31 served 4-day-old data
+    # with zero flags (`ANOM_SITE_STALE` reads the LOCAL artifact). Runs AFTER the
+    # git step so it judges the state we just pushed. One API call on the healthy
+    # path; only acts on a `waiting`/`queued` run older than 30 min, never on an
+    # `in_progress` one (see app/pages.py). Non-fatal, like validate below.
+    timed fast pages-guard "$APP" pages-guard \
+        || log fast "pages-guard step errored (non-fatal)"
+
     # Invariant + anomaly checks over the just-computed current-period snapshots
     # (cheap, no sims). Records flags in validation_flags for later review via
     # `app validate --list`. Non-fatal: never let a check hiccup break the tick.

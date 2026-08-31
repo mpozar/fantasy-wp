@@ -9,7 +9,8 @@ from pathlib import Path
 
 import click
 
-from app import LEAGUE_ID, SEASON_ID, db, espn, espn_public, mlb, model, names, sim, stats
+from app import (LEAGUE_ID, SEASON_ID, db, espn, espn_public, mlb, model, names, pages,
+                 sim, stats)
 
 
 def _now_iso() -> str:
@@ -1410,6 +1411,29 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         )
     finally:
         conn.close()
+
+
+@cli.command("pages-guard")
+@click.option("--dry-run", is_flag=True,
+              help="Report what would be cancelled, without cancelling anything.")
+def pages_guard(dry_run: bool) -> None:
+    """Detect a wedged GitHub Pages deploy and cancel what is blocking it.
+
+    The published site is the one hop nothing else watches: `publish` and the
+    push can both succeed while the Pages workflow is stuck, so
+    `docs/data.json` stays fresh on disk and the live site freezes. That ran for
+    4 days undetected in 2026-08-31 with no flag. Mechanism, thresholds and the
+    never-cancel-`in_progress` safety rule are documented in `app/pages.py`.
+
+    Best-effort by contract (a network hiccup must not cost a 5-min tick), so
+    findings ride `validate.persist` and show up in `app validate --list`.
+    """
+    conn = db.connect()
+    try:
+        res = pages.check_and_recover(conn, _now_iso(), dry_run=dry_run)
+    finally:
+        conn.close()
+    click.echo(f"Pages guard: {res.note}")
 
 
 @cli.command("validate")
