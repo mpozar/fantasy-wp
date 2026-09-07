@@ -77,21 +77,31 @@ def load_records(conn: sqlite3.Connection,
     return wins, losses, h2h
 
 
-def load_remaining(conn: sqlite3.Connection) -> list[dict]:
-    """Undecided regular-season matchups with their latest simulated home WP.
+def load_remaining(conn: sqlite3.Connection, *,
+                   last_regular_period: int) -> list[dict]:
+    """Undecided **regular-season** matchups with their latest simulated home WP.
 
     The latest snapshot for the current week is the live WP (banked + projected
     remainder); future weeks carry the medium-tier projection. A matchup with
     no snapshot yet falls back to a coin flip.
+
+    `last_regular_period` is REQUIRED, not optional, and the bound is the whole
+    point: this feeds the *season* simulation, which counts wins toward seeding.
+    Playoff-round matchups are also `UNDECIDED`, so before 2026-09-07 (when
+    playoff matchups were skipped at ingest) the unfiltered query happened to be
+    right; the moment they are stored it would silently count bracket games as
+    remaining regular-season games, inflating win totals and corrupting seeding.
+    Making the caller pass the bound stops that being an accident.
     """
     rows = conn.execute(
         """
         SELECT m.id, m.matchup_period_id, m.home_team_id, m.away_team_id,
                (SELECT s.home_wp FROM wp_snapshots s WHERE s.matchup_id = m.id
                 ORDER BY s.computed_at DESC LIMIT 1) AS home_wp
-        FROM matchups m WHERE m.winner = 'UNDECIDED'
+        FROM matchups m
+        WHERE m.winner = 'UNDECIDED' AND m.matchup_period_id <= ?
         ORDER BY m.matchup_period_id, m.id
-        """).fetchall()
+        """, (last_regular_period,)).fetchall()
     return [{
         "matchup_id": r["id"],
         "period": r["matchup_period_id"],

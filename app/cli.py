@@ -314,8 +314,9 @@ def fetch() -> None:
             """
             INSERT INTO scoring_settings
                 (league_id, season_id, name, size, scoring_type,
-                 tiebreaker_stat_id, categories_json, lineup_slots_json, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+                 tiebreaker_stat_id, categories_json, lineup_slots_json,
+                 last_regular_season_period, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(league_id, season_id) DO UPDATE SET
                 name=excluded.name,
                 size=excluded.size,
@@ -323,10 +324,12 @@ def fetch() -> None:
                 tiebreaker_stat_id=excluded.tiebreaker_stat_id,
                 categories_json=excluded.categories_json,
                 lineup_slots_json=excluded.lineup_slots_json,
+                last_regular_season_period=excluded.last_regular_season_period,
                 fetched_at=excluded.fetched_at
             """,
             (LEAGUE_ID, SEASON_ID, shape.name, shape.size, shape.scoring_type,
-             shape.tiebreaker_stat_id, cats_json, slots_json, now),
+             shape.tiebreaker_stat_id, cats_json, slots_json,
+             shape.last_regular_season_period, now),
         )
 
         # Persist teams
@@ -409,10 +412,23 @@ def fetch() -> None:
         ).fetchall():
             last_good[(r["matchup_id"], r["team_id"], r["stat_id"])] = r["score"]
 
+        from app import playoffs as _playoffs_mod
+        last_playoff_period = last_reg + _playoffs_mod.NUM_PLAYOFF_PERIODS
         scrape_due, in_progress = _scrape_due(conn, current_period, now)
 
         for m in matchups:
-            if m["matchup_period_id"] > last_reg:
+            # Playoff rounds ARE stored (2026-09-07) so the site can show the
+            # bracket; they used to be skipped wholesale at `> last_reg`.
+            # ESPN represents a bye — and every eliminated team — as a ONE-SIDED
+            # entry with `away_team_id` null (period 23 came back as 2 real
+            # head-to-heads plus 8 such placeholders). Those have no opponent,
+            # so there is nothing to simulate and nothing to show; skip them and
+            # only real matchups land. NB `playoffs.load_remaining` must stay
+            # bounded to the regular season or these get counted as remaining
+            # games in the seeding sim.
+            if m["matchup_period_id"] > last_playoff_period:
+                continue
+            if m["home_team_id"] is None or m["away_team_id"] is None:
                 continue
             conn.execute(
                 """
@@ -1553,9 +1569,22 @@ def _current_matchup_period(conn) -> int | None:
 
 
 def _last_regular_season_period(conn) -> int | None:
-    """Stored in matchups indirectly — we use the value cached during `fetch`
-    via the scoring_settings table. For now, derive from MAX of matchups
-    (fetched_at) since fetch only stores regular + playoffs."""
+    """ESPN's authoritative last regular-season period, cached by `fetch`.
+
+    It used to derive from `MAX(matchup_period_id) FROM matchups` on the stated
+    assumption that "fetch only stores regular + playoffs" — meaning, at the
+    time, regular only. Storing playoff matchups (2026-09-07) invalidated that
+    instantly: it began returning 23 instead of 22, which would have set the
+    playoff periods to 24..26, mis-bounded `compute --future`, and — worst —
+    widened `playoffs.load_remaining`'s guard to include the very bracket games
+    it exists to exclude. The value is now read from ESPN and persisted, with
+    the old derivation kept only as a fallback for a DB predating the column.
+    """
+    row = conn.execute(
+        "SELECT last_regular_season_period AS p FROM scoring_settings "
+        "WHERE league_id=? AND season_id=?", (LEAGUE_ID, SEASON_ID)).fetchone()
+    if row and row["p"]:
+        return row["p"]
     row = conn.execute(
         "SELECT MAX(matchup_period_id) AS p FROM matchups"
     ).fetchone()
@@ -1646,13 +1675,23 @@ def publish(rebuild: bool) -> None:
         # category table) is attached for the live week AND the most recently
         # completed week — so "last week" stays scrubbable — but no further back:
         # each such week adds ~1 MB to data.json (see _matchup_block).
-        states = {pid: _week_state(conn, pid) for pid in range(first, last_reg + 1)}
+        # Emit through the last period that actually HAS matchups, not merely
+        # `last_reg`. Playoff rounds are stored from 2026-09-07, and a bracket
+        # week is a real matchup with a real WP — it must be selectable like any
+        # other. Driven by the data (MAX matchup_period_id) rather than
+        # last_reg + NUM_PLAYOFF_PERIODS, so a round appears only once ESPN has
+        # actually seeded it; before that there is nothing to show and the
+        # dropdown stays clean. Byes/eliminated teams never appear at all —
+        # `fetch` drops ESPN's one-sided placeholder entries.
+        last_emit = max(last_reg, conn.execute(
+            "SELECT COALESCE(MAX(matchup_period_id), 0) m FROM matchups").fetchone()["m"])
+        states = {pid: _week_state(conn, pid) for pid in range(first, last_emit + 1)}
         live_period = next((pid for pid, s in states.items() if s == "live"), None)
         final_periods = [pid for pid, s in states.items() if s == "final"]
         prev_period = max(final_periods) if final_periods else None
         cat_periods = {p for p in (live_period, prev_period) if p is not None}
         weeks_out = []
-        for period_id in range(first, last_reg + 1):
+        for period_id in range(first, last_emit + 1):
             state = states[period_id]
             ms = conn.execute(
                 "SELECT * FROM matchups WHERE matchup_period_id=? ORDER BY id",
@@ -1747,7 +1786,7 @@ def publish(rebuild: bool) -> None:
             conn.commit()
         click.echo(
             f"Wrote {out_path} ({out_path.stat().st_size} bytes) — "
-            f"{len(weeks_out)} weeks (periods {first}..{last_reg}); "
+            f"{len(weeks_out)} weeks (periods {first}..{last_emit}); "
             f"{len(fresh_blocks)} week(s) rebuilt, {len(weeks_out) - len(fresh_blocks)} cached"
         )
     finally:
@@ -1849,7 +1888,7 @@ def playoffs_cmd(sims: int | None, samples: int | None,
                  for r in conn.execute("SELECT * FROM teams").fetchall()}
         team_ids = sorted(teams)
         wins, losses, h2h = playoffs.load_records(conn, team_ids)
-        remaining = playoffs.load_remaining(conn)
+        remaining = playoffs.load_remaining(conn, last_regular_period=last_reg)
         missing_wp = sum(1 for m in remaining if not m["had_snapshot"])
         if missing_wp:
             click.echo(f"  ({missing_wp} remaining matchup(s) had no WP snapshot; "

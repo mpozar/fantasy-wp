@@ -468,6 +468,10 @@ def init() -> None:
             ("validation_flags", "resolved_at", "TEXT"),
             ("validation_flags", "resolved_by", "TEXT"),
             ("validation_flags", "resolution_note", "TEXT"),
+            # ESPN's authoritative last REGULAR-season period. Derived from
+            # MAX(matchup_period_id) until 2026-09-07, which broke the moment
+            # playoff matchups started being stored (it returned 23, not 22).
+            ("scoring_settings", "last_regular_season_period", "INTEGER"),
         ):
             table, col, type_ = column_def
             try:

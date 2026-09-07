@@ -210,3 +210,39 @@ def test_finale_refresh_not_blocked_by_an_unparseable_stamp(monkeypatch):
     """A bad archive stamp must not wedge the refresh off permanently."""
     conn = _finale_db(last_run="not-a-timestamp")
     assert _reason(conn, "2026-08-09T23:30:00+00:00", monkeypatch) is None
+
+
+# ── load_remaining must never see playoff matchups (added 2026-09-07) ───────
+
+def _remaining_conn():
+    import sqlite3
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("""CREATE TABLE matchups (id INTEGER PRIMARY KEY, matchup_period_id INTEGER,
+                 home_team_id INTEGER, away_team_id INTEGER, winner TEXT)""")
+    c.execute("""CREATE TABLE wp_snapshots (matchup_id INTEGER, home_wp REAL,
+                 computed_at TEXT)""")
+    return c
+
+
+def test_load_remaining_excludes_playoff_rounds():
+    """Bracket games are also UNDECIDED. Before playoff matchups were stored the
+    unfiltered query was accidentally right; once they are, counting them as
+    remaining REGULAR-season games would inflate win totals and corrupt seeding.
+    """
+    from app import playoffs
+    c = _remaining_conn()
+    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'UNDECIDED')")   # regular
+    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'UNDECIDED')")   # R1
+    c.execute("INSERT INTO matchups VALUES (3, 24, 10, 13, 'UNDECIDED')")   # semi
+    got = playoffs.load_remaining(c, last_regular_period=22)
+    assert [m["matchup_id"] for m in got] == [1]
+
+
+def test_load_remaining_requires_the_bound_explicitly():
+    """Keyword-only and mandatory, so a caller cannot silently reintroduce the
+    leak by forgetting it."""
+    import pytest
+    from app import playoffs
+    with pytest.raises(TypeError):
+        playoffs.load_remaining(_remaining_conn())
