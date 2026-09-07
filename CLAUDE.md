@@ -453,6 +453,21 @@ optimizer.
 When a game's status is `In Progress`, its *remaining* production scales by role-specific factor (live cumulative state already includes the partial production):
 
 - **Hitters**: linear by innings remaining. `(9 − elapsed) / 9`.
+
+**Finality is `FINAL_GAME_STATES`, never the literal `"Final"` (fixed 2026-09-07).**
+All three factor functions (`_hitter_factor`, `_rp_factor`, `_sp_factor`) tested
+`status == "Final"` while the rest of the codebase uses
+`{'Final', 'Game Over', 'Completed Early'}` — so a game finished in either other
+state read as *still playable* and its remaining innings were credited. Real
+instance: game 824807 on 2026-08-02 ended **`Completed Early` in the 6th**, so
+every hitter AND pitcher on both MLB teams got `(9−6)/9 = 0.33` of a game that
+was over. **`Game Over` is the worse one** — statsapi's normal state between the
+last out and `Final` — which would credit phantom production league-wide for
+those minutes. The shared predicate is now `_game_started(g)`
+(`status in FINAL_GAME_STATES or current_inning is not None`), also used by the
+benched-hitter filter and by slot locking, so "has this game started/ended" is
+asked exactly one way. **Two wrong hypotheses in one investigation came from
+these predicates disagreeing** — if you add another, reuse `_game_started`.
 - **SPs**: scale to expected exit inning, derived from the SP's ros_outs/ros_gs. Past their exit, factor = 0.
 - **RPs**: bullpen work happens in the back of the game. Factor stays at 1.0 until inning 6, then ramps down.
 
@@ -1512,7 +1527,8 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
    - **`batter_final_lines`** (added 2026-08-10) — the hitter analogue of `pitcher_final_lines`: write-once per `(game_pk, mlbam_id)` from `_archive_final_batter_lines` in `refresh-live`, Final games only. `live_batters` is pruned once a game ages out of the unsettled window, so before this there was **no record of what a hitter actually did** — which is why hitter accuracy could only be reached via the unit-free ratio trick (HR/H etc., which cancels games-played), and why the ~+8% lineup-days over-projection is an *inference* rather than a direct reading. Carries the full OPS component set (`ab/h/b2/b3/bb/hbp/sf`) plus the scored counting cats (`hr/r/sb`), so per-game rates **and** games-played become directly checkable from period 19 forward. Tests: `tests/test_batter_archive.py`.
    - **`ros_projection_archive`** (added 2026-08-10) — the split=6 ROS block per matchup period, **first write per period wins** (refresh-rosters, `INSERT OR IGNORE`; same rule as `daily_lineups`). Exists because `player_projections` has **no period key** and every fetch overwrites it, so a past week's projection *inputs* were unrecoverable — which is why the model as it runs today can never be scored against history, only "the model as it ran" (the standing caveat on `scripts/calibration.py`). ~6.5k rows/week. **Starts at period 19; weeks 1-18 are gone for good.** A later refresh in the same week must not overwrite the first capture, or the archive silently becomes a record of mid-week values — verified live by a second `refresh-rosters` leaving row count, `captured_at` and value-sum byte-identical. Tests: `tests/test_ros_archive.py`.
-   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `rp-apps-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
+   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `rp-apps-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`, and the temporary
+    diagnostic `benched-live-credit`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
 

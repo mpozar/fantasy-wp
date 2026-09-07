@@ -243,3 +243,33 @@ def test_future_day_is_unaffected_by_locking():
              sim._norm_name("Teoscar Hernandez"): 16}
     out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(slots))
     assert out[1] + out[2] == 1.0    # one slot, contested normally — not locked
+
+
+# ── finality is FINAL_GAME_STATES, not the literal "Final" (fixed 2026-09-07) ──
+
+def test_all_three_factor_fns_treat_every_final_state_as_over():
+    """`FINAL_GAME_STATES` is {'Final', 'Game Over', 'Completed Early'} but the
+    factor functions tested `status == "Final"` only, so a game finished in
+    either other state was treated as still playable and its remaining innings
+    were credited. `Game Over` is the dangerous one — statsapi's normal state
+    between the last out and `Final`."""
+    for status in sorted(sim.FINAL_GAME_STATES):
+        g = _game("2026-08-02", status=status, inning=6)
+        assert sim._hitter_factor(g) == 0.0, status
+        assert sim._rp_factor(g) == 0.0, status
+        assert sim._sp_factor(g, 18.0) == 0.0, status
+
+
+def test_completed_early_game_credits_nothing_real_case():
+    """Game 824807, 2026-08-02: rain-shortened, `Completed Early` in the 6th.
+    Before the fix every hitter on BOTH MLB teams was credited (9-6)/9 = 0.33 of
+    a game that was already over."""
+    roster = [_hitter()]
+    sched = {100: [_game("2026-08-02", status="Completed Early", inning=6)]}
+    assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 8, 2))) == {1: 0.0}
+
+
+def test_in_progress_is_still_credited_the_guard_is_not_too_broad():
+    """Sanity: a genuinely live game must keep its remaining fraction."""
+    g = _game("2026-08-02", status="In Progress", inning=6)
+    assert 0.0 < sim._hitter_factor(g) < 1.0

@@ -680,8 +680,18 @@ def _elapsed_innings(g: dict) -> float:
 
 
 def _hitter_factor(g: dict) -> float:
+    """Fraction of a game's hitting still to come. Finality is tested against
+    `FINAL_GAME_STATES`, NOT the literal "Final" — that was the bug (fixed
+    2026-09-07): `{'Final', 'Game Over', 'Completed Early'}` are all over, but
+    only one was recognised, so a game finished in either other state was treated
+    as still playable and its remaining innings were credited. Real instance:
+    game 824807 on 2026-08-02 ended `Completed Early` in the 6th, so every hitter
+    on BOTH MLB teams was credited (9-6)/9 = 0.33 of a game that was done.
+    `Game Over` is the worse one — statsapi's normal state between the last out
+    and `Final`, so any game passing through it credits phantom production
+    league-wide for those minutes. `_rp_factor`/`_sp_factor` had the same flaw."""
     status = g.get("game_status")
-    if status == "Final":
+    if status in FINAL_GAME_STATES:
         return 0.0
     if g.get("current_inning") is None:
         return 1.0
@@ -691,7 +701,7 @@ def _hitter_factor(g: dict) -> float:
 
 def _rp_factor(g: dict) -> float:
     status = g.get("game_status")
-    if status == "Final":
+    if status in FINAL_GAME_STATES:
         return 0.0
     if g.get("current_inning") is None:
         return 1.0
@@ -704,7 +714,7 @@ def _rp_factor(g: dict) -> float:
 
 def _sp_factor(g: dict, sp_exit_inning: float) -> float:
     status = g.get("game_status")
-    if status == "Final":
+    if status in FINAL_GAME_STATES:
         return 0.0
     if g.get("current_inning") is None:
         return 1.0
@@ -1031,6 +1041,7 @@ def _game_started(g: dict) -> bool:
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
                          ctx: SimContext | None = None,
+                         anomalies: set | None = None,
                          ) -> dict[int, float]:
     """For each hitter, sum of in-progress factors across days they win a
     lineup slot. Honors slot eligibility and league-configured slot counts, and
@@ -1117,7 +1128,7 @@ def _hitter_days_slotted(roster: list[dict],
             if (_is_benched_today(p.get("full_name"), slot_by_norm_name)
                     or _is_removed_from_game(p, live_batters_by_team)):
                 team_games_today = [g for g in team_games_today
-                                    if g.get("game_status") != "In Progress"]
+                                    if not _game_started(g)]
             if not team_games_today:
                 continue
             # Two-way players starting on the mound today can't bat.
@@ -1144,6 +1155,19 @@ def _hitter_days_slotted(roster: list[dict],
             # No-ops for future days (nothing started) and when there is no
             # lineup snapshot at all (`slot_by_norm_name` empty ⇒ old behaviour).
             slot_today = (slot_by_norm_name or {}).get(_norm_name(p.get("full_name")))
+            # DIAGNOSTIC (2026-09-07). A player NOT in an active slot should have
+            # every started game stripped just above, so reaching here with one
+            # left is impossible — yet on 2026-09-06 George Springer (bench, slot
+            # 16 in both daily_lineups and team_rosters) was credited 0.11 of an
+            # in-progress game and displaced Teoscar Hernandez from a seat. The
+            # live state is gone (team_schedule is current-state), so record it
+            # on the budget instead: `details_json` is durable, and cross-
+            # referencing the (also durable, per-date) daily_lineups row will say
+            # what the slot map actually held at that tick. Remove once explained.
+            if (anomalies is not None
+                    and slot_today not in hitter_slot_counts
+                    and any(_game_started(g) for g in team_games_today)):
+                anomalies.add(p["player_id"])
             if slot_today in hitter_slot_counts and any(
                     _game_started(g) for g in all_games_today):
                 units[p["player_id"]] += sum(_hitter_factor(g)
@@ -1555,7 +1579,13 @@ def build_budgets(roster: list[dict],
     _all_dates = [g["game_date"] for games in schedule_by_team.values()
                   for g in games if g.get("game_date")]
     window_end = date.fromisoformat(max(_all_dates)) if _all_dates else None
-    hitter_units = _hitter_days_slotted(roster, schedule_by_team, ctx)
+    # `slot_anomalies` collects hitters credited a STARTED game while not in an
+    # active slot — impossible if the bench filter works. See the DIAGNOSTIC note
+    # in _hitter_days_slotted (2026-09-06 Springer). Surfaced as a budget flag so
+    # it lands in the durable details_json rather than vanishing with live state.
+    slot_anomalies: set = set()
+    hitter_units = _hitter_days_slotted(roster, schedule_by_team, ctx,
+                                        anomalies=slot_anomalies)
 
     out: list[Budget] = []
     for p in roster:
@@ -1802,6 +1832,8 @@ def build_budgets(roster: list[dict],
             if budget:
                 if two_way_sub:
                     budget.flags.append("two-way-sub")
+                if p["player_id"] in slot_anomalies:
+                    budget.flags.append("benched-live-credit")
                 out.append(budget)
 
     return out
