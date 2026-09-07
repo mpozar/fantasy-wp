@@ -204,6 +204,29 @@ RP_APPEARANCE_RATE = 0.40
 # Used only by the flat-rate fallback (when the cadence model has no anchor).
 MAX_SP_RATE = 0.21
 
+# Cap on per-team-game RELIEF appearance rate, the exact analogue of MAX_SP_RATE
+# and added for the same reason (2026-09-07). ESPN's split=6 "rest of season" GP
+# for relievers is not a rest-of-season number: measured 2026-09-07 it ran
+# 1.7-2.5x the team's REMAINING games (Ginkel 45 vs 18 left, Urena 46 vs 19),
+# which is physically impossible — a reliever cannot appear more often than his
+# team plays. The only backstop was "<= one appearance per team game", ~2x too
+# loose: Kevin Kelly projected 6.0 appearances in a 6-game week and Hunter
+# Gaddis 6.0 without even tripping the flag.
+#
+# 0.55 is measured, not chosen: over 261 relievers since 2026-08-01
+# (pitcher_final_lines, the durable archive) the realized appearance rate was
+# median 0.364, p90 0.471, and league MAX 0.529 — the hardest-worked arm in
+# baseball appears in 53% of his team's games. The cap sits just above that so a
+# genuinely elite workload survives untouched while impossible values are clipped.
+# Re-measure the same way if it ever needs revisiting.
+#
+# NOTE this is a physical BACKSTOP, not a calibration: a reliever whose ESPN
+# share is 0.8 still lands at 0.55, the league maximum rather than his own rate.
+# The principled fix is to blend toward each pitcher's realized rate the way the
+# QS and SVHD rates were on 2026-08-10 (see espn.blend_qs_rate) — deliberately
+# deferred, as it wants measurement rather than a mid-playoff change.
+MAX_RP_RATE = 0.55
+
 # Rotation rest-day distribution: P(calendar days between a SP's consecutive
 # starts), used by the cadence model to project a pitcher's remaining turns from
 # his last/announced start. Measured by scripts/analyze_cadence.py from MLB game
@@ -1449,7 +1472,9 @@ def _sp_relief_svhd(ros: dict, gs_ros: float, gp_ros: float,
     ros_svhd = ros.get(STAT_SVHD) or 0
     if relief_gp <= 0 or ros_svhd <= 0 or total_ros <= 0 or rp_remaining <= 0:
         return 0.0
-    relief_units = (relief_gp / total_ros) * rp_remaining
+    # Same physical bound as the RP branch — the relief share cannot exceed
+    # MAX_RP_RATE of the team's remaining games (see that constant).
+    relief_units = min(relief_gp / total_ros, MAX_RP_RATE) * rp_remaining
     svhd_per_relief = min(ros_svhd / relief_gp, MAX_SVHD_RATE)
     return svhd_per_relief * relief_units
 
@@ -1737,7 +1762,11 @@ def build_budgets(roster: list[dict],
                 rp_remaining = _rp_remaining_units(team_id, sched, ret)
                 total_ros = team_total_ros_games.get(team_id, 0)
                 if total_ros > 0 and gp_ros > 0:
-                    units_p = (gp_ros / total_ros) * rp_remaining
+                    rp_rate = gp_ros / total_ros
+                    if rp_rate > MAX_RP_RATE:
+                        rp_rate = MAX_RP_RATE      # see MAX_RP_RATE
+                        pflags.append("rp-rate-capped")
+                    units_p = rp_rate * rp_remaining
                 else:
                     units_p = rp_remaining * RP_APPEARANCE_RATE
                 if units_p > rp_remaining:

@@ -110,14 +110,32 @@ def test_rp_share_is_gp_over_full_season_games():
 
 
 def test_truncated_denominator_would_inflate_and_now_caps():
-    # The bug's inputs: ROS GP 26 vs a 24-game truncated denominator gave a
-    # share > 1.0 → 6.5 appearances in a 6-game week. The physical backstop
-    # now clamps to one appearance per team game and flags it.
+    """The 2026-08-10 bug's inputs: ROS GP 26 over a 24-game truncated
+    denominator = a share > 1.0, i.e. 6.5 appearances in a 6-game week.
+
+    Since 2026-09-07 `MAX_RP_RATE` catches this FIRST, so the older
+    "<= one appearance per team game" backstop no longer fires — and that is the
+    point: one appearance per game was still ~2x the league's hardest-worked arm
+    (realized max 0.529). The rate cap clamps to 0.55 × 6 = 3.3 instead of 6.0.
+    """
     budgets = build_budgets([_reliever(gp_ros=26)], _week(6),
                             sim.SimContext(team_total_ros_games={TEAM: 24}))
     b = _rp_budget(budgets)
-    assert abs(b.units - 6.0) < 1e-9
-    assert "rp-apps-capped" in b.flags
+    assert abs(b.units - sim.MAX_RP_RATE * 6) < 1e-9
+    assert "rp-rate-capped" in b.flags
+    assert "rp-apps-capped" not in b.flags      # the looser backstop is now moot
+
+
+def test_max_rp_rate_leaves_a_realistic_workload_alone():
+    """The cap must not touch a genuine high-usage arm. The league's busiest
+    reliever ran 0.529 of team games (261 pitchers since 2026-08-01), so a share
+    at that level has to survive untouched."""
+    # 0.50/game: 21 ROS appearances over 42 remaining games.
+    budgets = build_budgets([_reliever(gp_ros=21)], _week(6),
+                            sim.SimContext(team_total_ros_games={TEAM: 42}))
+    b = _rp_budget(budgets)
+    assert abs(b.units - 3.0) < 1e-9
+    assert "rp-rate-capped" not in b.flags
 
 
 def test_expected_k_scales_with_corrected_units():
