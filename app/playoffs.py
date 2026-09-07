@@ -112,6 +112,43 @@ def load_remaining(conn: sqlite3.Connection, *,
     } for r in rows]
 
 
+def load_playoff_rounds(conn: sqlite3.Connection, *, last_regular_period: int,
+                        n_rounds: int = NUM_PLAYOFF_PERIODS) -> dict:
+    """Real bracket matchups, keyed `{round_index: {frozenset({a, b}): info}}`.
+
+    Once ESPN seeds a round its games become real matchups with real WPs, and
+    the bracket simulation must USE them rather than keep re-playing the round
+    from fresh team-week samples. Without this the championship odds ignore what
+    is actually happening: during round 1 a side could be running away with its
+    matchup and `p_champion` would not move, because every sim re-drew the round
+    from scratch. The regular-season half of the model always did the right thing
+    here (`load_remaining` feeds each matchup's latest snapshot WP); the bracket
+    half simply predated there being any stored playoff matchups to read.
+
+    `round_index` is `period - (last_regular_period + 1)`, matching `samples[t][rnd]`.
+    `info` carries the decided `winner` when there is one (a finished round is a
+    fact, not a coin flip) and otherwise `home_wp`, the latest snapshot. A round
+    with no stored matchups is simply absent and falls back to sampling — which
+    is the correct behaviour for rounds ESPN has not seeded yet.
+    """
+    out: dict[int, dict] = {}
+    for r in conn.execute(
+            """
+            SELECT m.id, m.matchup_period_id, m.home_team_id, m.away_team_id, m.winner,
+                   (SELECT s.home_wp FROM wp_snapshots s WHERE s.matchup_id = m.id
+                    ORDER BY s.computed_at DESC LIMIT 1) AS home_wp
+            FROM matchups m
+            WHERE m.matchup_period_id > ? AND m.matchup_period_id <= ?
+                  AND m.home_team_id IS NOT NULL AND m.away_team_id IS NOT NULL
+            """, (last_regular_period, last_regular_period + n_rounds)):
+        rnd = r["matchup_period_id"] - (last_regular_period + 1)
+        out.setdefault(rnd, {})[frozenset((r["home_team_id"], r["away_team_id"]))] = {
+            "home": r["home_team_id"], "away": r["away_team_id"],
+            "winner": r["winner"], "home_wp": r["home_wp"],
+        }
+    return out
+
+
 def load_odds_history(conn: sqlite3.Connection) -> list[dict]:
     """Chronological per-run odds for the site's odds-over-time chart:
     [{"t": iso, "teams": {"<team_id>": [p_playoffs, p_bye, p_champion]}}].
@@ -197,7 +234,8 @@ def simulate_odds(team_ids: list[int],
                   remaining: list[dict],
                   samples: dict[int, list[list[tuple[float, ...]]]],
                   n_sims: int = DEFAULT_SEASON_SIMS,
-                  rng: random.Random | None = None) -> dict[int, dict]:
+                  rng: random.Random | None = None,
+                  round_overrides: dict | None = None) -> dict[int, dict]:
     """Run n_sims full seasons; return per-team odds.
 
     `samples[team_id]` = one list of category value tuples per playoff round
@@ -211,6 +249,18 @@ def simulate_odds(team_ids: list[int],
 
     def play(a: int, b: int, rnd: int, seed_of: dict[int, int]) -> int:
         """One playoff game; a/b in any order, returns winner team_id."""
+        # A round ESPN has actually seeded is not a hypothetical: use the real
+        # matchup. Decided ⇒ that result; live ⇒ a Bernoulli draw on its current
+        # WP, exactly as the season half treats a remaining matchup. Only an
+        # unseeded round falls through to sampling team-weeks.
+        ov = (round_overrides or {}).get(rnd, {}).get(frozenset((a, b)))
+        if ov is not None:
+            if ov["winner"] == "HOME":
+                return ov["home"]
+            if ov["winner"] == "AWAY":
+                return ov["away"]
+            if ov["home_wp"] is not None:
+                return ov["home"] if rng.random() < ov["home_wp"] else ov["away"]
         hi, lo = (a, b) if seed_of[a] < seed_of[b] else (b, a)
         vh = rng.choice(samples[hi][rnd])
         vl = rng.choice(samples[lo][rnd])

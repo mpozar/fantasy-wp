@@ -680,7 +680,17 @@ validity condition for H2H always holds.
 1. *Season*: 10k sims; every `UNDECIDED` matchup is a Bernoulli draw from its
    **latest snapshot WP** (current week ⇒ the live WP). Wins + the full H2H grid
    accumulate per sim; seeding runs the exact chain above.
-2. *Bracket*: the MC sim has **no cross-team interaction**, so a hypothetical
+2. *Bracket*: **a round ESPN has already seeded is not hypothetical** — since
+   2026-09-07 `load_playoff_rounds` feeds the real matchups in via
+   `simulate_odds(round_overrides=...)`: a decided round returns its winner, a
+   live one draws a Bernoulli on the matchup's latest snapshot WP (exactly how
+   the season half treats a remaining matchup), and only an unseeded round
+   falls through to sampling. Without this the bracket re-played round 1 from
+   fresh team-week samples every sim, so `p_champion` **did not move at all**
+   while a round-1 matchup was being won or lost. Measured on the 2026-09-07
+   bracket: Melonheads +3.6pp and Swamp Dragons −4.1pp once their real 3v6 WP
+   was used instead of a resample. For an unseeded round the old path stands —
+   the MC sim has **no cross-team interaction**, so a hypothetical
    pairing = compare two independently sampled team-weeks. Per team per playoff
    period: `sim.sample_team_totals(build_budgets(today's roster, that week's
    schedule, use_cadence=False), 1000)` reduced to 10-cat value tuples

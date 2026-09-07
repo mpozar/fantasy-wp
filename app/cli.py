@@ -1929,8 +1929,10 @@ def playoffs_cmd(sims: int | None, samples: int | None,
                     playoffs.totals_to_values(c)
                     for c in sim.sample_team_totals(budgets, n_samples)])
 
-        odds = playoffs.simulate_odds(team_ids, wins, h2h, remaining,
-                                      value_samples, n_sims=n_sims)
+        odds = playoffs.simulate_odds(
+            team_ids, wins, h2h, remaining, value_samples, n_sims=n_sims,
+            round_overrides=playoffs.load_playoff_rounds(
+                conn, last_regular_period=last_reg))
 
         blocks = []
         for t in team_ids:

@@ -127,6 +127,7 @@ def main() -> None:
         team_ids = sorted(teams)
         wins, losses, h2h = playoffs.load_records(conn, team_ids)
         remaining = playoffs.load_remaining(conn, last_regular_period=last_reg)
+        overrides = playoffs.load_playoff_rounds(conn, last_regular_period=last_reg)
         tgt = _resolve_target(remaining, teams, args.target)
 
         # Seeded so the BASELINE is reproducible across invocations, not just
@@ -137,7 +138,8 @@ def main() -> None:
         def run(rem):
             return playoffs.simulate_odds(team_ids, wins, h2h, rem, samples,
                                           n_sims=args.sims,
-                                          rng=random.Random(args.seed))
+                                          rng=random.Random(args.seed),
+                                          round_overrides=overrides)
 
         def pin(side):
             return [dict(m, home_wp=(1.0 if side == "home" else 0.0))

@@ -246,3 +246,55 @@ def test_load_remaining_requires_the_bound_explicitly():
     from app import playoffs
     with pytest.raises(TypeError):
         playoffs.load_remaining(_remaining_conn())
+
+
+# ── the bracket must use REAL playoff matchups once seeded (added 2026-09-07) ──
+
+def test_load_playoff_rounds_keys_by_round_and_skips_regular_and_one_sided():
+    from app import playoffs
+    c = _remaining_conn()
+    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'UNDECIDED')")     # regular
+    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'UNDECIDED')")     # R1
+    c.execute("INSERT INTO matchups VALUES (3, 24, 10, 13, 'HOME')")          # semi, decided
+    c.execute("INSERT INTO matchups VALUES (4, 23, 14, NULL, 'UNDECIDED')")   # bye placeholder
+    c.execute("INSERT INTO wp_snapshots VALUES (2, 0.75, '2026-09-07T00:00')")
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22)
+    assert set(got) == {0, 1}                      # round index, not period
+    assert got[0][frozenset((10, 12))]["home_wp"] == 0.75
+    assert got[1][frozenset((10, 13))]["winner"] == "HOME"
+    assert all(frozenset((14,)) not in d for d in got.values())   # one-sided dropped
+
+
+def test_bracket_follows_a_live_round_wp_instead_of_resampling():
+    """The point of the change: during round 1 the odds must move with the real
+    matchup. Team 12 is the weakest sample by far, so sampling would eliminate
+    it immediately; a live WP of 1.0 must carry it through anyway."""
+    ids = list(range(1, 13))
+    wins = {t: 12 - t for t in ids}
+    strength = {t: -t for t in ids}
+    six = [1, 2, 3, 4, 5, 6]        # seeds by record; R1 is 3v6 and 4v5
+    base = simulate_odds(ids, wins, _h2h(ids), [], _flat_samples(ids, strength),
+                         n_sims=200, rng=random.Random(1))
+    assert base[6]["p_final"] == 0.0        # weakest seed never survives sampling
+    # Now say the real games are locks for the 6 seed: R1 (3v6) and then the
+    # semi it feeds (2 vs the 3v6 winner). Both rounds must honour the override,
+    # so the team sampling would have eliminated immediately reaches the final.
+    ov = {0: {frozenset((3, 6)): {"home": 6, "away": 3,
+                                  "winner": "UNDECIDED", "home_wp": 1.0}},
+          1: {frozenset((2, 6)): {"home": 6, "away": 2,
+                                  "winner": "UNDECIDED", "home_wp": 1.0}}}
+    live = simulate_odds(ids, wins, _h2h(ids), [], _flat_samples(ids, strength),
+                         n_sims=200, rng=random.Random(1), round_overrides=ov)
+    assert live[6]["p_final"] == 1.0        # carried by the real WPs, not samples
+    assert live[2]["p_final"] == 0.0        # the 2 seed loses the semi it lost
+    assert six == [1, 2, 3, 4, 5, 6]        # seed order sanity
+
+
+def test_a_decided_round_is_a_fact_not_a_coin_flip():
+    ids = list(range(1, 13))
+    wins = {t: 12 - t for t in ids}
+    ov = {0: {frozenset((3, 6)): {"home": 3, "away": 6,
+                                  "winner": "AWAY", "home_wp": 0.99}}}
+    out = simulate_odds(ids, wins, _h2h(ids), [], _flat_samples(ids, {t: -t for t in ids}),
+                        n_sims=100, rng=random.Random(1), round_overrides=ov)
+    assert out[3]["p_final"] == 0.0         # lost, despite a 0.99 home_wp
