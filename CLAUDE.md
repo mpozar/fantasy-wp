@@ -641,9 +641,41 @@ If the user complains that a category WP "feels too lopsided," it's almost alway
 - `MAX_SP_RATE = 0.21` — caps per-team-game SP start rate (5-man rotation ceiling). ESPN's ROS GS projection for aces sometimes implies > 25%/game, which no real rotation produces.
 - `MAX_SVHD_RATE = 0.80` — caps per-appearance SV+HLD rate. Realistic elite RPs top out near 0.75-0.80.
 - `RP_APPEARANCE_RATE = 0.40` — fallback only, used when ROS GP or team-total games unavailable. Normal path is per-player derived.
+- `MAX_RP_RATE = 0.55` — caps per-team-game **relief appearance** rate
+  (`rp-rate-capped` flag). Exact analogue of `MAX_SP_RATE`, added 2026-09-07 for
+  the same reason: ESPN's split=6 "rest of season" GP for relievers is **not** a
+  rest-of-season number — measured that day it ran **1.7-2.5x the team's
+  REMAINING games** (Ginkel 45 vs 18 left), physically impossible. Symptom was
+  relievers projected for **6 appearances in a 6-game week** (Kevin Kelly, Hunter
+  Gaddis — and Gaddis hit exactly 1.000/game without tripping any flag).
+  **0.55 is measured**: across 261 relievers since 2026-08-01
+  (`pitcher_final_lines`) the realized rate was median **0.364**, p90 **0.471**,
+  league **max 0.529**, so the cap clears the hardest-worked arm in baseball and
+  clips only the impossible. NOT a recurrence of the 2026-08-10 denominator bug
+  (still fixed) — that was the denominator, this is the numerator. Live effect:
+  relievers 6.0 → 3.3 appearances; P(champ) Norsemen −4.2pp, Sox Teacher −2.5pp,
+  WAR **+5.0pp** (WAR's weakness was relief, so trimming everyone else's inflated
+  volume helped it). Also applied to a swingman's relief share in
+  `_sp_relief_svhd`.
+  - ⚠ **A BACKSTOP, NOT A CALIBRATION, and it binds nearly everywhere — 82% of
+    reliever budgets hit it.** Every capped arm therefore sits at the league
+    *maximum* rather than his own rate, flattening differentiation between
+    relievers. The principled fix is blending toward each pitcher's realized rate
+    as `espn.blend_qs_rate`/`blend_svhd_rate` do; deferred deliberately.
+  - ⚠ **It also truncates the SVHD upper tail.** RP appearance count is not a
+    sampled random variable (unlike SP starts, which get `extra_dist`), so
+    `units` only scales means — and SVHD is drawn `Binomial(⌈mean⌉, …)`, making
+    the ceiling `⌈mean⌉`. Capped means ~1.15-1.32 ⇒ **max 2 SVHD**, where
+    uncapped 6.0 units gave ⌈2.1-2.4⌉ = **3**. So a genuine 4-5 appearance,
+    3-save/hold week is no longer representable for most relievers. Judged worth
+    it — the mean was ~2x high and SVHD is the most over-projected category
+    (+55%) — but it is a real cost, and the rate blend should restore the tail by
+    fixing the mean instead of clipping it. K/ER/OUTS are unaffected: Poisson has
+    no ceiling, so a capped arm with `exp_k` 4.3 can still draw ~13 K.
 - **RP appearances ≤ team games** (`rp-apps-capped` flag) — physical backstop on
-  the RP branch; only reachable when `gp_ros` exceeds the denominator, i.e. a
-  denominator regression, never healthy inputs.
+  the RP branch; since 2026-09-07 effectively unreachable, because `MAX_RP_RATE`
+  clamps the rate first and one-appearance-per-game was itself ~2x the league's
+  busiest arm. Kept as defence in depth.
 
 **ROS-share denominator spans the MLB season, not the fantasy season (fixed
 2026-08-10).** Every "share of team games" rate built from ESPN's ROS split —
@@ -1537,7 +1569,7 @@ Common case: user notices a sudden WP shift and asks why. Method:
    - **`reliever_appearances`** — each reliever's entry/exit run-margin (drives the in-game save/hold judging; see "In-progress QS & SVHD").
    - **`batter_final_lines`** (added 2026-08-10) — the hitter analogue of `pitcher_final_lines`: write-once per `(game_pk, mlbam_id)` from `_archive_final_batter_lines` in `refresh-live`, Final games only. `live_batters` is pruned once a game ages out of the unsettled window, so before this there was **no record of what a hitter actually did** — which is why hitter accuracy could only be reached via the unit-free ratio trick (HR/H etc., which cancels games-played), and why the ~+8% lineup-days over-projection is an *inference* rather than a direct reading. Carries the full OPS component set (`ab/h/b2/b3/bb/hbp/sf`) plus the scored counting cats (`hr/r/sb`), so per-game rates **and** games-played become directly checkable from period 19 forward. Tests: `tests/test_batter_archive.py`.
    - **`ros_projection_archive`** (added 2026-08-10) — the split=6 ROS block per matchup period, **first write per period wins** (refresh-rosters, `INSERT OR IGNORE`; same rule as `daily_lineups`). Exists because `player_projections` has **no period key** and every fetch overwrites it, so a past week's projection *inputs* were unrecoverable — which is why the model as it runs today can never be scored against history, only "the model as it ran" (the standing caveat on `scripts/calibration.py`). ~6.5k rows/week. **Starts at period 19; weeks 1-18 are gone for good.** A later refresh in the same week must not overwrite the first capture, or the archive silently becomes a record of mid-week values — verified live by a second `refresh-rosters` leaving row count, `captured_at` and value-sum byte-identical. Tests: `tests/test_ros_archive.py`.
-   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `rp-apps-capped`, `qs-ingame`/`svhd-ingame`, `benched-live-drop`, `live-keepalive`, `two-way-sub`, and the temporary
+   - **`details_json.{home,away}_budgets[].flags`** (added 2026-07-02) — per-budget provenance: which special-case path shaped the projection (`promoted`, `cadence` vs `flat-extra`, `start-capped`, `rp-apps-capped`, `qs-ingame`/`svhd-ingame`, `rp-rate-capped`, `benched-live-drop`, `live-keepalive`, `two-way-sub`, and the temporary
     diagnostic `benched-live-credit`). Answers "was this pitcher promoted / capped / overridden this tick?" in one lookup instead of a forensic dig. Omitted when no special case fired. Defined on `sim.Budget.flags`; tests in `tests/test_budget_flags.py`.
 
 The repo history has a handful of investigation commits (e.g. `cd4b187` Lineup-aware projections, `aab6951` ROS SVHD from full-season proj minus actuals, `10c60fe` Empirical-rate SVHD) — those commit messages contain real numbers for the player examples used during the investigation. Useful reference.
