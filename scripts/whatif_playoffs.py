@@ -126,7 +126,7 @@ def main() -> None:
         teams = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM teams")}
         team_ids = sorted(teams)
         wins, losses, h2h = playoffs.load_records(conn, team_ids)
-        remaining = playoffs.load_remaining(conn)
+        remaining = playoffs.load_remaining(conn, last_regular_period=last_reg)
         tgt = _resolve_target(remaining, teams, args.target)
 
         # Seeded so the BASELINE is reproducible across invocations, not just
