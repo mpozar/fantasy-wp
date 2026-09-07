@@ -1020,6 +1020,14 @@ def _max_slot_assignment(candidates: list[dict], slot_instances: list[int]) -> s
     return seated
 
 
+def _game_started(g: dict) -> bool:
+    """True once a game is underway or over. A fantasy lineup locks per game, so
+    from first pitch the occupant of a slot is fixed: he cannot be moved out and
+    nobody can be moved in."""
+    return (g.get("game_status") in FINAL_GAME_STATES
+            or g.get("current_inning") is not None)
+
+
 def _hitter_days_slotted(roster: list[dict],
                          schedule_by_team: dict[int, list[dict]],
                          ctx: SimContext | None = None,
@@ -1083,6 +1091,7 @@ def _hitter_days_slotted(roster: list[dict],
         except ValueError:
             day = None
         candidates = []
+        locked_slots: list[int] = []
         for p in hitters:
             ret = return_by_pid.get(p["player_id"])
             if ret is None:
@@ -1095,10 +1104,11 @@ def _hitter_days_slotted(roster: list[dict],
             # off game status instead makes this timezone-independent and smooth.
             if ret > as_of and day is not None and day < ret:
                 continue
-            team_games_today = [
+            all_games_today = [
                 g for g in schedule_by_team.get(p["pro_team_id"], [])
                 if g.get("game_date") == date_str
             ]
+            team_games_today = all_games_today
             # Drop In-Progress games for a hitter who can't (still) bat in one:
             #   - benched at first pitch (locked out, can't be moved in), or
             #   - already removed from the game (a later batter took his slot —
@@ -1112,6 +1122,33 @@ def _hitter_days_slotted(roster: list[dict],
                 continue
             # Two-way players starting on the mound today can't bat.
             if _is_probable_starter_on(p, date_str, schedule_by_team):
+                continue
+            # ── Slot locking ──────────────────────────────────────────────
+            # A player in an ACTIVE slot whose game has started is locked into
+            # that slot: guaranteed his factor, and his slot is spent for the
+            # day. Credit him directly and withhold the instance from matching.
+            #
+            # Without this the day's slot pool silently refills as games end —
+            # a Final hitter has factor 0, hit `continue` below, and so was
+            # never assigned a slot instance. Late in a slate the matcher saw
+            # ~all slots free and seated bench bats who could not physically be
+            # activated. Real case 2026-09-06 (m129 Surly Shih Tzus): 9 of 10
+            # slots were locked (8 Final + Merrill live), yet Daylen Lile AND
+            # Teoscar Hernandez were each credited a full game in the 4:10am
+            # finale. The only movable slot was Keaschall's 2B and neither bat
+            # is 2B-eligible, so the true number activatable was ZERO.
+            #
+            # Deliberately keeps the policy that a benched bat WILL be activated
+            # when a slot is genuinely free (early in the day, or an active-slot
+            # player has no game) — it only stops inventing slots that are gone.
+            # No-ops for future days (nothing started) and when there is no
+            # lineup snapshot at all (`slot_by_norm_name` empty ⇒ old behaviour).
+            slot_today = (slot_by_norm_name or {}).get(_norm_name(p.get("full_name")))
+            if slot_today in hitter_slot_counts and any(
+                    _game_started(g) for g in all_games_today):
+                units[p["player_id"]] += sum(_hitter_factor(g)
+                                             for g in team_games_today)
+                locked_slots.append(slot_today)
                 continue
             # SUM across the day's games, not max: on a doubleheader a hitter in
             # the day's lineup bats in BOTH games, so both count (a Final game
@@ -1136,7 +1173,11 @@ def _hitter_days_slotted(roster: list[dict],
         # Optimal assignment: seat the most hitters (highest-impact first), with
         # re-routing so no scarce slot is wasted. See `_max_slot_assignment`.
         candidates.sort(key=lambda c: -c["impact"])
-        for ci in _max_slot_assignment(candidates, slot_instances):
+        day_slots = list(slot_instances)
+        for s in locked_slots:          # spent by a player already in his game
+            if s in day_slots:
+                day_slots.remove(s)
+        for ci in _max_slot_assignment(candidates, day_slots):
             c = candidates[ci]
             units[c["player_id"]] += c["factor"]
 

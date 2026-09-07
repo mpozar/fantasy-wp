@@ -353,6 +353,30 @@ Day-conflict resolution (so a two-way isn't counted batting *and* pitching the s
 4. **Optimal bipartite matching** (`_max_slot_assignment`, Kuhn's augmenting paths) assigns hitters to slot instances — impact-sorted, so a capacity-bound day seats the highest-impact subset
 5. Each hitter who wins a slot gets the **sum of `_hitter_factor` across that day's games** toward their `units` — so a **doubleheader counts as both games** (Final game → 0, in-progress → its remaining fraction, Scheduled → 1.0). This was `max()` (i.e. one game/day) until **2026-07-11**, which silently under-projected doubleheaders: when a postponed game folds into a same-day doubleheader, `max` made a hitter's remaining slate *shrink* by a game instead of stay flat — e.g. MIL@PIT's 7/10 postponement → 7/11 doubleheader dropped Yelich/Turang/Gonzales 6→5 games and abruptly moved a matchup ~12pp. Relievers already sum per-game (`_rp_remaining_units`) and starters are per-game via probables, so the bug was hitter-only. Slot assignment stays per-day (one lineup slot/day); only the credited production sums. Tests: `test_hitter_days_tz.py`.
 
+**Slots lock as games start (added 2026-09-07).** A fantasy lineup locks per
+game: from first pitch the occupant is fixed — he cannot be moved out and nobody
+can be moved in. So a player in an **active** slot whose game today has started
+is credited his factor directly and his slot instance is **withheld from the
+matching**; only genuinely free slots are contested. Without this the day's slot
+pool silently *refilled* as games ended, because a Final hitter has factor 0 and
+hits `continue` before ever being assigned a slot. Late in a slate the matcher
+therefore saw nearly every slot free and seated bench bats that could not
+physically be activated — 2026-09-06 m129 (Surly Shih Tzus): **9 of 10 slots
+locked** (8 Final + Merrill live) yet **Daylen Lile AND Teoscar Hernandez were
+each credited a full game** in the 4:10am finale; the only movable slot was
+Keaschall's 2B and neither bat is 2B-eligible, so the true count activatable was
+**zero**. A secondary tell was seating *flickering* tick to tick as factors moved.
+The deliberate policy is intact — a benched bat is still assumed to be activated
+whenever a slot is genuinely free (early in the day, or an active-slot player has
+no game). No-op on future days and when there is no lineup snapshot
+(`slot_by_norm_name` empty ⇒ prior behaviour). **Plausible contributor to the
+measured ~+8% hitter lineup-days over-projection** (see "Measuring projection
+accuracy", where "assumes daily lineup optimization real managers don't do" is
+listed as an open hypothesis) — unquantified, because `calibration.py` scores the
+model *as it ran* and cannot be re-run against this change. Tests:
+`test_hitter_days_tz.py` (`test_bench_bat_gets_no_slot_once_the_starter_s_game_has_begun`
+and neighbours; the no-snapshot case is the built-in before/after control).
+
 Step 4 was greedy first-fit until 2026-06-05. Greedy could spend a *flexible*
 bat on an early slot and then waste a *scarce* slot only that bat could fill —
 e.g. the lone 3B-eligible hitter taken at 2B leaves 3B empty AND benches a

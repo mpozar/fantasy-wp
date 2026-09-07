@@ -158,3 +158,88 @@ def test_single_game_day_unchanged():
     roster = [_hitter()]
     sched = {100: [_game("2026-06-06")]}
     assert sim._hitter_days_slotted(roster, sched, _ctx(as_of=date(2026, 6, 5)))[1] == 1.0
+
+
+# ── slot locking (added 2026-09-07) ─────────────────────────────────────────
+# A fantasy lineup locks per game: from first pitch the slot's occupant is fixed
+# and nobody can be moved in. The matcher used to miss this because a Final
+# hitter has factor 0 and hits `continue` BEFORE being assigned a slot, so the
+# day's slot pool silently refilled as games ended. Real case 2026-09-06 (m129
+# Surly Shih Tzus): 9 of 10 slots locked (8 Final + Merrill live), yet Daylen
+# Lile AND Teoscar Hernandez were each credited a full game in the 4:10am
+# finale. The only movable slot was Keaschall's 2B; neither bat is 2B-eligible,
+# so the true number activatable was ZERO.
+
+def _named(pid, name, *, team=100, slot=3, eligible=(3,)):
+    return {"player_id": pid, "full_name": name, "pro_team_id": team,
+            "default_position_id": 3, "injury_status": "ACTIVE",
+            "lineup_slot_id": slot, "eligible_slots": list(eligible),
+            "ros_stats": {}}
+
+
+def _lock_ctx(slots):
+    return sim.SimContext(lineup_slot_counts={3: 1}, slot_by_norm_name=slots,
+                          live_batters_by_team={}, as_of=date(2026, 9, 6))
+
+
+def test_bench_bat_gets_no_slot_once_the_starter_s_game_has_begun():
+    """THE 2026-09-06 REGRESSION. One slot, held by a starter whose game is
+    already Final — the bench bat in a later game cannot be activated."""
+    starter = _named(1, "Corbin Carroll", team=100, slot=3)
+    benched = _named(2, "Teoscar Hernandez", team=101, slot=16)
+    sched = {100: [_game("2026-09-06", status="Final")],
+             101: [_game("2026-09-06", status="Scheduled")]}
+    slots = {sim._norm_name("Corbin Carroll"): 3,
+             sim._norm_name("Teoscar Hernandez"): 16}
+    out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(slots))
+    assert out[1] == 0.0        # starter played; contributes nothing further
+    assert out[2] == 0.0        # <<< was 1.0 before the fix — a phantom game
+
+
+def test_bench_bat_still_seated_when_a_slot_is_genuinely_free():
+    """The policy survives: an active-slot player with NO game today never locks
+    his slot, so the bench bat is still assumed to be activated into it."""
+    starter = _named(1, "Corbin Carroll", team=100, slot=3)
+    benched = _named(2, "Teoscar Hernandez", team=101, slot=16)
+    sched = {100: [], 101: [_game("2026-09-06", status="Scheduled")]}
+    slots = {sim._norm_name("Corbin Carroll"): 3,
+             sim._norm_name("Teoscar Hernandez"): 16}
+    out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(slots))
+    assert out[2] == 1.0
+
+
+def test_locked_starter_keeps_his_own_partial_factor():
+    """Locking must not cost the locked player anything — a starter mid-game
+    keeps his remaining fraction AND holds his slot shut."""
+    starter = _named(1, "Corbin Carroll", team=100, slot=3)
+    benched = _named(2, "Teoscar Hernandez", team=101, slot=16)
+    sched = {100: [_game("2026-09-06", status="In Progress", inning=5)],
+             101: [_game("2026-09-06", status="Scheduled")]}
+    slots = {sim._norm_name("Corbin Carroll"): 3,
+             sim._norm_name("Teoscar Hernandez"): 16}
+    out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(slots))
+    assert 0.0 < out[1] < 1.0   # his own remaining innings
+    assert out[2] == 0.0        # but the slot is spent
+
+
+def test_no_lineup_snapshot_means_no_locking(): 
+    """Fails open: with no daily-lineup data we cannot know who holds which slot,
+    so behaviour is exactly as before (tests / isolated callers)."""
+    starter = _named(1, "Corbin Carroll", team=100, slot=3)
+    benched = _named(2, "Teoscar Hernandez", team=101, slot=16)
+    sched = {100: [_game("2026-09-06", status="Final")],
+             101: [_game("2026-09-06", status="Scheduled")]}
+    out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(None))
+    assert out[2] == 1.0
+
+
+def test_future_day_is_unaffected_by_locking():
+    """Nothing has started on a future date, so the full slot pool is available."""
+    starter = _named(1, "Corbin Carroll", team=100, slot=3)
+    benched = _named(2, "Teoscar Hernandez", team=101, slot=16)
+    sched = {100: [_game("2026-09-09", status="Scheduled")],
+             101: [_game("2026-09-09", status="Scheduled")]}
+    slots = {sim._norm_name("Corbin Carroll"): 3,
+             sim._norm_name("Teoscar Hernandez"): 16}
+    out = sim._hitter_days_slotted([starter, benched], sched, _lock_ctx(slots))
+    assert out[1] + out[2] == 1.0    # one slot, contested normally — not locked
