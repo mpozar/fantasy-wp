@@ -110,3 +110,29 @@ def test_live_window_caps_a_long_matchup_fortnight():
     _, end = cli._live_window(date(2026, 7, 8))
     assert end == date(2026, 7, 8) + timedelta(days=cli.LIVE_FORWARD_MAX_DAYS)
     assert end < mlb.matchup_period_window(15)[1]
+
+
+# ── compute's live period set across a rollover (added 2026-09-14) ──────────
+# ESPN seeded the semifinals at 07:00Z on 2026-09-14; `fetch` stored them within
+# 5 min, but `compute` reads the roster-derived current period, which only moves
+# on the 4-hourly refresh-rosters. Week 24 therefore published with three
+# matchups and BLANK win probabilities until the next medium tick, ~3h later.
+
+def test_live_compute_periods_is_just_one_in_steady_state():
+    from app import cli
+    assert cli._live_compute_periods(24, 24) == [24]
+
+
+def test_live_compute_periods_covers_both_across_a_rollover():
+    """ESPN knows first; the roster table lags. Compute both so the new round
+    gets WPs immediately AND the outgoing week keeps resolving through its
+    ~07:00 UTC settle (where a decided matchup finally reaches 100%/0%)."""
+    from app import cli
+    assert cli._live_compute_periods(23, 24) == [23, 24]
+
+
+def test_live_compute_periods_tolerates_a_missing_signal():
+    from app import cli
+    assert cli._live_compute_periods(23, None) == [23]
+    assert cli._live_compute_periods(None, 24) == [24]
+    assert cli._live_compute_periods(None, None) == []

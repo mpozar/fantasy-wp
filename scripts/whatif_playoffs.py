@@ -125,7 +125,7 @@ def main() -> None:
         last_reg = _last_regular_season_period(conn)
         teams = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM teams")}
         team_ids = sorted(teams)
-        wins, losses, h2h = playoffs.load_records(conn, team_ids)
+        wins, losses, h2h = playoffs.load_records(conn, team_ids, last_regular_period=last_reg)
         remaining = playoffs.load_remaining(conn, last_regular_period=last_reg)
         overrides = playoffs.load_playoff_rounds(conn, last_regular_period=last_reg)
         tgt = _resolve_target(remaining, teams, args.target)

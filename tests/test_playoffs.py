@@ -298,3 +298,64 @@ def test_a_decided_round_is_a_fact_not_a_coin_flip():
     out = simulate_odds(ids, wins, _h2h(ids), [], _flat_samples(ids, {t: -t for t in ids}),
                         n_sims=100, rng=random.Random(1), round_overrides=ov)
     assert out[3]["p_final"] == 0.0         # lost, despite a 0.99 home_wp
+
+
+# ── the bracket must use REAL pairings, not simulated seeding (2026-09-14) ──
+# `play()` looks its override up by team-pair, so when a per-sim seeding
+# coin-flip produced a pairing that never happened the lookup missed and the
+# round was SAMPLED as a fictional game. On 2026-09-14 that had the already
+# ELIMINATED Seattle Melonheads at 34.3% to reach the final and 19.5% to win it.
+
+def test_load_records_excludes_playoff_results_from_seeding():
+    """Seeding is the regular-season record. Counting a bracket result moved Jo
+    Mamas to 15-8 and manufactured a tie with Melonheads that does not exist."""
+    from app import playoffs
+    c = _remaining_conn()
+    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'HOME')")   # regular
+    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'HOME')")   # playoff
+    w, l, h = playoffs.load_records(c, [10, 11, 12], last_regular_period=22)
+    assert w[10] == 1 and l[11] == 1        # regular season counted
+    assert l[12] == 0 and w[10] == 1        # playoff result NOT counted
+
+
+def test_real_bracket_picks_the_semis_and_drops_the_consolation():
+    """ESPN also creates a game between the two round-1 LOSERS. It is not part
+    of the championship bracket and must not feed the final."""
+    from app import playoffs
+    ro = {0: {frozenset((1, 11)): {"home": 11, "away": 1, "winner": "HOME", "home_wp": 1.0},
+              frozenset((3, 20)): {"home": 20, "away": 3, "winner": "AWAY", "home_wp": 0.0}},
+          1: {frozenset((11, 21)): {"home": 21, "away": 11, "winner": "UNDECIDED", "home_wp": 0.44},
+              frozenset((3, 5)):   {"home": 5,  "away": 3,  "winner": "UNDECIDED", "home_wp": 0.43},
+              frozenset((1, 20)):  {"home": 20, "away": 1,  "winner": "UNDECIDED", "home_wp": 0.67}}}
+    r0, semis = playoffs.real_bracket(ro)
+    assert len(r0) == 2
+    pairs = {frozenset((s["home"], s["away"])) for s in semis}
+    assert pairs == {frozenset((11, 21)), frozenset((3, 5))}
+    assert frozenset((1, 20)) not in pairs      # the consolation, excluded
+
+
+def test_real_bracket_returns_none_for_an_unseeded_round():
+    from app import playoffs
+    assert playoffs.real_bracket({})[1] is None
+    assert playoffs.real_bracket(None)[1] is None
+
+
+def test_eliminated_team_cannot_reach_the_final():
+    """End-to-end guard on the actual symptom, with a seeding TIE present so the
+    coin-flip would otherwise mis-pair (that is what exposed the bug)."""
+    from app import playoffs
+    ids = list(range(1, 13))
+    wins = {t: 12 - t for t in ids}
+    wins[4] = wins[3]                      # force a 3/4 seeding tie
+    ro = {0: {frozenset((3, 6)): {"home": 3, "away": 6, "winner": "AWAY", "home_wp": 0.0},
+              frozenset((4, 5)): {"home": 4, "away": 5, "winner": "HOME", "home_wp": 1.0}},
+          1: {frozenset((1, 4)): {"home": 1, "away": 4, "winner": "UNDECIDED", "home_wp": 0.5},
+              frozenset((2, 6)): {"home": 2, "away": 6, "winner": "UNDECIDED", "home_wp": 0.5},
+              frozenset((3, 5)): {"home": 3, "away": 5, "winner": "UNDECIDED", "home_wp": 0.5}}}
+    out = simulate_odds(ids, wins, _h2h(ids), [],
+                        _flat_samples(ids, {t: -t for t in ids}),
+                        n_sims=400, rng=random.Random(3), round_overrides=ro)
+    assert out[3]["p_final"] == 0.0 and out[3]["p_champion"] == 0.0   # lost R1
+    assert out[5]["p_final"] == 0.0 and out[5]["p_champion"] == 0.0   # lost R1
+    assert out[4]["p_final"] + out[1]["p_final"] == 1.0               # one semi
+    assert out[6]["p_final"] + out[2]["p_final"] == 1.0               # the other

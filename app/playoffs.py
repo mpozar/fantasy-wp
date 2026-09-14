@@ -59,15 +59,26 @@ _REVERSED = [rev for _, rev in CATEGORIES]
 # ── DB loaders ──────────────────────────────────────────────────────────
 
 def load_records(conn: sqlite3.Connection,
-                 team_ids: list[int]) -> tuple[dict[int, int], dict[int, int],
-                                               dict[int, dict[int, int]]]:
-    """(wins, losses, h2h[winner][loser] = win count) from decided matchups."""
+                 team_ids: list[int], *,
+                 last_regular_period: int) -> tuple[dict[int, int], dict[int, int],
+                                                    dict[int, dict[int, int]]]:
+    """(wins, losses, h2h[winner][loser]) from decided REGULAR-SEASON matchups.
+
+    `last_regular_period` is required, and the bound is load-bearing: seeding is
+    defined by the regular-season record, so a playoff result must never count.
+    Before playoff matchups were stored (2026-09-07) the unfiltered query was
+    accidentally right; afterwards it silently folded bracket results into the
+    standings — on 2026-09-14 that moved Jo Mamas to 15-8 and tied them with
+    Seattle Melonheads, manufacturing a seeding tie that does not exist.
+    Same trap as `load_remaining`, which was guarded at the time; this was not.
+    """
     wins = {t: 0 for t in team_ids}
     losses = {t: 0 for t in team_ids}
     h2h = {t: {u: 0 for u in team_ids} for t in team_ids}
     for r in conn.execute(
             "SELECT home_team_id, away_team_id, winner FROM matchups "
-            "WHERE winner IN ('HOME','AWAY')"):
+            "WHERE winner IN ('HOME','AWAY') AND matchup_period_id <= ?",
+            (last_regular_period,)):
         w, l = ((r["home_team_id"], r["away_team_id"])
                 if r["winner"] == "HOME" else
                 (r["away_team_id"], r["home_team_id"]))
@@ -228,6 +239,44 @@ def seed_order(wins: dict[int, int], h2h: dict[int, dict[int, int]],
 
 # ── Season + bracket simulation ────────────────────────────────────────
 
+def real_bracket(round_overrides: dict | None) -> tuple[list | None, list | None]:
+    """(round0_pairs, semifinal_pairs) taken from the REAL matchups, or None.
+
+    Once ESPN seeds a round the pairings are FACTS, and re-deriving them from
+    simulated seeding is wrong — that is the 2026-09-14 bug. `play()` looks its
+    override up by team-pair, so whenever a per-sim seeding coin-flip produced a
+    pairing that never happened, the lookup missed and the round was **sampled
+    as a fictional game**. Jo Mamas and Seattle Melonheads were (incorrectly,
+    see `load_records`) tied at 15-8, so ~51% of sims paired Melonheads against
+    Sox Teacher in round 1 — a game that does not exist — and let an ELIMINATED
+    team reach the final. Published odds had Melonheads at 34.3% to make the
+    final and 19.5% to win it, having already lost.
+
+    Consolation games are excluded: a round-1 matchup whose BOTH participants
+    lost in round 0 is not part of the championship bracket. ESPN creates one
+    (2026-09-14: Sox Teacher @ Melonheads, the two round-1 losers).
+
+    Returns `None` for a round that is not yet seeded, so the caller falls back
+    to seed-derived pairing — correct for a round that genuinely does not exist.
+    """
+    ro = round_overrides or {}
+    r0 = list((ro.get(0) or {}).values()) or None
+    r1 = ro.get(1) or {}
+    semis = None
+    if r1:
+        losers = set()
+        for info in (ro.get(0) or {}).values():
+            if info["winner"] == "HOME":
+                losers.add(info["away"])
+            elif info["winner"] == "AWAY":
+                losers.add(info["home"])
+        live = [i for i in r1.values()
+                if not (i["home"] in losers and i["away"] in losers)]
+        if len(live) == BYE_SEEDS:
+            semis = live
+    return r0, semis
+
+
 def simulate_odds(team_ids: list[int],
                   wins: dict[int, int],
                   h2h: dict[int, dict[int, int]],
@@ -243,6 +292,7 @@ def simulate_odds(team_ids: list[int],
     per side — independent weeks, same as the underlying model.
     """
     rng = rng or random.Random()
+    real_r0, real_semis = real_bracket(round_overrides)
     tally = {t: {"playoffs": 0, "bye": 0, "final": 0, "champ": 0,
                  "win_sum": 0, "seeds": [0] * len(team_ids)}
              for t in team_ids}
@@ -288,10 +338,28 @@ def simulate_odds(team_ids: list[int],
         for t in six[:BYE_SEEDS]:
             tally[t]["bye"] += 1
 
-        w45 = play(six[3], six[4], 0, seed_of)
-        w36 = play(six[2], six[5], 0, seed_of)
-        f1 = play(six[0], w45, 1, seed_of)
-        f2 = play(six[1], w36, 1, seed_of)
+        if real_semis is not None:
+            # The semifinals are seeded: play exactly those, never a pairing
+            # invented by this sim's seeding coin-flip.
+            f1 = play(real_semis[0]["home"], real_semis[0]["away"], 1, seed_of)
+            f2 = play(real_semis[1]["home"], real_semis[1]["away"], 1, seed_of)
+        else:
+            if real_r0 is not None and len(real_r0) == BYE_SEEDS:
+                # Round 1 seeded but not the semis: play the real round-1 games,
+                # then face each winner with its bye by seed (1 vs W(4v5),
+                # 2 vs W(3v6)) — the winner whose matchup contained the better
+                # seed meets the 2 seed.
+                ra, rb = real_r0
+                wa = play(ra["home"], ra["away"], 0, seed_of)
+                wb = play(rb["home"], rb["away"], 0, seed_of)
+                best_a = min(seed_of[ra["home"]], seed_of[ra["away"]])
+                best_b = min(seed_of[rb["home"]], seed_of[rb["away"]])
+                w36, w45 = (wa, wb) if best_a < best_b else (wb, wa)
+            else:
+                w45 = play(six[3], six[4], 0, seed_of)
+                w36 = play(six[2], six[5], 0, seed_of)
+            f1 = play(six[0], w45, 1, seed_of)
+            f2 = play(six[1], w36, 1, seed_of)
         tally[f1]["final"] += 1
         tally[f2]["final"] += 1
         tally[play(f1, f2, 2, seed_of)]["champ"] += 1

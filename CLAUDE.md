@@ -769,6 +769,26 @@ order get the 6-hue palette (`PO_COLORS`), rest muted gray with hover + table-ch
 identity. Tests: `tests/test_playoffs.py` (tiebreak chain incl. the 3-way reset,
 dead-heat rule, probability-conservation invariants, history loader).
 
+**Once a round is seeded, its pairings are FACTS — never re-derive them from
+simulated seeding (fixed 2026-09-14).** `play()` looks its `round_overrides` up
+by team-pair, so a per-sim seeding coin-flip that produced a pairing which never
+happened made the lookup MISS and the round get **sampled as a fictional game** —
+letting an ELIMINATED team advance. Published odds had Seattle Melonheads at
+**34.3% to reach the final and 19.5% to win it after they had already lost R1**.
+Two faults chained: (1) `load_records` had no period bound, so bracket results
+counted toward the seeding record (Jo Mamas 14-8 → 15-8), manufacturing a tie
+with Melonheads that does not exist — the same leak `load_remaining` was guarded
+against on 2026-09-07 and this was not; (2) the tie then coin-flipped seeds 3/4,
+so ~51% of sims paired Melonheads vs Sox Teacher, a game with no override.
+`playoffs.real_bracket` now takes the pairings from the stored matchups, and
+**excludes the consolation game** ESPN creates between the two round-1 losers (a
+round-1 matchup whose BOTH participants lost round 0). Unseeded rounds still fall
+back to seed-derived pairing, which is correct for a round that does not exist.
+Fixing `load_records` alone is NOT enough — the tie merely moves to seeds 5/6.
+One archived `playoff_odds_runs` row (2026-09-14T07:14:52) was deleted to clear
+the spike from the published odds-over-time chart. Tests:
+`test_playoffs.py::test_eliminated_team_cannot_reach_the_final` and neighbours.
+
 **Gotchas & how to investigate "why are X's odds low/high":**
 - **Record ≠ roster.** Seeding runs on record; the bracket runs on *projected
   rosters*. A team can be seed-1 favorite and a bracket underdog. Worked example

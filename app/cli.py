@@ -315,8 +315,8 @@ def fetch() -> None:
             INSERT INTO scoring_settings
                 (league_id, season_id, name, size, scoring_type,
                  tiebreaker_stat_id, categories_json, lineup_slots_json,
-                 last_regular_season_period, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+                 last_regular_season_period, current_matchup_period, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(league_id, season_id) DO UPDATE SET
                 name=excluded.name,
                 size=excluded.size,
@@ -325,11 +325,12 @@ def fetch() -> None:
                 categories_json=excluded.categories_json,
                 lineup_slots_json=excluded.lineup_slots_json,
                 last_regular_season_period=excluded.last_regular_season_period,
+                current_matchup_period=excluded.current_matchup_period,
                 fetched_at=excluded.fetched_at
             """,
             (LEAGUE_ID, SEASON_ID, shape.name, shape.size, shape.scoring_type,
              shape.tiebreaker_stat_id, cats_json, slots_json,
-             shape.last_regular_season_period, now),
+             shape.last_regular_season_period, shape.current_matchup_period, now),
         )
 
         # Persist teams
@@ -1246,7 +1247,7 @@ def compute(model_name: str, sims: int, future_only: bool) -> None:
         if future_only:
             periods = list(range(current + 1, last_reg + 1))
         else:
-            periods = [current]
+            periods = _live_compute_periods(current, _espn_current_period(conn))
 
         if not periods:
             click.echo("Nothing to compute (no future periods left in regular season).")
@@ -1568,6 +1569,48 @@ def _current_matchup_period(conn) -> int | None:
     return row["p"] if row else None
 
 
+def _live_compute_periods(roster_current: int | None,
+                          espn_current: int | None) -> list[int]:
+    """Which periods `compute` should run for the live (non-`--future`) path.
+
+    The UNION of the two current-period signals, because across a rollover they
+    disagree and each is right about a different thing — see
+    `_espn_current_period`. Identical in steady state (they agree ⇒ one period,
+    no extra cost); during the handover it computes both, so a newly-seeded
+    playoff round gets win probabilities immediately while the outgoing week
+    keeps resolving through its ~07:00 UTC settle.
+    """
+    return sorted({p for p in (roster_current, espn_current) if p is not None})
+
+
+def _espn_current_period(conn) -> int | None:
+    """ESPN's `currentMatchupPeriod`, cached by `fetch` on every 5-min tick.
+
+    Deliberately NOT a replacement for `_current_matchup_period`, which stays on
+    the conservative roster-derived value. The two differ only across a period
+    rollover, and each is right about a different thing:
+
+      * ESPN flips at ~07:00 UTC Monday, so it is the FIRST to know a new round
+        has been seeded. The roster table does not move until the next
+        `refresh-rosters` — a medium-tier job, so up to 4h later.
+      * That lag is also protective: it keeps the just-finished week being
+        computed straight through the ~07:00 UTC REST settle, which is exactly
+        when a decided matchup finally resolves to 100%/0% (see "Finalization
+        lag"). Jumping to the new period the moment ESPN does would freeze the
+        old week a few minutes short of that, at 9x%.
+
+    So `compute` takes the UNION of both rather than choosing (2026-09-14). Cost
+    is one extra period's sims for the few hours they disagree; the benefit is
+    that a newly-seeded playoff round gets win probabilities on the next tick
+    instead of publishing blank ones for hours — which is exactly what happened
+    when the semifinals were seeded at 07:00Z on 2026-09-14.
+    """
+    row = conn.execute(
+        "SELECT current_matchup_period AS p FROM scoring_settings "
+        "WHERE league_id=? AND season_id=?", (LEAGUE_ID, SEASON_ID)).fetchone()
+    return row["p"] if row and row["p"] else None
+
+
 def _last_regular_season_period(conn) -> int | None:
     """ESPN's authoritative last regular-season period, cached by `fetch`.
 
@@ -1887,7 +1930,7 @@ def playoffs_cmd(sims: int | None, samples: int | None,
         teams = {r["id"]: dict(r)
                  for r in conn.execute("SELECT * FROM teams").fetchall()}
         team_ids = sorted(teams)
-        wins, losses, h2h = playoffs.load_records(conn, team_ids)
+        wins, losses, h2h = playoffs.load_records(conn, team_ids, last_regular_period=last_reg)
         remaining = playoffs.load_remaining(conn, last_regular_period=last_reg)
         missing_wp = sum(1 for m in remaining if not m["had_snapshot"])
         if missing_wp:

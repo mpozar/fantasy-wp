@@ -472,6 +472,10 @@ def init() -> None:
             # MAX(matchup_period_id) until 2026-09-07, which broke the moment
             # playoff matchups started being stored (it returned 23, not 22).
             ("scoring_settings", "last_regular_season_period", "INTEGER"),
+            # ESPN's currentMatchupPeriod, cached each fetch. Lets `compute`
+            # see a period rollover within one 5-min tick instead of waiting
+            # up to 4h for refresh-rosters (see cli._espn_current_period).
+            ("scoring_settings", "current_matchup_period", "INTEGER"),
         ):
             table, col, type_ = column_def
             try:
