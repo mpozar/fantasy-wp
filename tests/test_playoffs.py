@@ -359,3 +359,57 @@ def test_eliminated_team_cannot_reach_the_final():
     assert out[5]["p_final"] == 0.0 and out[5]["p_champion"] == 0.0   # lost R1
     assert out[4]["p_final"] + out[1]["p_final"] == 1.0               # one semi
     assert out[6]["p_final"] + out[2]["p_final"] == 1.0               # the other
+
+
+# ── playoff rounds refresh on ANY live game, not just the last day (2026-09-15) ──
+
+def _playoff_finale_db(statuses, last_reg=22, period=24):
+    """Like _finale_db but with the metadata the playoff-round path needs."""
+    import sqlite3, json as _json
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE team_schedule (matchup_period_id INT, game_date TEXT, "
+                 "game_status TEXT)")
+    conn.execute("CREATE TABLE playoff_odds_runs (computed_at TEXT PRIMARY KEY, "
+                 "payload_json TEXT)")
+    conn.execute("CREATE TABLE matchups (id INT, matchup_period_id INT)")
+    conn.execute("CREATE TABLE scoring_settings (league_id INT, season_id INT, "
+                 "last_regular_season_period INT)")
+    from app.cli import LEAGUE_ID, SEASON_ID
+    conn.execute("INSERT INTO scoring_settings VALUES (?,?,?)",
+                 (LEAGUE_ID, SEASON_ID, last_reg))
+    for gd, st in statuses:
+        conn.execute("INSERT INTO team_schedule VALUES (?,?,?)", (period, gd, st))
+    conn.commit()
+    return conn
+
+
+def _playoff_reason(conn, now, monkeypatch, period=24):
+    import datetime as _dt
+    from app import cli, mlb
+    monkeypatch.setattr(mlb, "matchup_period_window",
+                        lambda p: (_dt.date(2026, 9, 14), _dt.date(2026, 9, 20)))
+    return cli._finale_skip_reason(conn, period, now)
+
+
+def test_playoff_round_refreshes_on_a_midweek_game(monkeypatch):
+    """A semifinal on TUESDAY must trigger the refresh. The bracket now consumes
+    that round's live WP, so every game moves the championship odds — the
+    last-day rule left the semis on the 4-hourly cadence while the Norsemen went
+    from 41.6% to 63.2% with the published odds not following."""
+    conn = _playoff_finale_db([("2026-09-15", "In Progress")])
+    assert _playoff_reason(conn, "2026-09-15T20:00:00+00:00", monkeypatch) is None
+
+
+def test_playoff_round_skips_when_nothing_is_live(monkeypatch):
+    conn = _playoff_finale_db([("2026-09-15", "Final"), ("2026-09-16", "Scheduled")])
+    r = _playoff_reason(conn, "2026-09-15T20:00:00+00:00", monkeypatch)
+    assert r == "no in-progress games in this playoff round"
+
+
+def test_regular_season_still_uses_the_last_day_rule(monkeypatch):
+    """Unchanged where the old reasoning holds: mid-week regular-season games do
+    not move seeds, so they must not trigger a refresh every tick."""
+    conn = _playoff_finale_db([("2026-09-15", "In Progress")], last_reg=24, period=24)
+    r = _playoff_reason(conn, "2026-09-15T20:00:00+00:00", monkeypatch)
+    assert r is not None and "last day" in r

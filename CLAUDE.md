@@ -730,6 +730,17 @@ validity condition for H2H always holds.
    `decide_values` (most cats → hits tiebreak → **dead heat advances the higher
    seed**). ROS shares spread over `current..last_reg+3`.
 
+**Live-PLAYOFF-ROUND refresh (widened 2026-09-15).** In a bracket round, ANY
+in-progress game triggers the per-tick refresh — not just one dated the period's
+last day. The last-day rule below is *regular-season* reasoning: there the odds
+move only when results flip seeds, which happens at the finale. A playoff round
+is different because `simulate_odds` consumes that round's live matchup WP
+directly (`round_overrides`, 2026-09-07), so every game moves the championship
+odds. Left on the 4-hourly medium cadence the semifinals moved the Norsemen
+**41.6% → 63.2%** while the published odds did not follow. Regular-season
+behaviour is unchanged. `_finale_skip_reason` decides which rule applies from
+`period_id > last_regular_season_period`.
+
 **Live-finale refresh (added 2026-08-08).** The 4-hourly cadence is right for most
 of the week — odds are driven by the *remaining* matchups' WPs, which barely move on a
 Tuesday. The **last day of a matchup period** is different: six matchups resolve within

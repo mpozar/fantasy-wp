@@ -1869,13 +1869,32 @@ def _finale_skip_reason(conn, period_id: int, now_iso: str) -> str | None:
         period_end = mlb.matchup_period_window(period_id)[1].isoformat()
     except Exception:
         return "period window unavailable"
-    live = conn.execute(
-        "SELECT COUNT(*) FROM team_schedule WHERE matchup_period_id=? "
-        "AND game_date=? AND game_status='In Progress'",
-        (period_id, period_end),
-    ).fetchone()[0]
-    if not live:
-        return f"no in-progress games on the period's last day ({period_end})"
+    # In a PLAYOFF round, ANY live game counts — not just the last day's
+    # (widened 2026-09-15). The last-day rule is regular-season reasoning: there
+    # the odds move only when results flip seeds, which happens at the finale.
+    # A bracket round is different since `simulate_odds` now consumes that
+    # round's live matchup WP directly (`round_overrides`), so every game moves
+    # the championship odds. Left on the 4-hourly cadence, the semifinals moved
+    # the Norsemen from 41.6% to 63.2% with the published odds not following.
+    try:
+        last_reg = _last_regular_season_period(conn)
+    except Exception:      # partial DB (tests) — fall back to the last-day rule
+        last_reg = None
+    playoff_round = last_reg is not None and period_id > last_reg
+    if playoff_round:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM team_schedule WHERE matchup_period_id=? "
+            "AND game_status='In Progress'", (period_id,)).fetchone()[0]
+        if not live:
+            return "no in-progress games in this playoff round"
+    else:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM team_schedule WHERE matchup_period_id=? "
+            "AND game_date=? AND game_status='In Progress'",
+            (period_id, period_end),
+        ).fetchone()[0]
+        if not live:
+            return f"no in-progress games on the period's last day ({period_end})"
     row = conn.execute("SELECT MAX(computed_at) c FROM playoff_odds_runs").fetchone()
     last = row["c"] if row else None
     if last:
