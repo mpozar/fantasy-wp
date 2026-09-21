@@ -1021,6 +1021,28 @@ back-tested optimum. **Expected residual QS bias ≈ +20%, not ~+12%** — the
 fixed. The remainder is projected starts, the same suspected root as K's flat
 +18%.
 
+### No ROS block at all → synthesized from season actuals (added 2026-09-21)
+
+ESPN's ROS projections are preseason-anchored, so a **late-season call-up has
+no split=6 block whatsoever** — and until 2026-09-21 such a player was
+invisible to the sim (no budget of any kind: `build_budgets` enters the
+pitcher branch only via `_has_pitcher_ros`, and every rescue path — spot-starter
+promotion, the in-game QS override, live-keepalive — lives inside it). Two
+incidents in one week: Leo Bernal (2026-09-17, projected zero as a starting C)
+and **Kade Anderson (2026-09-20, m144 semifinal): the model had Norsemen
+winning QS in 10,000/10,000 sims through his whole 7 IP / 0 ER start, priced
+the QS tie at zero, and that tie decided the matchup** (4-4-2 → hits
+tiebreak → Dragons advance). Fix: `espn.synthesize_ros_from_actuals` — when a
+rostered player has no ROS block but has season actuals, `fetch_rosters_and_
+projections` synthesizes one (counting stats × remaining-season fraction,
+floored at `SYNTH_MIN_REMAINING_FRAC`; rate stats deliberately never emitted —
+the sim derives them). Per-start/per-out/per-game rates are scale-invariant,
+so the fraction only shapes the capped volume paths; current-week start counts
+come from probables/live/cadence regardless. A missing SVHD is materialized as
+0 (absent-means-zero, same rule as the blend). A player with no actuals either
+(un-debuted) stays invisible — nothing to project from. The refresh-rosters
+echo names every synthesized player. Tests: `tests/test_ros_synthesis.py`.
+
 ### `split_id` semantics
 
 ESPN's `statSplitTypeId`:

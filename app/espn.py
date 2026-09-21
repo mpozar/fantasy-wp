@@ -202,6 +202,63 @@ def _as_float(v) -> float | None:
         return None
 
 
+# Counting stats safe to scale linearly when synthesizing a ROS block from
+# season actuals (see synthesize_ros_from_actuals). Rate stats (18 OPS,
+# 41 WHIP, 47 ERA, batting average, …) are deliberately absent: the sim
+# derives every rate from these counters, and scaling a rate by a season
+# fraction would corrupt it.
+SYNTH_COUNTING_IDS = (
+    "0", "1", "3", "4", "5", "10", "12", "13", "20", "23", "81",   # batting
+    "32", "33", "34", "37", "39", "45", "48", "56", "63", "83",    # pitching
+)
+# Floor on the remaining-season fraction so a synthesized block never zeroes
+# out on the season's last days — classification (gs/gp) and the per-start /
+# per-out / per-game rates are scale-invariant, so a small positive scale is
+# all the sim needs to keep the player visible.
+SYNTH_MIN_REMAINING_FRAC = 0.02
+
+
+def synthesize_ros_from_actuals(act_stats: dict | None,
+                                remaining_frac: float) -> dict | None:
+    """Build a ROS-shaped stat block from season-to-date actuals for a player
+    ESPN's ROS model doesn't project at all.
+
+    ESPN's ROS projections are anchored to preseason forecasts, so late-season
+    call-ups have NO split=6 block — which made them invisible to the sim
+    (no budget of any kind): Leo Bernal (2026-09-17) projected zero as Jo
+    Mamas' starting C, and Kade Anderson's un-projected live QS (2026-09-20,
+    m144) hid the QS-tie odds that decided a semifinal. This fills the gap
+    from the player's own season actuals: every counting stat scaled by the
+    remaining-season fraction. The per-start / per-out / per-game rates the
+    sim actually consumes are scale-invariant, so `remaining_frac` only
+    shapes the volume paths (the future-week flat SP share and the RP
+    appearance share, both capped by MAX_SP_RATE / MAX_RP_RATE downstream);
+    the current week's start count comes from announced probables, the live
+    line, or the cadence model regardless.
+
+    A missing SVHD (83) alongside real appearances means ZERO, not unknown
+    (ESPN omits the key for save-less arms — see blend_svhd_rate), so it is
+    materialized as 0.0 whenever the pitcher has appearances. Returns None
+    when there are no usable actuals (no pitching GP/GS and no hitter games):
+    a player who hasn't debuted has nothing to project from.
+    """
+    a = act_stats or {}
+    gp = _as_float(a.get("32")) or 0.0
+    gs = _as_float(a.get("33")) or 0.0
+    hit_g = _as_float(a.get("81")) or 0.0
+    if gp <= 0 and gs <= 0 and hit_g <= 0:
+        return None
+    frac = max(remaining_frac, SYNTH_MIN_REMAINING_FRAC)
+    out: dict[str, float] = {}
+    for sid in SYNTH_COUNTING_IDS:
+        v = _as_float(a.get(sid))
+        if v is not None:
+            out[sid] = v * frac
+    if gp > 0 and "83" not in out:
+        out["83"] = 0.0   # absent means zero for SVHD, never unknown
+    return out
+
+
 class ESPNAuthError(RuntimeError):
     """Raised when ESPN responds with a redirect (cookies invalid/expired)."""
 
@@ -327,10 +384,17 @@ def fetch_rosters_and_projections() -> dict:
     d = _get(["mRoster"])
     period_id = d["status"]["currentMatchupPeriod"]
     season_id = d.get("seasonId", SEASON_ID)
+    # Remaining-season fraction for synthesized ROS blocks (players ESPN's
+    # ROS model doesn't cover — see synthesize_ros_from_actuals). Days are
+    # scoring periods; final falls back to the known 187-day season.
+    now_spid = d.get("scoringPeriodId") or 1
+    final_spid = (d.get("status") or {}).get("finalScoringPeriod") or 187
+    remaining_frac = max(final_spid - now_spid, 0) / max(now_spid - 1, 1)
 
     players: list[dict] = []
     roster_entries: list[dict] = []
     projections: list[dict] = []
+    synthesized: list[str] = []
     seen_player_ids: set[int] = set()
 
     for t in d.get("teams", []):
@@ -367,17 +431,17 @@ def fetch_rosters_and_projections() -> dict:
                  if s.get("statSourceId") == 1 and s.get("statSplitTypeId") == 6),
                 None,
             )
+            act_ytd = next(
+                (s for s in p.get("stats", [])
+                 if s.get("statSourceId") == 0
+                 and s.get("statSplitTypeId") == 0
+                 and s.get("seasonId") == season_id),
+                None,
+            )
             if ros:
                 proj_season = ros.get("seasonId", season_id)
                 ros_stats = dict((ros.get("stats") or {}))
 
-                act_ytd = next(
-                    (s for s in p.get("stats", [])
-                     if s.get("statSourceId") == 0
-                     and s.get("statSplitTypeId") == 0
-                     and s.get("seasonId") == season_id),
-                    None,
-                )
                 full_proj = next(
                     (s for s in p.get("stats", [])
                      if s.get("statSourceId") == 1
@@ -407,17 +471,28 @@ def fetch_rosters_and_projections() -> dict:
                 # performance, as a pure *level* bias. Same shrinkage, shrinking
                 # toward actuals from ESPN's ROS rate. See blend_qs_rate.
                 apply_qs_rate_blend(ros_stats, act_ytd_stats)
+            else:
+                # No ROS block at all (late-season call-up ESPN never
+                # projected) — synthesize one from season actuals so the sim
+                # can see the player. See synthesize_ros_from_actuals for the
+                # incident history (Bernal 2026-09-17, Anderson 2026-09-20).
+                proj_season = season_id
+                ros_stats = synthesize_ros_from_actuals(
+                    (act_ytd.get("stats") or {}) if act_ytd else None,
+                    remaining_frac) or {}
+                if ros_stats:
+                    synthesized.append(p.get("fullName") or str(pid))
 
-                for stat_id_str, value in ros_stats.items():
-                    if value is None:
-                        continue
-                    projections.append({
-                        "player_id": pid,
-                        "stat_id": int(stat_id_str),
-                        "value": float(value),
-                        "split_id": 6,
-                        "season_id": proj_season,
-                    })
+            for stat_id_str, value in ros_stats.items():
+                if value is None:
+                    continue
+                projections.append({
+                    "player_id": pid,
+                    "stat_id": int(stat_id_str),
+                    "value": float(value),
+                    "split_id": 6,
+                    "season_id": proj_season,
+                })
 
     return {
         "matchup_period_id": period_id,
@@ -425,6 +500,7 @@ def fetch_rosters_and_projections() -> dict:
         "players": players,
         "roster_entries": roster_entries,
         "projections": projections,
+        "synthesized_ros": synthesized,
     }
 
 

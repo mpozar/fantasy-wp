@@ -639,12 +639,14 @@ def refresh_rosters() -> None:
     finally:
         conn.close()
 
+    synth = snap.get("synthesized_ros") or []
     click.echo(
         f"Refreshed rosters: period={period_id}, "
         f"players={len(snap['players'])}, "
         f"roster_entries={len(snap['roster_entries'])}, "
         f"projections={len(snap['projections'])}, "
         f"injuries={len(injuries)}"
+        + (f", synthesized ROS for {len(synth)}: {', '.join(synth)}" if synth else "")
     )
 
 
