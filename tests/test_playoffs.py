@@ -219,7 +219,8 @@ def _remaining_conn():
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     c.execute("""CREATE TABLE matchups (id INTEGER PRIMARY KEY, matchup_period_id INTEGER,
-                 home_team_id INTEGER, away_team_id INTEGER, winner TEXT)""")
+                 home_team_id INTEGER, away_team_id INTEGER, winner TEXT,
+                 playoff_tier TEXT)""")
     c.execute("""CREATE TABLE wp_snapshots (matchup_id INTEGER, home_wp REAL,
                  computed_at TEXT)""")
     return c
@@ -232,9 +233,9 @@ def test_load_remaining_excludes_playoff_rounds():
     """
     from app import playoffs
     c = _remaining_conn()
-    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'UNDECIDED')")   # regular
-    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'UNDECIDED')")   # R1
-    c.execute("INSERT INTO matchups VALUES (3, 24, 10, 13, 'UNDECIDED')")   # semi
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (1, 22, 10, 11, 'UNDECIDED')")   # regular
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (2, 23, 10, 12, 'UNDECIDED')")   # R1
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (3, 24, 10, 13, 'UNDECIDED')")   # semi
     got = playoffs.load_remaining(c, last_regular_period=22)
     assert [m["matchup_id"] for m in got] == [1]
 
@@ -253,12 +254,12 @@ def test_load_remaining_requires_the_bound_explicitly():
 def test_load_playoff_rounds_keys_by_round_and_skips_regular_and_one_sided():
     from app import playoffs
     c = _remaining_conn()
-    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'UNDECIDED')")     # regular
-    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'UNDECIDED')")     # R1
-    c.execute("INSERT INTO matchups VALUES (3, 24, 10, 13, 'HOME')")          # semi, decided
-    c.execute("INSERT INTO matchups VALUES (4, 23, 14, NULL, 'UNDECIDED')")   # bye placeholder
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (1, 22, 10, 11, 'UNDECIDED')")     # regular
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (2, 23, 10, 12, 'UNDECIDED')")     # R1
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (3, 24, 10, 13, 'HOME')")          # semi, decided
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (4, 23, 14, NULL, 'UNDECIDED')")   # bye placeholder
     c.execute("INSERT INTO wp_snapshots VALUES (2, 0.75, '2026-09-07T00:00')")
-    got = playoffs.load_playoff_rounds(c, last_regular_period=22)
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=25)
     assert set(got) == {0, 1}                      # round index, not period
     assert got[0][frozenset((10, 12))]["home_wp"] == 0.75
     assert got[1][frozenset((10, 13))]["winner"] == "HOME"
@@ -311,8 +312,8 @@ def test_load_records_excludes_playoff_results_from_seeding():
     Mamas to 15-8 and manufactured a tie with Melonheads that does not exist."""
     from app import playoffs
     c = _remaining_conn()
-    c.execute("INSERT INTO matchups VALUES (1, 22, 10, 11, 'HOME')")   # regular
-    c.execute("INSERT INTO matchups VALUES (2, 23, 10, 12, 'HOME')")   # playoff
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (1, 22, 10, 11, 'HOME')")   # regular
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner) VALUES (2, 23, 10, 12, 'HOME')")   # playoff
     w, l, h = playoffs.load_records(c, [10, 11, 12], last_regular_period=22)
     assert w[10] == 1 and l[11] == 1        # regular season counted
     assert l[12] == 0 and w[10] == 1        # playoff result NOT counted
@@ -413,3 +414,103 @@ def test_regular_season_still_uses_the_last_day_rule(monkeypatch):
     conn = _playoff_finale_db([("2026-09-15", "In Progress")], last_reg=24, period=24)
     r = _playoff_reason(conn, "2026-09-15T20:00:00+00:00", monkeypatch)
     assert r is not None and "last day" in r
+
+
+# ── LM re-pairs are facts; the winner field is secondary (added 2026-09-25) ────
+#
+# The 2026-09-25 incident: the LM overrode the m144 semifinal in the Dragons'
+# favour by re-pairing the final (Edit Head-to-Head Schedule), and ESPN left
+# m144.winner = HOME (Norsemen). play() advanced the Norsemen, missed the
+# override for a final that does not exist, and sampled it fictionally —
+# publishing the Norsemen at 41.6% to win a championship they were out of.
+
+def _bracket_conn(*rows):
+    """rows: (id, period, home, away, winner, tier)"""
+    c = _remaining_conn()
+    for r in rows:
+        c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id,"
+                  " away_team_id, winner, playoff_tier) VALUES (?,?,?,?,?,?)", r)
+    return c
+
+
+def test_consolation_tier_rows_are_excluded_from_rounds():
+    from app import playoffs
+    c = _bracket_conn(
+        (144, 24, 5, 3, 'HOME', 'WINNERS_BRACKET'),
+        (145, 24, 20, 1, 'AWAY', 'WINNERS_CONSOLATION_LADDER'),
+        (150, 24, 13, 14, 'HOME', 'LOSERS_CONSOLATION_LADDER'))
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=25)
+    assert set(got.get(1, {})) == {frozenset((5, 3))}
+
+
+def test_advancement_reconciliation_overrides_a_contradicted_winner():
+    """The exact live scenario: semi says HOME (Norsemen 5) won, but the seeded
+    championship final pairs the AWAY side (Dragons 3) with the other semi's
+    winner. The seeded final is the fact; the semi's effective winner flips."""
+    from app import playoffs
+    c = _bracket_conn(
+        (143, 24, 21, 11, 'AWAY', 'WINNERS_BRACKET'),
+        (144, 24, 5, 3, 'HOME', 'WINNERS_BRACKET'),          # stale field
+        (152, 25, 3, 11, 'UNDECIDED', 'WINNERS_BRACKET'),    # the real final
+        (153, 25, 21, 5, 'UNDECIDED', 'WINNERS_CONSOLATION_LADDER'))
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=25)
+    assert got[1][frozenset((5, 3))]["winner"] == "AWAY"     # Dragons advanced
+    assert got[1][frozenset((21, 11))]["winner"] == "AWAY"   # unchanged (agrees)
+
+
+def test_reconciliation_skips_the_current_live_round():
+    """During the live semis ESPN seeds the next round provisionally — that
+    pairing must never decide a matchup still being played."""
+    from app import playoffs
+    c = _bracket_conn(
+        (144, 24, 5, 3, 'UNDECIDED', 'WINNERS_BRACKET'),
+        (152, 25, 5, 11, 'UNDECIDED', 'WINNERS_BRACKET'))    # provisional
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=24)
+    assert got[1][frozenset((5, 3))]["winner"] == "UNDECIDED"
+
+
+def test_reconciliation_leaves_ambiguous_cases_alone():
+    """Both participants in the next round (or neither) says nothing about who
+    advanced on the title path — keep the stored winner."""
+    from app import playoffs
+    c = _bracket_conn(
+        (144, 24, 5, 3, 'HOME', 'WINNERS_BRACKET'),
+        # structurally bogus next round containing both semifinal participants
+        (152, 25, 3, 5, 'UNDECIDED', 'WINNERS_BRACKET'))
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=25)
+    assert got[1][frozenset((5, 3))]["winner"] == "HOME"
+
+
+def test_reconciliation_ignores_null_tier_next_rounds():
+    """A NULL-tier row (pre-column fetch) cannot vouch for the title path —
+    without an explicit WINNERS_BRACKET next round, nothing is reconciled."""
+    from app import playoffs
+    c = _bracket_conn(
+        (144, 24, 5, 3, 'HOME', 'WINNERS_BRACKET'),
+        (152, 25, 3, 11, 'UNDECIDED', None))
+    got = playoffs.load_playoff_rounds(c, last_regular_period=22, current_period=25)
+    assert got[1][frozenset((5, 3))]["winner"] == "HOME"
+
+
+def test_champion_odds_equal_the_final_wp_when_only_the_final_remains():
+    """The owner's invariant (2026-09-25): whoever wins the final wins — with
+    the semis decided and the final live at WP p, p_champion must be exactly
+    (p, 1-p) for the finalists and 0 for everyone else, incl. the team the
+    stale winner field claimed had advanced."""
+    ids = list(range(1, 13))
+    wins = {t: 12 - t for t in ids}
+    ov = {
+        0: {frozenset((3, 6)): {"home": 3, "away": 6, "winner": "HOME", "home_wp": None},
+            frozenset((4, 5)): {"home": 4, "away": 5, "winner": "HOME", "home_wp": None}},
+        1: {frozenset((1, 4)): {"home": 1, "away": 4, "winner": "HOME", "home_wp": None},
+            # reconciled winner: AWAY (3) advanced per the seeded final below,
+            # exactly what load_playoff_rounds now produces from the re-pair
+            frozenset((2, 3)): {"home": 2, "away": 3, "winner": "AWAY", "home_wp": None}},
+        2: {frozenset((1, 3)): {"home": 1, "away": 3, "winner": "UNDECIDED", "home_wp": 0.135}},
+    }
+    out = simulate_odds(ids, wins, _h2h(ids), [], _flat_samples(ids, {t: -t for t in ids}),
+                        n_sims=2000, rng=random.Random(7), round_overrides=ov)
+    assert out[2]["p_champion"] == 0.0 and out[2]["p_final"] == 0.0
+    assert out[1]["p_final"] == 1.0 and out[3]["p_final"] == 1.0
+    assert abs(out[1]["p_champion"] - 0.135) < 0.03
+    assert abs(out[3]["p_champion"] - 0.865) < 0.03

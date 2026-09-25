@@ -124,6 +124,7 @@ def load_remaining(conn: sqlite3.Connection, *,
 
 
 def load_playoff_rounds(conn: sqlite3.Connection, *, last_regular_period: int,
+                        current_period: int,
                         n_rounds: int = NUM_PLAYOFF_PERIODS) -> dict:
     """Real bracket matchups, keyed `{round_index: {frozenset({a, b}): info}}`.
 
@@ -141,22 +142,62 @@ def load_playoff_rounds(conn: sqlite3.Connection, *, last_regular_period: int,
     fact, not a coin flip) and otherwise `home_wp`, the latest snapshot. A round
     with no stored matchups is simply absent and falls back to sampling — which
     is the correct behaviour for rounds ESPN has not seeded yet.
+
+    Only championship-bracket games are loaded (`playoff_tier` =
+    'WINNERS_BRACKET'; NULL tolerated for rows fetched before the column
+    existed) — consolation-ladder games are not part of the title path.
+
+    **Advancement reconciliation (added 2026-09-25).** The LM can re-pair a
+    seeded round by hand ("Edit Head-to-Head Schedule"), and ESPN does NOT
+    update the previous round's `winner` field to match: after the m144
+    semifinal was overridden in the Dragons' favour, the stored final (m152)
+    read Dragons-Mamas while m144.winner still said HOME (Norsemen). `play()`
+    then advanced the Norsemen, missed the override lookup for a final that
+    does not exist, and sampled it fictionally — the eliminated-team bug class
+    of 2026-09-14 through a new door. So: **who ADVANCED is defined by the
+    next round's seeded championship pairing, not by the winner field.** For
+    every matchup in a round whose period is over (period < `current_period` —
+    the guard that keeps ESPN's *provisional* next-round pairings, seeded
+    mid-round, from deciding a still-live matchup), if exactly one participant
+    appears in the next round's championship game(s), that participant is the
+    effective winner. Reconciliation only reads next-round rows whose tier is
+    explicitly WINNERS_BRACKET (a NULL tier cannot vouch for the title path).
+    Ambiguous cases (both or neither participant present) leave the stored
+    winner untouched.
     """
     out: dict[int, dict] = {}
     for r in conn.execute(
             """
             SELECT m.id, m.matchup_period_id, m.home_team_id, m.away_team_id, m.winner,
+                   m.playoff_tier,
                    (SELECT s.home_wp FROM wp_snapshots s WHERE s.matchup_id = m.id
                     ORDER BY s.computed_at DESC LIMIT 1) AS home_wp
             FROM matchups m
             WHERE m.matchup_period_id > ? AND m.matchup_period_id <= ?
                   AND m.home_team_id IS NOT NULL AND m.away_team_id IS NOT NULL
+                  AND (m.playoff_tier IS NULL OR m.playoff_tier = 'WINNERS_BRACKET')
             """, (last_regular_period, last_regular_period + n_rounds)):
         rnd = r["matchup_period_id"] - (last_regular_period + 1)
         out.setdefault(rnd, {})[frozenset((r["home_team_id"], r["away_team_id"]))] = {
             "home": r["home_team_id"], "away": r["away_team_id"],
             "winner": r["winner"], "home_wp": r["home_wp"],
+            "tier": r["playoff_tier"],
         }
+    for rnd in sorted(out):
+        period = last_regular_period + 1 + rnd
+        if period >= current_period:
+            continue  # round still live/future — provisional pairings don't decide it
+        nxt = out.get(rnd + 1) or {}
+        advanced = {t for pair, info in nxt.items()
+                    if info.get("tier") == "WINNERS_BRACKET" for t in pair}
+        if not advanced:
+            continue
+        for pair, info in out[rnd].items():
+            here = pair & advanced
+            if len(here) != 1:
+                continue  # ambiguous — leave the stored winner alone
+            adv = next(iter(here))
+            info["winner"] = "HOME" if adv == info["home"] else "AWAY"
     return out
 
 

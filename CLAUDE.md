@@ -800,6 +800,27 @@ One archived `playoff_odds_runs` row (2026-09-14T07:14:52) was deleted to clear
 the spike from the published odds-over-time chart. Tests:
 `test_playoffs.py::test_eliminated_team_cannot_reach_the_final` and neighbours.
 
+**…and the LM can re-pair a seeded round by hand, leaving the previous round's
+`winner` field STALE (fixed 2026-09-25).** ESPN does not update a semifinal's
+winner when the commissioner re-pairs the next round via "Edit Head-to-Head
+Schedule": after the m144 semi was overridden in the Dragons' favour, the stored
+final (m152) read Dragons–Mamas while `m144.winner` still said HOME (Norsemen) —
+`play()` advanced the Norsemen, missed the override for a final that does not
+exist, and sampled it fictionally (Norsemen published at up to 44% champ for 4
+days). So `matchups.playoff_tier` now stores ESPN's `playoffTierType`,
+`load_playoff_rounds` keeps only WINNERS_BRACKET games, and it runs
+**advancement reconciliation**: for a round whose period is over, a matchup's
+effective winner is whichever participant appears in the next round's seeded
+championship game — the seeded bracket is the fact, the winner field is
+secondary. The `current_period` guard keeps ESPN's *provisional* next-round
+pairings (seeded mid-round, derived from the winner fields) from deciding a
+still-live matchup. The 72 affected archive rows were backfilled — see
+INCIDENTS.md 2026-09-25. Broader lesson: **this league's LM rules playoff ties
+by hand** (the re-pair reversed ESPN's own higher-seed tie resolution), so no
+fixed tie rule in `sim._decide` can be authoritative for a tied playoff
+matchup; following the seeded bracket is the robust property. Tests:
+`test_playoffs.py::test_advancement_reconciliation_*` and neighbours.
+
 **Gotchas & how to investigate "why are X's odds low/high":**
 - **Record ≠ roster.** Seeding runs on record; the bracket runs on *projected
   rosters*. A team can be seed-1 favorite and a bracket underdog. Worked example

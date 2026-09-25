@@ -93,8 +93,8 @@ def _pub_setup(tmp_path, monkeypatch):
                json.dumps([{"stat_id": 1}]), "t"))
     for tid in (10, 11, 12, 13):
         c.execute("INSERT INTO teams (id,name,fetched_at) VALUES (?,?,?)", (tid, f"T{tid}", "t"))
-    c.execute("INSERT INTO matchups VALUES (101,10,10,11,'HOME','t')")        # settled week
-    c.execute("INSERT INTO matchups VALUES (111,11,12,13,'UNDECIDED','t')")   # current week
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner, fetched_at) VALUES (101,10,10,11,'HOME','t')")        # settled week
+    c.execute("INSERT INTO matchups (id, matchup_period_id, home_team_id, away_team_id, winner, fetched_at) VALUES (111,11,12,13,'UNDECIDED','t')")   # current week
     c.execute("INSERT INTO wp_snapshots VALUES (101,'2026-06-01T00:00',0.6,0.4,'mc-v1','{}',0)")
     c.execute("INSERT INTO wp_snapshots VALUES (111,'2026-06-10T12:00',0.5,0.5,'mc-v1','{}',0)")
     c.commit(); c.close()

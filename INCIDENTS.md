@@ -5,6 +5,38 @@ isn't baffled by anomalies — especially **hand-edited historical data**. Newes
 
 ---
 
+## 2026-09-25 — championship odds sampled a fictional final after an LM re-pair (model bug + hand-edited archive rows)
+
+**TL;DR.** From Mon 2026-09-21 ~07:00Z to Fri 2026-09-25 ~07:00Z the published playoff
+odds gave the **Seattle Norsemen up to 44% to win a championship they were out of**.
+The commissioner overrode the m144 semifinal in the Dragons' favour by re-pairing the
+final ("Edit Head-to-Head Schedule"): the stored final (m152) became Dragons–Mamas, but
+ESPN left `m144.winner = HOME` (Norsemen). The bracket sim advanced the Norsemen by
+that stale field, found no override for a Mamas–Norsemen final that does not exist, and
+**sampled it fictionally** — the 2026-09-14 eliminated-team bug class through a new door.
+
+**Fix (code).** `matchups.playoff_tier` now stores ESPN's `playoffTierType`, and
+`playoffs.load_playoff_rounds` (a) keeps only WINNERS_BRACKET games and (b) runs
+**advancement reconciliation**: for a round whose period is over, a matchup's effective
+winner is whichever participant appears in the next round's seeded championship game —
+the seeded bracket is the fact, the winner field is secondary. A `current_period` guard
+keeps ESPN's provisional next-round pairings (seeded mid-round) from deciding a live
+matchup. Tests: `test_playoffs.py::test_advancement_reconciliation_*` and neighbours.
+
+**Hand-edited data.** The **72 archived `playoff_odds_runs` rows** from
+`2026-09-21T07:11:04` through `2026-09-25T06:02:02` were rewritten in place on
+2026-09-25 (owner request): with only the final remaining, champion odds ARE the final's
+WP, so each row got `p_final = 1.0` for teams 3/11 (0 for everyone else) and
+`p_champion(Mamas 11) = 1 − m152.home_wp` at the nearest snapshot, complement to the
+Dragons. Each edited payload carries a top-level `"backfilled"` marker. The
+`2026-09-21T06:02:02` row was left untouched — it predates ESPN's winner-field flip and
+already had the correct finalists (a legitimately sampled final). Caveat: Monday-morning
+backfilled points mirror m152's early snapshots, which were computed while ESPN's
+pairing was still the provisional Norsemen–Mamas one — they are the matchup's published
+history verbatim, not a re-sim.
+
+---
+
 ## 2026-08-31 — published site frozen 4 days by a wedged Pages deploy (ops, fixed; no data edit)
 
 **TL;DR.** The live site served **`2026-08-27T16:00:37Z`** data for four days while

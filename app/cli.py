@@ -434,17 +434,20 @@ def fetch() -> None:
             conn.execute(
                 """
                 INSERT INTO matchups
-                    (id, matchup_period_id, home_team_id, away_team_id, winner, fetched_at)
-                VALUES (?,?,?,?,?,?)
+                    (id, matchup_period_id, home_team_id, away_team_id, winner,
+                     playoff_tier, fetched_at)
+                VALUES (?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     matchup_period_id=excluded.matchup_period_id,
                     home_team_id=excluded.home_team_id,
                     away_team_id=excluded.away_team_id,
                     winner=excluded.winner,
+                    playoff_tier=excluded.playoff_tier,
                     fetched_at=excluded.fetched_at
                 """,
                 (m["matchup_id"], m["matchup_period_id"],
-                 m["home_team_id"], m["away_team_id"], m["winner"], now),
+                 m["home_team_id"], m["away_team_id"], m["winner"],
+                 m.get("playoff_tier"), now),
             )
             cur_p = m["matchup_period_id"] == current_period
             seeded = m["matchup_id"] in seeded_current
@@ -1996,7 +1999,7 @@ def playoffs_cmd(sims: int | None, samples: int | None,
         odds = playoffs.simulate_odds(
             team_ids, wins, h2h, remaining, value_samples, n_sims=n_sims,
             round_overrides=playoffs.load_playoff_rounds(
-                conn, last_regular_period=last_reg))
+                conn, last_regular_period=last_reg, current_period=current))
 
         blocks = []
         for t in team_ids:

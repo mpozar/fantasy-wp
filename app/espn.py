@@ -567,6 +567,7 @@ def fetch_all_matchups() -> list[dict]:
             "home_team_id": home.get("teamId"),
             "away_team_id": away.get("teamId"),
             "winner": m.get("winner"),
+            "playoff_tier": m.get("playoffTierType"),
             "scores": scores,
         })
     return out
